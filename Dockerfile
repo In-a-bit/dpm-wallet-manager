@@ -1,9 +1,13 @@
 # syntax=docker/dockerfile:1
 #
-# Single image an operator runs inside their own infrastructure. Listens on 0.0.0.0:3000;
-# probe GET /health.
+# Listens on 0.0.0.0:3000; probe GET /v1/health. Every table lives in the Postgres database
+# DATABASE_URL names — this container keeps nothing on disk, so it needs no volume.
+#
+# Starting the container migrates the database first (see CMD). That step lives here rather than
+# in the service, so it is visible in the image and can be skipped by overriding the command —
+# `docker run … node dist/main` starts without touching the schema.
 
-ARG NODE_VERSION=24
+ARG NODE_VERSION=22
 
 # ── Stage 1: build ───────────────────────────────────────────────────────────
 FROM node:${NODE_VERSION}-alpine AS builder
@@ -14,6 +18,8 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
+# nest-cli.json drives the build, selecting tsconfig.build.json. The migrations need no asset
+# copying: they are TypeScript classes, so the ordinary compile emits them into dist.
 COPY tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY src/ src/
 
@@ -35,11 +41,14 @@ COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-RUN addgroup -S dpm-wallet-manager && adduser -S dpm-wallet-manager -G dpm-wallet-manager
+RUN addgroup -S dpmm && adduser -S dpmm -G dpmm
 
-USER dpm-wallet-manager
+USER dpmm
 
 EXPOSE 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]
-CMD ["node", "dist/main"]
+# Migrate, then hand the process over to the service. `exec` matters: without it the shell stays
+# as tini's child and the service never sees SIGTERM, which would cost the 25s drain on shutdown.
+# `&&` matters too — a failed migration must stop the boot rather than start against a stale schema.
+CMD ["sh", "-c", "node dist/db/migrate-cli && exec node dist/main"]

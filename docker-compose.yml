@@ -1,13 +1,57 @@
 services:
+  postgres:
+    image: postgres:18-alpine
+    # Fallback defaults match `.env.example`, so a recreate without the .env loaded still binds
+    # the public port at 5441 — 5440 belongs to dpm-wallet's own compose file.
+    environment:
+      POSTGRES_USER: ${POSTGRESQL_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRESQL_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRESQL_DB:-dpm_wallet_manager}
+    ports:
+      - "${POSTGRESQL_PORT:-5441}:5432"
+    volumes:
+      # Mounted at /var/lib/postgresql, not the /var/lib/postgresql/data of older images: 18+
+      # stores data in a major-version subdirectory of it, and refuses to start when it finds a
+      # volume mounted over the inner path instead.
+      - postgres-data:/var/lib/postgresql
+    restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRESQL_USER:-postgres} -d ${POSTGRESQL_DB:-dpm_wallet_manager}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Migrations run from the image's CMD, before the service starts — see the Dockerfile.
   dpm-wallet-manager:
     build: .
     ports: ["3000:3000"]
     env_file:
       - path: .env
         required: false
+    # Reached over the compose network rather than through the published port, so the host
+    # mapping above is only for psql and the TypeORM CLI from a workstation.
+    environment:
+      DATABASE_URL: postgres://${POSTGRESQL_USER:-postgres}:${POSTGRESQL_PASSWORD:-postgres}@postgres:5432/${POSTGRESQL_DB:-dpm_wallet_manager}?sslmode=disable
+    # Lets DPM_WALLET_BASE_URL point at a dpm-wallet running on the host — which is the usual
+    # local setup. Docker Desktop resolves this name on its own; Linux does not, so it is mapped
+    # explicitly here rather than left to fail as an unreachable upstream.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        # Migrating is the container's first act, so it has to wait for a database that accepts
+        # connections rather than one that has merely been created.
+        condition: service_healthy
     restart: unless-stopped
+    # Let in-flight requests finish.
+    stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+volumes:
+  # Survives `down`; destroyed only by `down -v`.
+  postgres-data:
