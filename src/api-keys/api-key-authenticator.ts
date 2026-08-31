@@ -69,8 +69,8 @@ export class ApiKeyAuthenticator {
     logWarn("auth.failed", { reason, prefix, ip: context.ip, path: context.path });
     if (reason !== "malformed" && (await this.keys.countAll()) === 0) {
       return unauthorized(
-        'No API keys exist yet. Run "npm run keys:bootstrap" (or set ' +
-          "DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY) to mint the first admin key.",
+        "No API keys exist yet. Restart the service (it mints the first admin key on boot), " +
+          "or set DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY to a well-formed dpmm_<env>_ad_… key.",
       );
     }
     return unauthorized();

@@ -32,6 +32,10 @@ export type Config = {
   masterKey: string;
   /** Adopted as the first admin key when the table is empty. Optional; otherwise one is minted. */
   bootstrapAdminKey: string | undefined;
+  /**
+   * Test-only: skip the empty-table admin key mint in StartupService. Production never sets this.
+   */
+  skipStartupKeyBootstrap: boolean;
   /** Labels minted keys (`dpmm_live_…` / `dpmm_test_…`) so a staging key is obvious on sight. */
   keyEnvironment: string;
   dpmWallet: {
@@ -59,6 +63,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ),
     masterKey: requiredHex("DPM_WALLET_MANAGER_MASTER_KEY", env.DPM_WALLET_MANAGER_MASTER_KEY, 32),
     bootstrapAdminKey: optional(env.DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY),
+    skipStartupKeyBootstrap: optional(env.DPM_WALLET_MANAGER_SKIP_STARTUP_KEY_BOOTSTRAP) === "1",
     keyEnvironment: parseKeyEnvironment(env.DPM_WALLET_MANAGER_KEY_ENV),
     dpmWallet: {
       baseUrl: trimSlash(required("DPM_WALLET_BASE_URL", env.DPM_WALLET_BASE_URL)),

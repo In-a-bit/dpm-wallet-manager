@@ -20,6 +20,10 @@ import { ApiKeyService } from "./api-key.service";
  *
  * The whole application context is created — not just the repository — so the key is written by
  * exactly the code path the running service verifies against.
+ *
+ * If `DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY` is set, that string is adopted verbatim — it must
+ * already be a well-formed admin key (`dpmm_<env>_ad_<32 chars>`), not a free-form password.
+ * See README "First API key (bootstrap)" / "API key format".
  */
 async function main(): Promise<void> {
   const app = await NestFactory.createApplicationContext(AppModule, { logger: false });

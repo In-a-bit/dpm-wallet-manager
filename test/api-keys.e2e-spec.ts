@@ -262,28 +262,26 @@ describe("api keys on an empty install", () => {
         apiKey: "dpmm_test_ad_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       });
       expect(response.status).toBe(401);
-      expect(response.body.error.message).toMatch(/keys:bootstrap/);
+      expect(response.body.error.message).toMatch(/BOOTSTRAP_ADMIN_KEY|mints the first admin key/);
     } finally {
       await harness.close();
     }
   });
 
-  it("adopts a configured bootstrap key, and never re-seeds afterwards", async () => {
+  it("adopts a configured bootstrap key on boot, and never re-seeds afterwards", async () => {
     const configured = "dpmm_test_ad_k7m2q9x4b3n8v3c6z2s5t2r7w4y9p8j3";
     const harness = await startHarness(
       { DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY: configured },
       { withoutKeys: true },
     );
     try {
+      // StartupService adopts the env key when the table is empty — no CLI call required.
+      expect((await harness.get("/v1/api-keys", { apiKey: configured })).status).toBe(200);
+
       const service = harness.app.get(
         (await import("../src/api-keys/api-key.service")).ApiKeyService,
       );
-      const first = await service.bootstrap();
-      expect(first.created).toBe(true);
-      expect(first.key.key).toBe(configured);
-      expect((await harness.get("/v1/api-keys", { apiKey: configured })).status).toBe(200);
-
-      // A second call must not mint a second admin credential.
+      // A second bootstrap must not mint another admin credential.
       const second = await service.bootstrap();
       expect(second.created).toBe(false);
     } finally {

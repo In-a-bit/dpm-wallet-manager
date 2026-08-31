@@ -97,7 +97,6 @@ openssl rand -hex 32   # → DPM_WALLET_MANAGER_MASTER_KEY
 docker compose up -d postgres
 npm ci
 npm run db:migrate
-npm run keys:bootstrap        # prints the first admin key, once
 npm run dev
 ```
 
@@ -105,6 +104,42 @@ npm run dev
 service, so a failed migration stops the boot rather than serving against a stale schema.
 
 OpenAPI is at `/v1/docs` (Swagger UI) and `/v1/docs-json` (the raw document).
+
+### First API key (bootstrap)
+
+On boot, if `api_keys` is empty, the service inserts the first admin key **in code** (no CLI):
+
+- **`DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY` set** → that string is adopted (must be well-formed;
+  see format below). Logs `startup.bootstrap_admin_key_adopted` with prefix only.
+- **unset** → a random key is minted and logged once as `startup.bootstrap_admin_key_minted`
+  (includes the plaintext — prefer setting the env in anything shared).
+
+Use that value as `X-API-Key` for `POST /v1/api-keys` and everything else. Later boots do nothing
+if any key already exists.
+
+Wrong: `BOOTSTRAP_ADMIN_KEY=bootstrap-admin-key` → validation error (and boot fails if set).  
+Right: `BOOTSTRAP_ADMIN_KEY=dpmm_live_ad_k7m2q9x4b3n8v3c6z2s5t2r7w4y9p8j3` (and
+`DPM_WALLET_MANAGER_KEY_ENV=live`).
+
+### API key format
+
+Every key — bootstrap env value, minted keys, and every `X-API-Key` header — must match:
+
+```text
+dpmm_<env>_<role>_<32-char-secret>
+```
+
+| Segment | Meaning |
+|---|---|
+| `dpmm` | fixed namespace |
+| `<env>` | `DPM_WALLET_MANAGER_KEY_ENV` (e.g. `live`, `test`) — 2–12 `[a-z0-9]` |
+| `<role>` | `ad` = admin, `op` = operator |
+| `<secret>` | exactly 32 chars from `a-hjkmnpqrstuvwxyz23456789` |
+
+Example: `dpmm_live_ad_k7m2q9x4b3n8v3c6z2s5t2r7w4y9p8j3`.
+
+`parseApiKey` in `src/crypto/api-key-format.ts` enforces this on bootstrap **and** on every
+request. A free-form string never authenticates and never gets stored.
 
 ### Verifying an install
 

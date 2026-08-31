@@ -102,6 +102,11 @@ export async function startHarness(
       ...(ownedDatabase ? { DATABASE_URL: ownedDatabase.url } : {}),
       DPM_WALLET_BASE_URL: upstreamBaseUrl,
       DPM_WALLET_API_KEY: FAKE_UPSTREAM_API_KEY,
+      // Specs own key setup via the harness. Only the boot-adoption e2e opts in by setting
+      // BOOTSTRAP_ADMIN_KEY (and then StartupService must be allowed to run).
+      ...(overrides.DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY
+        ? {}
+        : { DPM_WALLET_MANAGER_SKIP_STARTUP_KEY_BOOTSTRAP: "1" }),
       ...overrides,
     });
 
