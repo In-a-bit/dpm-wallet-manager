@@ -25,9 +25,17 @@ services:
   # Migrations run from the image's CMD, before the service starts — see the Dockerfile.
   dpm-wallet-manager:
     build: .
-    ports: ["3000:3000"]
+    ports: ["${PORT:-3000}:${PORT:-3000}"]
+    # Which env file, so one checkout can run both custody modes. A manager burns its mode into
+    # its database on first boot and can never change it, so segregated and shared are two
+    # installs with two databases — never one with a flag.
+    #
+    #   ENV_FILE=.env.segregated docker compose -p dwm-segregated --env-file .env.segregated up -d
+    #
+    # `--env-file` supplies the port and database interpolation; ENV_FILE supplies the service's
+    # own variables. Both are needed.
     env_file:
-      - path: .env
+      - path: ${ENV_FILE:-.env}
         required: false
     # Reached over the compose network rather than through the published port, so the host
     # mapping above is only for psql and the TypeORM CLI from a workstation.
@@ -36,6 +44,25 @@ services:
     # Lets DPM_WALLET_BASE_URL point at a dpm-wallet running on the host — which is the usual
     # local setup. Docker Desktop resolves this name on its own; Linux does not, so it is mapped
     # explicitly here rather than left to fail as an unreachable upstream.
+    # ── DNS ──────────────────────────────────────────────────────────────────────
+    # No `dns:` here, deliberately, and it is worth knowing why both ways round.
+    #
+    # Docker copies the host's /etc/resolv.conf into a container **once, at creation**, and never
+    # updates it. So a container created on one network keeps that network's resolver, and once the
+    # machine moves every lookup fails with "bad address" — which surfaces three services away as
+    # `Turnkey ... failed: fetch failed` and reads like a Turnkey outage.
+    #
+    # The obvious fix, pinning 1.1.1.1 / 8.8.8.8, is worse: plenty of networks block outbound DNS to
+    # public resolvers and force you through the local one. On such a network a pinned resolver
+    # answers nothing at all, and a resolver list whose first entry is unreachable stalls on every
+    # lookup waiting for it to time out.
+    #
+    # So: inherit the host's resolvers, which are by definition the ones that work here — and after
+    # changing networks, recreate rather than restart:
+    #
+    #   docker compose up -d --force-recreate
+    #
+    # `restart` keeps the stale file; only a new container gets a new one.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -47,7 +74,10 @@ services:
     # Let in-flight requests finish.
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/v1/health"]
+      # Follows PORT, like the published mapping above. Hardcoding 3000 meant the segregated
+      # install — which listens on 3010 — probed a port nothing was bound to and reported
+      # unhealthy while serving perfectly well.
+      test: ["CMD", "wget", "-qO-", "http://localhost:${PORT:-3000}/v1/health"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -21,6 +21,7 @@ export const AuditAction = {
   WalletReconcile: "wallet.reconcile",
   WalletUpdate: "wallet.update",
   WalletDpmAttestation: "wallet.dpm_attestation",
+  WalletDpmRegister: "wallet.dpm_register",
   WalletDpmRegistered: "wallet.dpm_registered",
 
   SignOrder: "sign.order",

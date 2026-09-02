@@ -45,6 +45,13 @@ export class FakeDpmWallet {
   /** Set false to make the vault look uninitialised in `GET /v1/health`. */
   vaultInitialized = true;
 
+  /**
+   * When set, `POST /v1/addresses/:ref/dpm-register` fails with this envelope. Route-scoped
+   * rather than queued like `failNextWith`, because provisioning mints the address first and a
+   * positional failure would land on the wrong call.
+   */
+  failRegistrationWith: { status: number; code: string } | undefined;
+
   private nextIndex = 0;
 
   /**
@@ -87,6 +94,7 @@ export class FakeDpmWallet {
     this.idempotent.clear();
     this.hang = false;
     this.vaultInitialized = true;
+    this.failRegistrationWith = undefined;
   }
 
   /** Seeds an address as if it had been minted, for the reconcile paths. */
@@ -176,6 +184,17 @@ export class FakeDpmWallet {
           status: 200,
           body: { address: existing.address, signature: signatureFor(`attest:${ref}`) },
         };
+      }
+      // Signs, posts to dpm-api and records the flag upstream: from here only the outcome is
+      // visible, which is the flag coming back set.
+      if (suffix === "/dpm-register") {
+        if (this.failRegistrationWith) {
+          const { status, code } = this.failRegistrationWith;
+          return { status, body: { error: { code, message: "dpm-api said no" } } };
+        }
+        const registered = { ...existing, dpmRegistered: true };
+        this.addresses.set(ref, registered);
+        return { status: 200, body: registered };
       }
       if (suffix === "/dpm-registered") {
         const updated = { ...existing, dpmRegistered: body?.registered !== false };

@@ -99,6 +99,14 @@ export class DpmWalletClient {
     return this.request("POST", `/v1/addresses/${encodeURIComponent(ref)}/dpm-attestation`);
   }
 
+  /**
+   * Signs the attestation, registers the address with dpm-api and records the flag, upstream,
+   * in one call. Idempotent there: an address already registered comes back untouched.
+   */
+  dpmRegister(ref: string): Promise<UpstreamAddress> {
+    return this.request("POST", `/v1/addresses/${encodeURIComponent(ref)}/dpm-register`);
+  }
+
   setDpmRegistered(ref: string, registered: boolean): Promise<UpstreamAddress> {
     return this.request("POST", `/v1/addresses/${encodeURIComponent(ref)}/dpm-registered`, {
       body: { registered },

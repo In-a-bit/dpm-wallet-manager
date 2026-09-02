@@ -212,6 +212,22 @@ export class WalletsService {
   }
 
   /**
+   * Registers a wallet's EOA with the DPM platform, through dpm-wallet — which holds both the
+   * signing key and the builder credential the platform authenticates the call with, so the
+   * whole exchange happens in one hop from here.
+   */
+  private async registerWithDpm(wallet: Wallet): Promise<UpstreamAddress> {
+    const registered = await this.upstream.dpmRegister(wallet.ref);
+    await this.audit.record({
+      walletId: wallet.id,
+      action: AuditAction.WalletDpmRegister,
+      outcome: AuditOutcome.Success,
+      detail: { kind: wallet.kind, address: registered.address },
+    });
+    return registered;
+  }
+
+  /**
    * Step 2 and 3 of creation, and the whole of reconcile.
    *
    * The idempotency key is the row id, which makes the upstream call safe to repeat: dpm-wallet
@@ -228,6 +244,14 @@ export class WalletsService {
       } else {
         throw err;
       }
+    }
+
+    // Before the wallet is marked ready, not after: a master wallet the DPM platform has never
+    // seen cannot sign the withdrawal it exists for, and an active row that fails at the first
+    // withdrawal is worse than one still visibly half-built. A failure here throws, leaving the
+    // row `provisioning` for `reconcile` and the boot sweep to finish.
+    if (wallet.kind === "master" && !address.dpmRegistered) {
+      address = await this.registerWithDpm(wallet);
     }
 
     const provisioned = await this.wallets.markProvisioned(
