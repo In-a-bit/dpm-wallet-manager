@@ -1,0 +1,226 @@
+name: Deploy dpm-wallet-manager
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment"
+        required: true
+        type: choice
+        default: "dev"
+        options:
+          - dev
+      instances:
+        description: "Which custody installs to act on"
+        required: true
+        type: choice
+        default: "all"
+        options:
+          - all
+          - shared
+          - segregated
+      action:
+        description: "Action to perform"
+        required: true
+        type: choice
+        default: "status"
+        options:
+          - status
+          - deploy
+          - stop
+          - start
+          - update-secret
+
+env:
+  ARTIFACTS_REPO: europe-west1-docker.pkg.dev/inabit-mgmt/dpm-eu
+  IMAGE_NAME: dpm-wallet-manager
+
+jobs:
+  manage:
+    runs-on: fast-gke
+    concurrency:
+      group: ${{ github.workflow }}-${{ inputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Normalize branch name
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: echo "BRANCH_NAME=$(echo "$REF_NAME" | tr / -)" >> $GITHUB_ENV
+
+      # One image, two installs. They differ only by environment — custody mode,
+      # database, vault — so the build is shared and only this list varies.
+      #
+      # Names are spelled out rather than composed from a prefix variable: these
+      # strings are also the env filename, the manifest filename, the secret name
+      # and the `app` label, so a reader (and `grep`) should find them here.
+      - name: Set instance list
+        run: |
+          case "${{ inputs.instances }}" in
+            all)        INSTANCES="dpm-wallet-manager-shared dpm-wallet-manager-segregated" ;;
+            shared)     INSTANCES="dpm-wallet-manager-shared" ;;
+            segregated) INSTANCES="dpm-wallet-manager-segregated" ;;
+            *)          echo "Unknown instances value"; exit 1 ;;
+          esac
+          echo "INSTANCES=$INSTANCES" >> $GITHUB_ENV
+          echo "Acting on: $INSTANCES"
+
+      - name: Check team permissions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_ARC_PAT }}
+          ACTOR: ${{ github.actor }}
+          ORG_ID: ${{ secrets.ORG_ID }}
+          ORG_NAME: In-a-bit
+          ENVIRONMENT: ${{ inputs.environment }}
+        run: |
+          PROD_TEAM_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/orgs/$ORG_NAME/teams/prod-deployers | jq -r .id)
+          IS_PROD_MEMBER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          https://api.github.com/organizations/$ORG_ID/team/$PROD_TEAM_ID/memberships/$ACTOR | jq -r .state)
+          if [[ "$IS_PROD_MEMBER" == "active" ]]; then exit 0; fi
+          if [[ "$ENVIRONMENT" != "prod" ]]; then
+            DEPLOYERS_TEAM_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/orgs/$ORG_NAME/teams/deployers | jq -r .id)
+            IS_DEPLOYER_MEMBER=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/organizations/$ORG_ID/team/$DEPLOYERS_TEAM_ID/memberships/$ACTOR | jq -r .state)
+            if [[ "$IS_DEPLOYER_MEMBER" != "active" ]]; then echo "Not authorized"; exit 1; fi
+          else
+            echo "Not authorized for prod"; exit 1
+          fi
+
+      - name: Send Slack Notification - Start
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_CHANNEL: deployments
+          SLACK_WEBHOOK: ${{ secrets.DEPLOYMENTS_SLACK_WEBHOOK_URL }}
+          SLACK_ICON: https://storage.googleapis.com/inabit-assets/star48-2.png
+          SLACK_USERNAME: action-runners-notifications
+          SLACK_MESSAGE: "Beginning dpm-wallet-manager job: ${{ inputs.action }}... Env: ${{ inputs.environment }}, Branch/Tag: ${{ env.BRANCH_NAME }}, Instances: ${{ inputs.instances }}"
+
+      - name: Checkout env files
+        if: inputs.action == 'deploy' || inputs.action == 'update-secret'
+        uses: actions/checkout@v4
+        with:
+          repository: In-a-bit/prediction-env
+          token: ${{ secrets.GH_ARC_PAT }}
+          ref: main
+          path: prediction-env
+
+      - name: Checkout gke manifests
+        if: inputs.action == 'deploy'
+        uses: actions/checkout@v4
+        with:
+          repository: In-a-bit/prediction-tf-config
+          token: ${{ secrets.GH_ARC_PAT }}
+          ref: main
+          path: prediction-tf-config
+
+      - name: Authenticate with Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.CI_SA_KEY }}
+
+      - name: Authenticate against GKE cluster, set NS
+        run: |
+          gcloud container clusters get-credentials "${{ inputs.environment }}-cluster" --region europe-west1 --project "${{ inputs.environment }}-dpm" && kubectl config set-context --current --namespace apps
+
+      - name: Set up Docker for Artifacts Registry
+        if: inputs.action == 'deploy'
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+
+      - name: Check the tag availability in artifacts repo
+        if: inputs.action == 'deploy'
+        run: |
+          gcloud artifacts docker images describe "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}" \
+            || { echo "Image not found for ${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}"; exit 1; }
+
+      - name: Set up image tag in Artifacts Registry
+        if: inputs.action == 'deploy'
+        run: |
+          gcloud beta artifacts docker tags add \
+            "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}" \
+            "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ inputs.environment }}-latest"
+
+      - name: Create or update secrets
+        if: inputs.action == 'deploy' || inputs.action == 'update-secret'
+        run: |
+          # Loop is fail-fast by design: if the first instance fails, both stay untouched,
+          # which is consistent. Collect-and-continue would update the second while the first
+          # stayed stale, manufacturing divergence. Progress echoes below show which instances
+          # were attempted.
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            kubectl create secret generic ${app}-dot-env-secret \
+              --from-file=.env=prediction-env/${{ inputs.environment }}/${app}.env \
+              --dry-run=client -o yaml | kubectl apply -f -
+          done
+
+      - name: Apply deployment manifests
+        if: inputs.action == 'deploy'
+        run: |
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            kubectl apply -n apps -f prediction-tf-config/environments/${{ inputs.environment }}/k8s/${app}.yml
+          done
+
+      - name: Restart deployments
+        if: inputs.action == 'deploy' || inputs.action == 'update-secret'
+        run: |
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            kubectl rollout restart deployment $app -n apps
+          done
+
+      - name: Wait for rollouts
+        if: inputs.action == 'deploy' || inputs.action == 'update-secret'
+        run: |
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            kubectl rollout status deployment $app -n apps --timeout=5m
+          done
+
+      # The schema migration runs in the container's CMD and is forward-only. By the
+      # time a rollout is judged failed, the new schema may already be committed.
+      # An automatic rollback would run the old image against the new schema and fail.
+      # We make this hazard visible here instead of hiding it.
+      - name: Dump logs on failure
+        if: failure() && (inputs.action == 'deploy' || inputs.action == 'update-secret')
+        run: |
+          echo "WARNING: this deployment migrates its schema on container start, forward-only."
+          echo "The new schema may already be committed even though the rollout failed."
+          echo "Do NOT 'kubectl rollout undo' without checking: the older image would run against the newer schema."
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            kubectl -n apps describe deployment $app || true
+            kubectl -n apps logs -l app=$app --all-containers=true --tail=-1 || true
+          done
+
+      - name: Perform scale action
+        if: inputs.action == 'stop' || inputs.action == 'start'
+        run: |
+          if [[ "${{ inputs.action }}" == "stop" ]]; then REPLICAS=0; else REPLICAS=1; fi
+          for app in $INSTANCES; do
+            echo "--- $app ---"
+            if kubectl get deployment $app -n apps > /dev/null 2>&1; then
+              kubectl scale deployment $app --replicas=$REPLICAS -n apps
+            else
+              echo "Deployment $app not found, skipping."
+            fi
+          done
+
+      - name: Get pod status
+        if: inputs.action == 'status'
+        run: |
+          SELECTOR="app in ($(echo $INSTANCES | tr ' ' ','))"
+          kubectl get po -o wide -l "$SELECTOR" -n apps
+
+      - name: Send Slack Notification - End
+        if: always()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_CHANNEL: deployments
+          SLACK_WEBHOOK: ${{ secrets.DEPLOYMENTS_SLACK_WEBHOOK_URL }}
+          SLACK_ICON: https://storage.googleapis.com/inabit-assets/star48-2.png
+          SLACK_USERNAME: action-runners-notifications
+          SLACK_MESSAGE: "${{ job.status == 'success' && '✅' || '❌' }} dpm-wallet-manager ${{ inputs.action }} ${{ job.status }}! Env: ${{ inputs.environment }}, Branch/Tag: ${{ env.BRANCH_NAME }}, Instances: ${{ inputs.instances }}"
