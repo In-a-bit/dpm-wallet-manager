@@ -185,45 +185,60 @@ nothing needs to be published first.
    .bin/devtool rebuild gamma-api
    ```
 
+4. **A new custody builder and its private key, from the backoffice**, the way a real builder
+   gets theirs.
+   1. Start the backoffice UI:
+
+      ```sh
+      cd ~/Documents/prediction-claude/prediction-backoffice && npm run dev
+      ```
+
+      Open the address it prints. It is `http://localhost:3001` when 3000 is taken, as it is
+      while the demo stack runs. The devtool's `backoffice` service must be running too.
+
+   2. Go to **Custody Builders** and, under **Onboard custody builder**, type a name and click
+      **Create custody builder**.
+   3. In the list, click **New key** on that builder's row, confirm, and click **Copy**.
+
+   Use a builder that has **never been installed**. Each install creates the builder's Turnkey
+   sub-organization, so a second install of the same builder stops at "Create the secure key
+   vault" with a 409.
+
 ### The quick way: one script
 
 ```sh
 ~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh
 ```
 
-The script runs from any folder. It checks everything above and stops with the exact fix if
-something is wrong. Then it:
+It asks you to paste the key from step 4. You can also pass it on the command line:
+`try-local.sh bld_sk_…`. The script runs from any folder. It checks everything above and stops
+with the exact fix if something is wrong. Then it:
 
-1. Creates a new test custody builder and issues its private key.
-2. Checks the key against dpm-api and gamma-api.
-3. Builds both images.
-4. Installs into `~/dpm-custody-local`.
+1. Checks your key against dpm-api and gamma-api. It shows your builder's name, or says why the
+   key was refused.
+2. Builds both images.
+3. Installs into `~/dpm-custody-local`.
 
-It ends by printing the page address, the PIN and the key to paste. Follow those five lines,
-then:
+It ends by printing the page address, the PIN, and your key and builder name, so you know what
+to paste and what to expect. Follow those five lines, then:
 
 ```sh
 ~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh verify   # status + smoke test
 ~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh clean    # start over
 ```
 
-Each new run needs a new builder, and the script creates one every time.
+Each new run needs a new builder and key from the backoffice (step 4).
 
 ### The same, by hand
 
 Copy each block as-is. Values are captured into variables, so there is nothing to fill in.
 Run every block in the **same terminal**, because later blocks use earlier variables.
 
-**1. Point at the workspace and read the admin key.**
+**1. Point at the workspace.**
 
 ```sh
 W=~/Documents/prediction-claude
-ADMIN=$(sed -n 's/^DPM_API_KEY=//p' "$W/prediction-go/.env")
-echo "admin key is ${#ADMIN} characters"
 ```
-
-You should see a number above 0. If you see `0`, `DPM_API_KEY` is missing from
-`prediction-go/.env`.
 
 **2. Check that dpm-api has the new endpoint.**
 
@@ -236,50 +251,37 @@ curl -s -w '  HTTP %{http_code}\n' localhost:8086/wallet-install/config
   prediction-go.
 - **`HTTP 000`:** dpm-api isn't running.
 
-**3. Create a test custody builder and keep its id.**
+**3. Paste your builder private key** (from Before you start, step 4) when asked:
 
 ```sh
-BUILDER_ID=$(curl -s -XPOST localhost:8086/builders -H "X-API-Key: $ADMIN" \
-  -H 'Content-Type: application/json' \
-  -d "{\"name\":\"install-test-$(date +%s)\",\"builder_type\":\"custody\"}" |
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
-echo "builder id: $BUILDER_ID"
+read -rp "Builder private key: " BUILDER_KEY
 ```
 
-You should see `builder id:` followed by a number.
-
-**4. Issue its private key and keep it.**
+**4. Pre-flight: the platform answers for that key.**
 
 ```sh
-BUILDER_KEY=$(curl -s -XPOST "localhost:8086/builders/$BUILDER_ID/api-private-key" \
-  -H "X-API-Key: $ADMIN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_private_key"])')
-echo "$BUILDER_KEY"
-```
-
-You should see a key starting with `bld_sk_`. You'll paste it into the setup page.
-
-**5. Pre-flight: the platform answers for that key.**
-
-```sh
-curl -s localhost:8086/wallet-install/config -H "X-Builder-Api-Private-Key: $BUILDER_KEY" | python3 -m json.tool
+curl -s -w '\nHTTP %{http_code}\n' localhost:8086/wallet-install/config \
+  -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
 curl -s -o /dev/null -w 'gamma-api gate: HTTP %{http_code}\n' "localhost:8084/events?limit=1" \
   -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
 ```
 
-- **First command:** JSON with your builder's name, `chain_id`, `contracts` and `services`.
-  If it shows `this environment is not configured for self-install`, run
-  `.bin/devtool restart dpm-api`.
+- **First command:** JSON with your builder's name, `chain_id`, `contracts` and `services`,
+  ending `HTTP 200`.
+  - `HTTP 401`: the key is wrong or revoked. Copy it again from the backoffice.
+  - `HTTP 409`: you created an embedded builder. Use **Custody Builders** instead.
+  - `HTTP 503`: dpm-api has no `PUBLIC_*` URLs. Run `.bin/devtool restart dpm-api`.
 - **Second command:** `gamma-api gate: HTTP 200`. `HTTP 401` means gamma-api is an older build;
   run `.bin/devtool rebuild gamma-api`.
 
-**6. Build both images from your checkouts.**
+**5. Build both images from your checkouts.**
 
 ```sh
 docker build -t ghcr.io/in-a-bit/dpm-wallet:local "$W/dpm-wallet"
 docker build -t ghcr.io/in-a-bit/dpm-wallet-manager:local "$W/dpm-wallet-manager"
 ```
 
-**7. Install.** Port 3300 is used because the demo stack already has 3000.
+**6. Install.** Port 3300 is used because the demo stack already has 3000.
 
 ```sh
 SRC=$(mktemp -d)
@@ -291,17 +293,17 @@ DPM_CUSTODY_DIR=~/dpm-custody-local DPM_CUSTODY_SOURCE="$SRC" DPM_CUSTODY_MANAGE
 
 It ends with `✓ Ready`, the address `http://localhost:8480` and a PIN.
 
-**8. Finish in the browser** at <http://localhost:8480>:
+**7. Finish in the browser** at <http://localhost:8480>:
 
 1. Enter the PIN.
 2. Click **Show more options**, choose **Custom**, and type `http://localhost:8086`.
-3. Paste the key from step 4 and click **Check key**. It should say
-   "Connecting as install-test-…".
+3. Paste your key and click **Check key**. It should say "Connecting as" followed by the name
+   you gave the builder.
 4. Pick a mode, tick the box, and click **Start setup**. Wait until every step has a ✓.
 5. Download the backup kit, tick "I saved it", and click **Continue**. The status page shows
    everything green.
 
-**9. Verify.**
+**8. Verify.**
 
 ```sh
 ~/dpm-custody-local/dpm-custody status
@@ -314,8 +316,8 @@ BASE_URL=http://localhost:3300 ADMIN_KEY=$ADMIN_KEY "$W/dpm-wallet-manager/scrip
 - **`/v1/platform`:** your mode, a master wallet, and `upstream.vault.initialized: true`.
 - **`smoke.sh`:** ends with every line ✓.
 
-**10. Start over.** Only one install can run at a time, because they share the Docker project
-name `dpm-custody`. The next run needs a new builder (steps 3–5).
+**9. Start over.** Only one install can run at a time, because they share the Docker project
+name `dpm-custody`. The next run needs a new builder and key from the backoffice.
 
 ```sh
 (cd ~/dpm-custody-local && docker compose --env-file .env -f compose.yml down -v)
@@ -351,7 +353,8 @@ DPM_CUSTODY_DIR=~/dpm-custody-dev DPM_CUSTODY_SOURCE=/tmp/dpm-src sh dpm-wallet-
 **4. Setup page.** Click **Show more options**, choose **Development**, paste the key, choose a
 mode, then click **Start setup**.
 
-**5. Verify and clean up** as in Local (steps 6–7), using port 3000 and `~/dpm-custody-dev`.
+**5. Verify and clean up** as in Local "by hand" (steps 8–9), using port 3000 and
+`~/dpm-custody-dev`.
 
 ## Production (`dpm.network`)
 
@@ -390,5 +393,5 @@ curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/downlo
 On the setup page, keep **Production** (it's preselected), paste the key, choose a mode, then
 click **Start setup**.
 
-**5. Verify** as in Local step 6, on port 3000. This is real production: use small amounts, and
+**5. Verify** as in Local "by hand" step 8, on port 3000. This is real production: use small amounts, and
 revoke the test builder's key in the backoffice when done.

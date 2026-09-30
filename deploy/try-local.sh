@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Try the one-step install against the platform running on this computer.
 #
-#   deploy/try-local.sh           check the platform, create a test builder and key, build the
-#                                 images, install, and print exactly what to enter on the page
-#   deploy/try-local.sh verify    check the finished install (and run scripts/smoke.sh)
-#   deploy/try-local.sh clean     remove the test install, so the next run starts fresh
+#   deploy/try-local.sh [bld_sk_…]  check the platform and your builder private key, build the
+#                                   images, install, and print what to enter on the page
+#   deploy/try-local.sh verify      check the finished install (and run scripts/smoke.sh)
+#   deploy/try-local.sh clean       remove the test install, so the next run starts fresh
 #
-# It expects the repos side by side (prediction-go, dpm-wallet, dpm-wallet-manager) and the local
-# platform already started with the devtool. Nothing here touches a remote environment.
+# The key comes from the backoffice (Custody Builders → create a builder → New key), exactly as a
+# real builder gets theirs; without an argument the script asks you to paste it. It expects the
+# repos side by side (prediction-go, dpm-wallet, dpm-wallet-manager) and the local platform
+# already started with the devtool. Nothing here touches a remote environment.
 #
 # Overridable: WORKSPACE (the folder holding the repos), INSTALL_DIR (~/dpm-custody-local),
 # MANAGER_PORT (3300, since the demo stack uses 3000), SETUP_PORT (8480).
@@ -79,12 +81,10 @@ check_repos() {
 check_platform() {
   step "Local platform (prediction-go)"
   [ -f "$PREDICTION_GO/.env" ] || fail "No $PREDICTION_GO/.env"
-  ADMIN_KEY="$(env_value DPM_API_KEY)"
   DPM_API_PORT="$(env_value DPM_API_PORT)"
   GAMMA_API_PORT="$(env_value GAMMA_API_PORT)"
   DPM_API="http://localhost:${DPM_API_PORT:-8086}"
   GAMMA_API="http://localhost:${GAMMA_API_PORT:-8084}"
-  [ -n "$ADMIN_KEY" ] || fail "DPM_API_KEY is not set in $PREDICTION_GO/.env"
   [ -n "$(env_value PUBLIC_DPM_API_URL)" ] ||
     fail "PUBLIC_DPM_API_URL / PUBLIC_GAMMA_API_URL / PUBLIC_RELAYER_API_URL are missing from prediction-go/.env." \
       "Add them (see deploy/README.md, Local), then: cd $PREDICTION_GO && .bin/devtool restart dpm-api"
@@ -120,21 +120,21 @@ check_no_other_install() {
   ok "none"
 }
 
-create_test_builder() {
-  step "Test custody builder"
-  local name created builder_id issued
-  name="install-test-$(date +%Y%m%d-%H%M%S)"
-  created="$(http POST "$DPM_API/builders" -H "X-API-Key: $ADMIN_KEY" -H 'Content-Type: application/json' \
-    -d "{\"name\":\"$name\",\"builder_type\":\"custody\"}")"
-  [ "$(status_of "$created")" = 201 ] ||
-    fail "Creating the builder failed ($(status_of "$created")): $(body_of "$created")"
-  builder_id="$(body_of "$created" | json_field id)"
-  ok "created \"$name\" (id $builder_id)"
-
-  issued="$(http POST "$DPM_API/builders/$builder_id/api-private-key" -H "X-API-Key: $ADMIN_KEY")"
-  BUILDER_KEY="$(body_of "$issued" | json_field api_private_key)"
-  [ -n "$BUILDER_KEY" ] || fail "Issuing its private key failed ($(status_of "$issued")): $(body_of "$issued")"
-  ok "issued its private key"
+# read_builder_key takes the key from the command line, or asks for it. The key is the one thing a
+# builder brings to an install, so it is never made up here.
+read_builder_key() {
+  step "Builder private key"
+  BUILDER_KEY="${1:-}"
+  if [ -z "$BUILDER_KEY" ]; then
+    printf '  From the backoffice: Custody Builders → your builder → New key → Copy.\n'
+    read -rp "  Paste it here: " BUILDER_KEY
+  fi
+  BUILDER_KEY="$(tr -d '[:space:]' <<<"$BUILDER_KEY")"
+  case "$BUILDER_KEY" in
+    bld_sk_*) ok "got a key starting bld_sk_" ;;
+    *) fail "That is not a builder private key: it should start with bld_sk_." \
+      "Copy it from the backoffice (Custody Builders → New key → Copy) and run this again." ;;
+  esac
 }
 
 preflight() {
@@ -142,7 +142,14 @@ preflight() {
   local config
   config="$(http GET "$DPM_API/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
   case "$(status_of "$config")" in
-    200) ok "GET /wallet-install/config answers for $(body_of "$config" | python3 -c 'import json,sys; print(json.load(sys.stdin)["owner"]["name"])')" ;;
+    200)
+      BUILDER_NAME="$(body_of "$config" | python3 -c 'import json,sys; print(json.load(sys.stdin)["owner"]["name"])')"
+      ok "the platform knows this key: builder \"$BUILDER_NAME\""
+      ;;
+    401) fail "The platform does not accept this key." \
+      "Check you copied all of it, that it was issued on this local platform, and that it has not been revoked." ;;
+    409) fail "This key belongs to an embedded builder, which does not run a DPM Wallet." \
+      "Create a custody builder instead (Custody Builders → Onboard custody builder)." ;;
     503) fail "dpm-api has no PUBLIC_* URLs loaded." "Restart it after editing .env: cd $PREDICTION_GO && .bin/devtool restart dpm-api" ;;
     *) fail "GET /wallet-install/config answered $(status_of "$config"): $(body_of "$config")" ;;
   esac
@@ -192,12 +199,13 @@ print_next_steps() {
   2. Click "Show more options", choose "Custom", and type:
                                  $DPM_API
   3. Builder private key:        $BUILDER_KEY
-     Click "Check key": it should say "Connecting as install-test-…".
+     Click "Check key": it should say "Connecting as $BUILDER_NAME".
   4. Pick a mode, tick the box, click "Start setup".
   5. Download the backup kit, tick "I saved it", click Continue.
 
   Then check everything:         $0 verify
-  Start over (new builder):      $0 clean && $0
+  Start over:                    $0 clean, then a NEW builder and key from the backoffice
+                                 (each builder can be installed only once)
 ────────────────────────────────────────────────────────────────────────
 EOF
 }
@@ -207,7 +215,7 @@ cmd_start() {
   check_repos
   check_platform
   check_no_other_install
-  create_test_builder
+  read_builder_key "${1:-}"
   preflight
   build_images
   install
@@ -247,12 +255,14 @@ cmd_clean() {
   [ "$answer" = yes ] || fail "Cancelled."
   (cd "$INSTALL_DIR" && docker compose --env-file .env -f compose.yml down -v >/dev/null 2>&1)
   rm -rf "$INSTALL_DIR"
-  ok "removed. The test builder stays in the local platform; the next run creates a new one."
+  ok "removed. If setup was started, that builder now has a Turnkey sub-organization: use a new builder next time."
 }
 
 case "${1:-start}" in
-  start) cmd_start ;;
   verify) cmd_verify ;;
   clean) cmd_clean ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  help | -h | --help) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0" ;;
+  start) cmd_start "${2:-}" ;;
+  # Anything else is the key: a malformed one gets a message about keys, not the usage text.
+  *) cmd_start "$1" ;;
 esac
