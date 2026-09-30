@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# Day-to-day commands for a DPM custody install. Run from anywhere: it works in its own folder.
+#
+#   ./dpm-custody start        start everything (also after a reboot, if Docker does not)
+#   ./dpm-custody stop         stop everything; nothing is deleted
+#   ./dpm-custody status       what is running
+#   ./dpm-custody open         print the setup page address and PIN
+#   ./dpm-custody setup        run setup in this terminal instead of the browser
+#   ./dpm-custody logs [svc]   recent logs (all services, or one)
+#   ./dpm-custody backup       save the databases and keys into ./backups
+#   ./dpm-custody backup-kit   print the backup kit again
+#   ./dpm-custody upgrade [v]  move to a newer version (or to v)
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+compose() { docker compose --env-file .env -f compose.yml "$@"; }
+
+env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
+
+setup_url() {
+  local port
+  port="$(env_value SETUP_PORT)"
+  echo "http://localhost:${port:-8480}"
+}
+
+cmd_open() {
+  echo "Setup page: $(setup_url)"
+  echo "PIN:        $(env_value SETUP_PIN)"
+}
+
+cmd_backup() {
+  local stamp dir user
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  user="$(env_value POSTGRES_USER)"
+  dir="backups/$stamp"
+  mkdir -p "$dir"
+  chmod 700 backups "$dir"
+  echo "Saving databases..."
+  compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql"
+  echo "Saving configuration and keys..."
+  compose exec -T setup tar -C / -czf - config >"$dir/config.tar.gz"
+  compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz"
+  cp .env "$dir/installer.env"
+  chmod 600 "$dir"/*
+  echo "Backup saved in $(pwd)/$dir"
+  echo "Copy that folder somewhere off this machine. It contains secrets: keep it private."
+}
+
+cmd_upgrade() {
+  local version="${1:-latest}" base
+  base="https://github.com/In-a-bit/dpm-wallet-manager/releases"
+  if [ "$version" = latest ]; then base="$base/latest/download"; else base="$base/download/$version"; fi
+  echo "Downloading $version..."
+  curl -fsSL "$base/compose.yml" -o compose.yml.new
+  curl -fsSL "$base/versions.env" -o versions.env.new
+  mv compose.yml.new compose.yml
+  while IFS='=' read -r name value; do
+    case "$name" in DPM_WALLET_TAG | DPM_WALLET_MANAGER_TAG) set_env "$name" "$value" ;; esac
+  done <versions.env.new
+  rm -f versions.env.new
+  compose pull
+  compose up -d
+  echo "Upgraded. Run ./dpm-custody status to check."
+}
+
+set_env() {
+  if grep -q "^$1=" .env; then
+    sed -i.bak "s|^$1=.*|$1=$2|" .env && rm -f .env.bak
+  else
+    echo "$1=$2" >>.env
+  fi
+}
+
+case "${1:-help}" in
+  start) compose up -d && cmd_open ;;
+  stop) compose stop ;;
+  status) compose ps ;;
+  open) cmd_open ;;
+  setup) compose exec setup node dist/setup/main cli ;;
+  logs) shift; compose logs --tail 200 "$@" ;;
+  backup) cmd_backup ;;
+  backup-kit) compose exec -T setup node dist/setup/main kit ;;
+  upgrade) shift; cmd_upgrade "$@" ;;
+  *) sed -n '2,12p' "$(basename "$0")" | sed 's/^# \{0,1\}//' ;;
+esac

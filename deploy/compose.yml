@@ -1,0 +1,111 @@
+# The whole custody stack for one builder, on one machine: Postgres, dpm-wallet,
+# dpm-wallet-manager, and the setup page that configures them.
+#
+# Nobody edits this file. The installer (install.sh / install.ps1) writes .env next to it with
+# the database password, the setup PIN and the image versions; everything else is produced by the
+# setup page, which writes the two services' env files into the `config` volume. Until it has,
+# both services wait: their command below loops until /config/ready exists.
+#
+# Only two ports leave the machine's loopback by default: the setup page (8480) and the wallet
+# manager's API (3000). dpm-wallet and Postgres are reachable only inside this stack.
+
+name: dpm-custody
+
+x-platform-host: &platform-host
+  # A platform running on this same computer (the "Local" environment) is reached here.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dpm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Re-run the installer.}
+      POSTGRES_DB: dpm_wallet
+    configs:
+      - source: create-manager-database
+        target: /docker-entrypoint-initdb.d/10-create-manager-database.sql
+        # Postgres runs init scripts as its own user; Compose mounts config content root-only.
+        mode: 0444
+    volumes:
+      # Postgres 18 keeps its data under a versioned subdirectory, so the parent is mounted.
+      - pg-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-dpm} -d dpm_wallet"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  dpm-wallet:
+    <<: *platform-host
+    image: ghcr.io/in-a-bit/dpm-wallet:${DPM_WALLET_TAG:-main}
+    restart: unless-stopped
+    # Wait for the setup page's configuration, load it, then do what the image always does:
+    # migrate, then start. The file's values are single-quoted, which `.` reads verbatim.
+    command:
+      - sh
+      - -c
+      - |
+        until [ -f /config/ready ]; do sleep 2; done
+        set -a; . /config/dpm-wallet.env; set +a
+        node dist/db/migrate-cli && exec node dist/main
+    environment:
+      NODE_OPTIONS: --dns-result-order=ipv4first
+    volumes:
+      - config:/config:ro
+      # Holds the vault's plaintext API key pair backup; `dpm-custody backup` copies it.
+      - wallet-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  dpm-wallet-manager:
+    <<: *platform-host
+    image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
+    restart: unless-stopped
+    command:
+      - sh
+      - -c
+      - |
+        until [ -f /config/ready ]; do sleep 2; done
+        set -a; . /config/dpm-wallet-manager.env; set +a
+        node dist/db/migrate-cli && exec node dist/main
+    ports:
+      # Set MANAGER_BIND=0.0.0.0 in .env when the builder's backend runs on another machine.
+      - "${MANAGER_BIND:-127.0.0.1}:${MANAGER_PORT:-3000}:3000"
+    volumes:
+      - config:/config:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    stop_grace_period: 30s
+
+  setup:
+    <<: *platform-host
+    image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
+    restart: unless-stopped
+    command: ["node", "dist/setup/main"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-dpm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SETUP_PIN: ${SETUP_PIN:-}
+      SETUP_MANAGER_PUBLIC_URL: ${MANAGER_PUBLIC_URL:-http://localhost:3000}
+    ports:
+      # Loopback only: on a server with no screen, reach it through an SSH tunnel, or use
+      # `./dpm-custody setup` in the terminal instead.
+      - "127.0.0.1:${SETUP_PORT:-8480}:8480"
+    volumes:
+      - config:/config
+
+configs:
+  create-manager-database:
+    content: |
+      CREATE DATABASE dpm_wallet_manager;
+
+volumes:
+  pg-data:
+  wallet-data:
+  config:

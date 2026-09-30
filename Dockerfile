@@ -41,7 +41,11 @@ COPY package.json ./
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-RUN addgroup -S dpmm && adduser -S dpmm -G dpmm
+# /config is where the one-step install's setup service (deploy/compose.yml) writes the env files
+# it generates. Creating it here, owned by the service user, is what makes a fresh named volume
+# mounted there writable: Docker seeds an empty volume with the image directory's ownership.
+RUN addgroup -S dpmm && adduser -S dpmm -G dpmm \
+    && mkdir -p /config && chown dpmm:dpmm /config
 
 USER dpmm
 
