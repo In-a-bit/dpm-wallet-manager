@@ -46,7 +46,8 @@ export function walletEnv(inputs: InstallInputs): Record<string, string> {
     DPM_API_BASE_URL: platform.services.dpm_api,
     GAMMA_API_URL: platform.services.gamma_api,
     RELAYER_BASE_URL: platform.services.relayer_api,
-    APP_API_KEY: platform.app_api_key,
+    // The builder key is the install's only platform credential: every service it calls
+    // accepts it, so no platform-wide APP_API_KEY is written.
     RELAYER_BUILDER_API_KEY: answers.builderKey.trim(),
     CHAIN_ID: String(platform.chain_id),
     CONTRACT_CTF_EXCHANGE: platform.contracts.ctf_exchange,

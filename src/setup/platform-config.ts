@@ -9,7 +9,6 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export type InstallConfig = {
   owner: { type: string; id: number; name: string; builder_type?: string };
   chain_id: number;
-  app_api_key: string;
   contracts: { ctf_exchange: string; proxy_factory: string; proxy_impl: string };
   services: { dpm_api: string; gamma_api: string; relayer_api: string };
 };

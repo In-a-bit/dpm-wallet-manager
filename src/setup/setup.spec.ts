@@ -41,7 +41,6 @@ import {
 const PLATFORM: InstallConfig = {
   owner: { type: "builder", id: 7, name: "Acme", builder_type: "custody" },
   chain_id: 80002,
-  app_api_key: "app-key",
   contracts: {
     ctf_exchange: "0x1111111111111111111111111111111111111111",
     proxy_factory: "0x2222222222222222222222222222222222222222",
@@ -122,11 +121,12 @@ describe("config writer", () => {
     const env = walletEnv(inputs);
     expect(env).toMatchObject({
       RELAYER_BUILDER_API_KEY: "bld_sk_abc",
-      APP_API_KEY: "app-key",
       CHAIN_ID: "80002",
       GAMMA_API_URL: "https://gamma-api.example",
       CONTRACT_PROXY_IMPL: PLATFORM.contracts.proxy_impl,
     });
+    // The builder key is the install's only platform credential.
+    expect(env).not.toHaveProperty("APP_API_KEY");
     expect(env.DATABASE_URL).toBe("postgres://dpm:p%40ss%2Fword@postgres:5432/dpm_wallet");
   });
 
