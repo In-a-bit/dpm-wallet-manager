@@ -1,58 +1,71 @@
-name: Build and Push Image
+name: Build and Publish Image
+
+# Publishes the public image to GHCR from GitHub-hosted runners. This repo is public:
+# anyone can open a PR, so nothing here may run on the self-hosted fast-gke runner,
+# and a PR build never logs in or pushes.
+#
+# Tags:
+#   push to dev / stage / main   → :<branch>, :sha-<short>
+#   git tag v1.2.3               → :1.2.3, :1.2, :latest, :sha-<short>
+#   pull request                 → built only, nothing pushed
 
 on:
   push:
-    branches: ["main", "dev", "release/**"]
+    branches: ["main", "stage", "dev", "release/**"]
+    tags: ["v*.*.*"]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
-  REPO: europe-west1-docker.pkg.dev/inabit-mgmt/dpm-eu
-  IMAGE_NAME: dpm-wallet-manager
+  IMAGE: ghcr.io/in-a-bit/dpm-wallet-manager
 
 jobs:
   build:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'NOBUILD') }}
-    runs-on: fast-gke
+    runs-on: ubuntu-latest
 
     steps:
-      - name: Determine branch name
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REF: ${{ github.head_ref }}
-        run: |
-          if [[ "$EVENT_NAME" == "pull_request" ]]; then
-            BRANCH="$HEAD_REF"
-          else
-            BRANCH="${GITHUB_REF#refs/heads/}"
-          fi
-          echo "BRANCH_NAME=$(echo "$BRANCH" | tr '/' '-')" >> "$GITHUB_ENV"
-
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.CI_SA_KEY }}
-
-      - name: Configure Artifact Registry auth
-        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
         with:
-          driver: remote
-          endpoint: tcp://buildkit-cache.github-actions.svc.cluster.local:1234
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          push: true
-          tags: |
-            ${{ env.REPO }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}
-            ${{ env.REPO }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          provenance: false
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

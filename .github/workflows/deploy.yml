@@ -31,9 +31,12 @@ on:
           - start
           - update-secret
 
+permissions:
+  contents: read
+  packages: write
+
 env:
-  ARTIFACTS_REPO: europe-west1-docker.pkg.dev/inabit-mgmt/dpm-eu
-  IMAGE_NAME: dpm-wallet-manager
+  IMAGE: ghcr.io/in-a-bit/dpm-wallet-manager
 
 jobs:
   manage:
@@ -125,22 +128,32 @@ jobs:
         run: |
           gcloud container clusters get-credentials "${{ inputs.environment }}-cluster" --region europe-west1 --project "${{ inputs.environment }}-dpm" && kubectl config set-context --current --namespace apps
 
-      - name: Set up Docker for Artifacts Registry
+      # The image is built and published by build_and_push.yml. Deploying points the
+      # environment's <env>-latest tag at the branch's image, which the manifests pull.
+      - name: Set up Docker Buildx
         if: inputs.action == 'deploy'
-        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+        uses: docker/setup-buildx-action@v3
 
-      - name: Check the tag availability in artifacts repo
+      - name: Log in to GitHub Container Registry
+        if: inputs.action == 'deploy'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the tag availability in GHCR
         if: inputs.action == 'deploy'
         run: |
-          gcloud artifacts docker images describe "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}" \
-            || { echo "Image not found for ${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}"; exit 1; }
+          docker buildx imagetools inspect "${{ env.IMAGE }}:${{ env.BRANCH_NAME }}" > /dev/null \
+            || { echo "Image not found: ${{ env.IMAGE }}:${{ env.BRANCH_NAME }}"; exit 1; }
 
-      - name: Set up image tag in Artifacts Registry
+      - name: Point the environment tag at the image
         if: inputs.action == 'deploy'
         run: |
-          gcloud beta artifacts docker tags add \
-            "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}" \
-            "${{ env.ARTIFACTS_REPO }}/${{ env.IMAGE_NAME }}:${{ inputs.environment }}-latest"
+          docker buildx imagetools create \
+            --tag "${{ env.IMAGE }}:${{ inputs.environment }}-latest" \
+            "${{ env.IMAGE }}:${{ env.BRANCH_NAME }}"
 
       - name: Create or update secrets
         if: inputs.action == 'deploy' || inputs.action == 'update-secret'
