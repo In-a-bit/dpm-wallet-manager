@@ -152,83 +152,173 @@ curl -s -w '\nHTTP %{http_code}\n' <dpm-api URL>/wallet-install/config \
 
 ## Local (a platform on your own computer)
 
-Uses your local prediction-go and images built from your checkouts, so nothing needs
-publishing.
+This uses your local prediction-go platform and images built from your own checkouts, so
+nothing needs to be published first.
 
-**1. Platform.** Put these in `prediction-go/.env`:
+### Before you start
 
-```sh
-PUBLIC_DPM_API_URL=http://localhost:8086
-PUBLIC_GAMMA_API_URL=http://localhost:8084
-PUBLIC_RELAYER_API_URL=http://localhost:8085
-```
+1. **The three repos sit side by side** in one folder: `prediction-go`, `dpm-wallet` and
+   `dpm-wallet-manager`. Each must be on its branch:
 
-Then start it, with the branches that carry the changes checked out:
+   | Repo               | Branch                        |
+   | ------------------ | ----------------------------- |
+   | prediction-go      | `feat/wallet-install-config`  |
+   | dpm-wallet         | `feat/gamma-builder-key-only` |
+   | dpm-wallet-manager | `feat/one-step-install`       |
 
-```sh
-cd prediction-go
-docker compose -f docker-compose.dev.yml up -d postgres nats redis temporal temporal-ui
-make devtool                      # in its own terminal
-.bin/devtool start-all            # from another terminal
-.bin/devtool rebuild dpm-api
-.bin/devtool rebuild gamma-api
-```
+2. **`prediction-go/.env` contains these three lines:**
 
-**2. A test builder and its key**, created through dpm-api's admin API:
+   ```sh
+   PUBLIC_DPM_API_URL=http://localhost:8086
+   PUBLIC_GAMMA_API_URL=http://localhost:8084
+   PUBLIC_RELAYER_API_URL=http://localhost:8085
+   ```
 
-```sh
-ADMIN=$(grep '^DPM_API_KEY=' .env | cut -d= -f2)
-curl -s -XPOST localhost:8086/builders -H "X-API-Key: $ADMIN" \
-  -H 'Content-Type: application/json' -d '{"name":"Install Test 1","builder_type":"custody"}'
-# → {"id": <ID>, ...}
-curl -s -XPOST localhost:8086/builders/<ID>/api-private-key -H "X-API-Key: $ADMIN"
-# → {"api_private_key": "bld_sk_..."}
-```
+3. **The platform is running and rebuilt from that branch.** Run `make devtool` in its own
+   terminal, then in another:
 
-Run the pre-flight check against `http://localhost:8086`.
+   ```sh
+   cd ~/Documents/prediction-claude/prediction-go
+   docker compose -f docker-compose.dev.yml up -d postgres nats redis temporal temporal-ui
+   .bin/devtool start-all
+   .bin/devtool rebuild dpm-api
+   .bin/devtool rebuild gamma-api
+   ```
 
-**3. Images**, built from your checkouts and tagged `local`:
+### The quick way: one script
 
 ```sh
-cd ..   # the folder holding the repos
-docker build -t ghcr.io/in-a-bit/dpm-wallet:local dpm-wallet
-docker build -t ghcr.io/in-a-bit/dpm-wallet-manager:local dpm-wallet-manager
+~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh
 ```
 
-**4. Install** from your checkout rather than a GitHub release. Pick free ports: the demo stack
-already uses 3000.
+The script runs from any folder. It checks everything above and stops with the exact fix if
+something is wrong. Then it:
+
+1. Creates a new test custody builder and issues its private key.
+2. Checks the key against dpm-api and gamma-api.
+3. Builds both images.
+4. Installs into `~/dpm-custody-local`.
+
+It ends by printing the page address, the PIN and the key to paste. Follow those five lines,
+then:
 
 ```sh
-mkdir -p /tmp/dpm-src
-cp dpm-wallet-manager/deploy/compose.yml dpm-wallet-manager/deploy/dpm-custody /tmp/dpm-src/
-printf 'DPM_WALLET_TAG=local\nDPM_WALLET_MANAGER_TAG=local\n' > /tmp/dpm-src/versions.env
-
-DPM_CUSTODY_DIR=~/dpm-custody-local DPM_CUSTODY_SOURCE=/tmp/dpm-src \
-DPM_CUSTODY_MANAGER_PORT=3300 sh dpm-wallet-manager/deploy/install.sh
+~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh verify   # status + smoke test
+~/Documents/prediction-claude/dpm-wallet-manager/deploy/try-local.sh clean    # start over
 ```
 
-**5. Setup page** (`http://localhost:8480`, PIN from the installer):
+Each new run needs a new builder, and the script creates one every time.
 
-1. Click **Show more options**, choose **Custom**, and enter `http://localhost:8086`. Setup
-   reaches your computer's ports through the Docker host by itself.
-2. Paste the key, click **Check key**, choose a mode, then click **Start setup**.
+### The same, by hand
 
-**6. Verify:**
+Copy each block as-is. Values are captured into variables, so there is nothing to fill in.
+Run every block in the **same terminal**, because later blocks use earlier variables.
+
+**1. Point at the workspace and read the admin key.**
+
+```sh
+W=~/Documents/prediction-claude
+ADMIN=$(sed -n 's/^DPM_API_KEY=//p' "$W/prediction-go/.env")
+echo "admin key is ${#ADMIN} characters"
+```
+
+You should see a number above 0. If you see `0`, `DPM_API_KEY` is missing from
+`prediction-go/.env`.
+
+**2. Check that dpm-api has the new endpoint.**
+
+```sh
+curl -s -w '  HTTP %{http_code}\n' localhost:8086/wallet-install/config
+```
+
+- **Expect:** `{"error":"unauthorized"}  HTTP 401`. That is right: no key was sent.
+- **`HTTP 404`:** dpm-api is an older build. Run `.bin/devtool rebuild dpm-api` in
+  prediction-go.
+- **`HTTP 000`:** dpm-api isn't running.
+
+**3. Create a test custody builder and keep its id.**
+
+```sh
+BUILDER_ID=$(curl -s -XPOST localhost:8086/builders -H "X-API-Key: $ADMIN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"install-test-$(date +%s)\",\"builder_type\":\"custody\"}" |
+  python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')
+echo "builder id: $BUILDER_ID"
+```
+
+You should see `builder id:` followed by a number.
+
+**4. Issue its private key and keep it.**
+
+```sh
+BUILDER_KEY=$(curl -s -XPOST "localhost:8086/builders/$BUILDER_ID/api-private-key" \
+  -H "X-API-Key: $ADMIN" | python3 -c 'import json,sys; print(json.load(sys.stdin)["api_private_key"])')
+echo "$BUILDER_KEY"
+```
+
+You should see a key starting with `bld_sk_`. You'll paste it into the setup page.
+
+**5. Pre-flight: the platform answers for that key.**
+
+```sh
+curl -s localhost:8086/wallet-install/config -H "X-Builder-Api-Private-Key: $BUILDER_KEY" | python3 -m json.tool
+curl -s -o /dev/null -w 'gamma-api gate: HTTP %{http_code}\n' "localhost:8084/events?limit=1" \
+  -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
+```
+
+- **First command:** JSON with your builder's name, `chain_id`, `contracts` and `services`.
+  If it shows `this environment is not configured for self-install`, run
+  `.bin/devtool restart dpm-api`.
+- **Second command:** `gamma-api gate: HTTP 200`. `HTTP 401` means gamma-api is an older build;
+  run `.bin/devtool rebuild gamma-api`.
+
+**6. Build both images from your checkouts.**
+
+```sh
+docker build -t ghcr.io/in-a-bit/dpm-wallet:local "$W/dpm-wallet"
+docker build -t ghcr.io/in-a-bit/dpm-wallet-manager:local "$W/dpm-wallet-manager"
+```
+
+**7. Install.** Port 3300 is used because the demo stack already has 3000.
+
+```sh
+SRC=$(mktemp -d)
+cp "$W/dpm-wallet-manager/deploy/compose.yml" "$W/dpm-wallet-manager/deploy/dpm-custody" "$SRC/"
+printf 'DPM_WALLET_TAG=local\nDPM_WALLET_MANAGER_TAG=local\n' > "$SRC/versions.env"
+DPM_CUSTODY_DIR=~/dpm-custody-local DPM_CUSTODY_SOURCE="$SRC" DPM_CUSTODY_MANAGER_PORT=3300 \
+  sh "$W/dpm-wallet-manager/deploy/install.sh"
+```
+
+It ends with `✓ Ready`, the address `http://localhost:8480` and a PIN.
+
+**8. Finish in the browser** at <http://localhost:8480>:
+
+1. Enter the PIN.
+2. Click **Show more options**, choose **Custom**, and type `http://localhost:8086`.
+3. Paste the key from step 4 and click **Check key**. It should say
+   "Connecting as install-test-…".
+4. Pick a mode, tick the box, and click **Start setup**. Wait until every step has a ✓.
+5. Download the backup kit, tick "I saved it", and click **Continue**. The status page shows
+   everything green.
+
+**9. Verify.**
 
 ```sh
 ~/dpm-custody-local/dpm-custody status
-curl -s localhost:3300/v1/platform -H 'X-API-Key: <admin key from the backup kit>'
-cd dpm-wallet-manager && BASE_URL=http://localhost:3300 ADMIN_KEY=<admin key> ./scripts/smoke.sh
+ADMIN_KEY=$(~/dpm-custody-local/dpm-custody backup-kit | sed -n 's/^Admin API key: *//p')
+curl -s localhost:3300/v1/platform -H "X-API-Key: $ADMIN_KEY" | python3 -m json.tool
+BASE_URL=http://localhost:3300 ADMIN_KEY=$ADMIN_KEY "$W/dpm-wallet-manager/scripts/smoke.sh"
 ```
 
-`smoke.sh` creates a wallet, signs an order and checks the routing and money rules, all against
-the real platform.
+- **`status`:** all four services running.
+- **`/v1/platform`:** your mode, a master wallet, and `upstream.vault.initialized: true`.
+- **`smoke.sh`:** ends with every line ✓.
 
-**7. Clean up** before the next run, then use a new builder. Only one install can run at a time:
-they share the Docker project name `dpm-custody`.
+**10. Start over.** Only one install can run at a time, because they share the Docker project
+name `dpm-custody`. The next run needs a new builder (steps 3–5).
 
 ```sh
-cd ~/dpm-custody-local && docker compose --env-file .env -f compose.yml down -v
+(cd ~/dpm-custody-local && docker compose --env-file .env -f compose.yml down -v)
 rm -rf ~/dpm-custody-local
 ```
 
