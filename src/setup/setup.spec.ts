@@ -13,7 +13,12 @@ import {
   writeInstallConfig,
   type InstallInputs,
 } from "./config-writer";
-import { findEnvironment, resolveDpmApiUrl, toContainerUrl } from "./environments";
+import {
+  DEFAULT_ENVIRONMENT,
+  findEnvironment,
+  resolveDpmApiUrl,
+  toContainerUrl,
+} from "./environments";
 import {
   fetchInstallConfig,
   SetupError,
@@ -58,6 +63,15 @@ describe("environments", () => {
     expect(toContainerUrl("http://localhost:8084/")).toBe("http://host.docker.internal:8084");
     expect(toContainerUrl("http://127.0.0.1:8085")).toBe("http://host.docker.internal:8085");
     expect(toContainerUrl("https://gamma-api.dpm.network")).toBe("https://gamma-api.dpm.network");
+  });
+
+  it("starts on production, shown without the advanced toggle", () => {
+    expect(findEnvironment(DEFAULT_ENVIRONMENT)).toMatchObject({ id: "prod", advanced: false });
+  });
+
+  it("reaches a platform on this computer through Custom", () => {
+    const url = resolveDpmApiUrl(findEnvironment("custom")!, "http://localhost:8086");
+    expect(toContainerUrl(url as string)).toBe("http://host.docker.internal:8086");
   });
 
   it("requires an http(s) address for a custom platform", () => {

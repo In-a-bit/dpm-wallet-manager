@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import http from "node:http";
 
-import { ENVIRONMENTS } from "./environments";
+import { DEFAULT_ENVIRONMENT, ENVIRONMENTS } from "./environments";
 import { SetupError } from "./platform-config";
 import type { SetupService } from "./setup-service";
 import { APP_CSS, APP_JS, INDEX_HTML } from "./ui";
@@ -66,6 +66,7 @@ function apiRoutes(options: ServerOptions, pinGuard: PinGuard): Record<string, R
       sendJson(res, 200, {
         ...service.view(),
         environments: ENVIRONMENTS,
+        defaultEnvironment: DEFAULT_ENVIRONMENT,
         connection: connection(options),
       });
     },

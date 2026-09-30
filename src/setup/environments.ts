@@ -3,13 +3,16 @@
  * the rest of its configuration (see platform-config.ts); everything else — the other services'
  * URLs, the chain, the contracts — comes back from there, so this is the only list to maintain.
  */
-export type EnvironmentId = "prod" | "sandbox" | "dev" | "local" | "custom";
+export type EnvironmentId = "prod" | "sandbox" | "dev" | "custom";
+
+/** The environment the page starts with selected. */
+export const DEFAULT_ENVIRONMENT: EnvironmentId = "prod";
 
 export type Environment = {
   id: EnvironmentId;
   label: string;
   description: string;
-  /** Undefined only for "custom", whose URL the user types. */
+  /** Undefined only for "custom", whose URL the user types (a local platform is one of these). */
   dpmApiUrl?: string;
   /** The `<env>` label inside the install's API keys (`dpmm_<env>_…`). */
   keyEnv: string;
@@ -43,17 +46,10 @@ export const ENVIRONMENTS: readonly Environment[] = [
     advanced: true,
   },
   {
-    id: "local",
-    label: "Local",
-    description: "A platform running on this same computer.",
-    dpmApiUrl: "http://host.docker.internal:8086",
-    keyEnv: "local",
-    advanced: true,
-  },
-  {
     id: "custom",
     label: "Custom",
-    description: "Another platform, by its dpm-api address.",
+    description:
+      "Another platform, by its address. For one running on this computer, use http://localhost:8086.",
     keyEnv: "custom",
     advanced: true,
   },

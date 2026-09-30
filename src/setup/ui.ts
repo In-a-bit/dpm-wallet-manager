@@ -35,7 +35,7 @@ export const INDEX_HTML = `<!doctype html>
         <div id="env-list" class="cards"></div>
         <button type="button" class="link" id="toggle-advanced">Show more options</button>
         <label id="custom-url-row" hidden>Platform address
-          <input id="custom-url" placeholder="https://api.example.com">
+          <input id="custom-url" placeholder="https://api.example.com or http://localhost:8086">
         </label>
       </li>
       <li>
@@ -193,7 +193,7 @@ export const APP_JS = `(() => {
   function alertText(input, text) { input.setCustomValidity(text); input.reportValidity(); input.addEventListener("input", () => input.setCustomValidity(""), { once: true }); }
 
   // ── Wizard ──
-  function renderEnvironments(envs) {
+  function renderEnvironments(envs, defaultEnvironment) {
     const list = $("env-list");
     if (list.childElementCount) return;
     for (const env of envs) {
@@ -204,7 +204,7 @@ export const APP_JS = `(() => {
       label.querySelector("input").value = env.id;
       label.querySelector("strong").textContent = env.label;
       label.querySelector("span").textContent = env.description;
-      if (env.id === "sandbox") label.querySelector("input").checked = true;
+      if (env.id === defaultEnvironment) label.querySelector("input").checked = true;
       list.appendChild(label);
     }
     list.addEventListener("change", () => { $("custom-url-row").hidden = selectedEnv() !== "custom"; resetKeyCheck(); });
@@ -312,7 +312,7 @@ export const APP_JS = `(() => {
     let state;
     try { state = await api("GET", "/api/state"); } catch { return; }
     $("subtitle").textContent = state.builderName ? "Install for " + state.builderName : "Set up your wallet service in a few minutes.";
-    if (state.phase === "new") { renderEnvironments(state.environments); return show("wizard"); }
+    if (state.phase === "new") { renderEnvironments(state.environments, state.defaultEnvironment); return show("wizard"); }
     if (state.phase === "running" || state.phase === "failed") {
       show("progress");
       renderSteps($("steps"), state.steps);

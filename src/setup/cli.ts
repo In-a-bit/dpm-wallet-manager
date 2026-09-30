@@ -40,7 +40,11 @@ async function askAndStart(io: readline.Interface, service: SetupService): Promi
     ENVIRONMENTS.map((e) => [e.id, `${e.label} - ${e.description}`]),
   );
   const customUrl =
-    environment === "custom" ? await io.question("Platform address (https://…): ") : undefined;
+    environment === "custom"
+      ? await io.question(
+          "Platform address (https://…, or http://localhost:8086 for one on this computer): ",
+        )
+      : undefined;
   const builderKey = await askForKey(io, service, environment, customUrl);
   const mode = await choose(io, "How should your users' funds be held?", [
     ["segregated", "Each user holds their own funds (choose this if you are not sure)"],
