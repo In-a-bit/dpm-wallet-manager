@@ -1,6 +1,6 @@
 {
   "name": "dpm-wallet-manager",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Policy and directory layer in front of dpm-wallet for DPM prediction markets",
   "author": "",
   "private": true,

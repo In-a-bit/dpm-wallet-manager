@@ -84,6 +84,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # versions.env names the dpm-wallet release this one was tested with. If that image
+      # was never published, every install of this release would fail while pulling it,
+      # so refuse to publish the release instead.
+      - name: Check the pinned dpm-wallet image exists
+        run: |
+          WALLET_TAG="$(sed -n 's/^DPM_WALLET_TAG=//p' deploy/versions.env)"
+          docker manifest inspect "ghcr.io/in-a-bit/dpm-wallet:${WALLET_TAG}" > /dev/null || {
+            echo "::error::ghcr.io/in-a-bit/dpm-wallet:${WALLET_TAG} is not published. Release dpm-wallet first, or fix DPM_WALLET_TAG in deploy/versions.env."
+            exit 1
+          }
+
       - name: Pin the manager image to this release
         env:
           VERSION: ${{ github.ref_name }}
