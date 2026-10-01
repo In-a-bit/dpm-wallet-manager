@@ -2,8 +2,11 @@ import { Column, Entity, Index, PrimaryColumn } from "typeorm";
 
 import { isoTimestamp } from "../iso-timestamp";
 
-/** `admin` is a superset of `operator`: it may do anything an operator key can, and more. */
-export const API_KEY_ROLES = ["admin", "operator"] as const;
+/**
+ * Each role reaches everything the next one does, and more: `admin` ⊃ `operator` ⊃ `readonly`.
+ * `readonly` reads (wallets, platform status, the audit and operations logs) and nothing else.
+ */
+export const API_KEY_ROLES = ["admin", "operator", "readonly"] as const;
 export type ApiKeyRole = (typeof API_KEY_ROLES)[number];
 
 export const API_KEY_STATUSES = ["active", "revoked"] as const;
@@ -59,9 +62,13 @@ export class ApiKeyEntity {
   @Column("uuid", { name: "rotated_from_id", nullable: true })
   rotatedFromId!: string | null;
 
-  /** NULL only for the bootstrap key, which by definition no key created. */
+  /** NULL for the bootstrap key, which by definition no key created, and for a UI user's key. */
   @Column("uuid", { name: "created_by_key_id", nullable: true })
   createdByKeyId!: string | null;
+
+  /** The admin UI user who created the key, when one did. */
+  @Column("uuid", { name: "created_by_user_id", nullable: true })
+  createdByUserId!: string | null;
 
   @Column("timestamptz", { name: "created_at", transformer: isoTimestamp })
   createdAt!: string;

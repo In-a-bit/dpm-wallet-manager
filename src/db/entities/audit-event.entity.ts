@@ -21,6 +21,15 @@ export class AuditEventEntity {
   @Column("text", { name: "actor_role", nullable: true })
   actorRole!: string | null;
 
+  /** The admin UI user behind the request, when it came from a signed-in browser. */
+  @Index("audit_events_actor_user_id")
+  @Column("uuid", { name: "actor_user_id", nullable: true })
+  actorUserId!: string | null;
+
+  /** Copied at the time, so the trail still reads right after an account is renamed or removed. */
+  @Column("text", { name: "actor_username", nullable: true })
+  actorUsername!: string | null;
+
   @Index("audit_events_wallet_id")
   @Column("uuid", { name: "wallet_id", nullable: true })
   walletId!: string | null;

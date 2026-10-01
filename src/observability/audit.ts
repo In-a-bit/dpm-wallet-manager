@@ -32,6 +32,8 @@ export class AuditLog {
       await this.events.insert({
         actorKeyId: record.actor?.keyId ?? null,
         actorRole: record.actor?.role ?? null,
+        actorUserId: record.actor?.userId ?? null,
+        actorUsername: record.actor?.username ?? null,
         walletId: record.walletId ?? null,
         action: record.action,
         outcome: record.outcome,
@@ -50,6 +52,7 @@ export class AuditLog {
       action: record.action,
       outcome: record.outcome,
       actorKeyId: record.actor?.keyId,
+      actorUserId: record.actor?.userId,
       walletId: record.walletId,
       ...detail,
     });

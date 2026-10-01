@@ -28,9 +28,16 @@ export type RequestOptions = {
   apiKey?: string | null;
   idempotencyKey?: string;
   query?: Record<string, string | number>;
+  /** An admin UI session cookie (`dpmm_session=…`). With one, no API key is sent unless named. */
+  cookie?: string;
+  headers?: Record<string, string>;
 };
 
-export type HttpResult<T = any> = { status: number; body: T };
+export type HttpResult<T = any> = {
+  status: number;
+  body: T;
+  headers: Record<string, string | string[] | undefined>;
+};
 
 export type Harness = {
   app: INestApplication;
@@ -47,6 +54,7 @@ export type Harness = {
   /** Minted during boot; the default credential every request below carries. */
   adminKey: string;
   operatorKey: string;
+  readonlyKey: string;
   get: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   post: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   patch: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
@@ -128,6 +136,7 @@ export async function startHarness(
     const keyService = app.get(ApiKeyService);
     let adminKey = "";
     let operatorKey = "";
+    let readonlyKey = "";
     if (!options.withoutKeys) {
       const bootstrapped = await keyService.bootstrap("harness-admin");
       // A second container over the same database finds the keys already there and mints nothing,
@@ -135,6 +144,8 @@ export async function startHarness(
       // restarting the service does through the reveal endpoint.
       const systemActor: Actor = {
         keyId: bootstrapped.key.id,
+        userId: null,
+        username: null,
         role: "admin",
         prefix: bootstrapped.key.prefix,
         name: "harness",
@@ -151,6 +162,13 @@ export async function startHarness(
       operatorKey = existingOperator
         ? (await keyService.reveal(existingOperator.id, systemActor)).key
         : (await keyService.create({ role: "operator", name: "harness-operator" }, undefined)).key;
+
+      const existingReadonly = (await keyService.list()).find(
+        (key) => key.role === "readonly" && key.status === "active",
+      );
+      readonlyKey = existingReadonly
+        ? (await keyService.reveal(existingReadonly.id, systemActor)).key
+        : (await keyService.create({ role: "readonly", name: "harness-readonly" }, undefined)).key;
     }
 
     let stopped = false;
@@ -169,16 +187,21 @@ export async function startHarness(
     ): Promise<HttpResult<T>> => {
       const call = request(app.getHttpServer())[method](path);
       if (requestOptions.query) void call.query(requestOptions.query);
-      const apiKey = requestOptions.apiKey === undefined ? adminKey : requestOptions.apiKey;
+      const defaultKey = requestOptions.cookie ? null : adminKey;
+      const apiKey = requestOptions.apiKey === undefined ? defaultKey : requestOptions.apiKey;
       void call.set("Content-Type", "application/json");
       if (apiKey !== null && apiKey !== "") void call.set(API_KEY_HEADER, apiKey);
+      if (requestOptions.cookie) void call.set("Cookie", requestOptions.cookie);
+      for (const [name, value] of Object.entries(requestOptions.headers ?? {})) {
+        void call.set(name, value);
+      }
       if (requestOptions.idempotencyKey) {
         void call.set("Idempotency-Key", requestOptions.idempotencyKey);
       }
       const response = await (requestOptions.body === undefined
         ? call.send()
         : call.send(requestOptions.body as object));
-      return { status: response.status, body: response.body as T };
+      return { status: response.status, body: response.body as T, headers: response.headers };
     };
 
     return {
@@ -193,6 +216,7 @@ export async function startHarness(
       audit: app.get(AuditLog),
       adminKey,
       operatorKey,
+      readonlyKey,
       get: (path, requestOptions) => send("get", path, requestOptions),
       post: (path, requestOptions) => send("post", path, requestOptions),
       patch: (path, requestOptions) => send("patch", path, requestOptions),

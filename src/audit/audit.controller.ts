@@ -43,6 +43,7 @@ export class AuditController {
         outcome: query.outcome,
         walletId: query.walletId,
         actorKeyId: query.actorKeyId,
+        actorUserId: query.actorUserId,
         from: query.from,
         to: query.to,
       },

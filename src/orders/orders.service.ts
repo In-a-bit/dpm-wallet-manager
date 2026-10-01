@@ -197,6 +197,7 @@ export class OrdersService {
       resultSummary: entry.resultSummary,
       status: "signed",
       apiKeyId: entry.actor.keyId,
+      uiUserId: entry.actor.userId,
       createdAt: new Date().toISOString(),
     });
     return id;

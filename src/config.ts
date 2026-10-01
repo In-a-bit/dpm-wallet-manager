@@ -48,6 +48,11 @@ export type Config = {
   walletRefPrefix: string;
   /** Exact origins the backoffice UI may call from. Empty disables CORS entirely. */
   corsOrigins: string[];
+  /**
+   * Marks the admin UI's session cookie `Secure`. Off by default because an install is reached at
+   * `http://localhost`, where a Secure cookie would never be sent back; turn it on behind HTTPS.
+   */
+  uiCookieSecure: boolean;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -72,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     walletRefPrefix: optional(env.WALLET_REF_PREFIX) ?? "mgr:",
     corsOrigins: parseList(env.CORS_ORIGINS),
+    uiCookieSecure: optional(env.UI_COOKIE_SECURE) === "true",
   };
 }
 

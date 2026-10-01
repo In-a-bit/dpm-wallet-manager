@@ -39,6 +39,12 @@ export class AuditQueryDto extends PaginationDto {
   @IsUuid()
   actorKeyId?: string;
 
+  /** The admin UI user who made the request. */
+  @ApiPropertyOptional({ format: "uuid" })
+  @IsOptional()
+  @IsUuid()
+  actorUserId?: string;
+
   /** Inclusive lower bound on `createdAt`. */
   @ApiPropertyOptional({ format: "date-time", example: "2026-08-01T00:00:00Z" })
   @IsOptional()

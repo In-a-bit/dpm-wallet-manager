@@ -24,6 +24,10 @@ export const ERROR_STATUS = {
   API_KEY_NOT_FOUND: 404,
   API_KEY_REVOKED: 409,
   LAST_ADMIN_KEY: 409,
+  UI_USER_NOT_FOUND: 404,
+  USERNAME_TAKEN: 409,
+  LAST_OWNER: 409,
+  CSRF_HEADER_REQUIRED: 403,
   RATE_LIMITED: 429,
   IDEMPOTENCY_CONFLICT: 409,
   UPSTREAM_UNAVAILABLE: 502,
@@ -41,8 +45,10 @@ export type ErrorCode = keyof typeof ERROR_STATUS;
  * explaining it is a compile error.
  */
 export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
-  UNAUTHORIZED: "The X-API-Key header is missing, malformed, revoked or expired.",
-  FORBIDDEN: "The key authenticated but its role does not reach this endpoint.",
+  UNAUTHORIZED:
+    "No valid credential: the X-API-Key header is missing, malformed, revoked or expired, and " +
+    "there is no signed-in admin UI session.",
+  FORBIDDEN: "The caller authenticated but its role does not reach this endpoint.",
   VALIDATION_FAILED:
     "The body, query or path failed validation. `details.issues` lists each offending path.",
   WALLET_NOT_FOUND: "No wallet with that id or external id.",
@@ -71,6 +77,14 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
   LAST_ADMIN_KEY:
     "That is the last usable admin key; revoking it would lock this install out of its own " +
     "administration. Create another first.",
+  UI_USER_NOT_FOUND: "No admin UI user with that id.",
+  USERNAME_TAKEN: "Another admin UI user already has that username, case-insensitively.",
+  LAST_OWNER:
+    "That is the last active owner; disabling or demoting it would leave nobody able to manage " +
+    "this install from the admin UI. Make another user an owner first.",
+  CSRF_HEADER_REQUIRED:
+    "A request authenticated by the admin UI session cookie must carry " +
+    "`X-Requested-With: dpmm-admin` to change anything.",
   RATE_LIMITED: "Too many requests for this resource in the current window.",
   IDEMPOTENCY_CONFLICT: "This Idempotency-Key was already used with a different request body.",
   UPSTREAM_UNAVAILABLE:

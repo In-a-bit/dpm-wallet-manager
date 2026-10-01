@@ -7,6 +7,8 @@ import { AuditRepository } from "./db/repositories/audit.repo";
 import { IdempotencyRepository } from "./db/repositories/idempotency.repo";
 import { OperationRepository } from "./db/repositories/operation.repo";
 import { PlatformSettingsRepository } from "./db/repositories/platform-settings.repo";
+import { UiSessionRepository } from "./db/repositories/ui-session.repo";
+import { UiUserRepository } from "./db/repositories/ui-user.repo";
 import { WalletRepository } from "./db/repositories/wallet.repo";
 import { CONFIG, DB, TRANSACTION, type Transaction } from "./tokens";
 
@@ -16,6 +18,8 @@ const REPOSITORIES = [
   IdempotencyRepository,
   OperationRepository,
   PlatformSettingsRepository,
+  UiSessionRepository,
+  UiUserRepository,
   WalletRepository,
 ];
 

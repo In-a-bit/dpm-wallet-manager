@@ -78,6 +78,7 @@ export class MetaTxService {
       resultSummary: `${signed.from}:${signed.nonce}`,
       status: "signed",
       apiKeyId: actor.keyId,
+      uiUserId: actor.userId,
       createdAt: new Date().toISOString(),
     });
 

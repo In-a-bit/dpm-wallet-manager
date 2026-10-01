@@ -6,6 +6,7 @@ import type { Db } from "../db/client";
 import { IdempotencyRepository } from "../db/repositories/idempotency.repo";
 import { logInfo, logWarn } from "../observability/log";
 import { PlatformService } from "../platform/platform.service";
+import { SessionService } from "../session/session.service";
 import { WalletsService } from "../wallets/wallets.service";
 import { CONFIG, DB } from "../tokens";
 import { assertSchemaPresent } from "./schema-check";
@@ -26,6 +27,7 @@ export class StartupService implements OnApplicationBootstrap {
     private readonly wallets: WalletsService,
     private readonly platform: PlatformService,
     private readonly apiKeys: ApiKeyService,
+    private readonly uiSessions: SessionService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -39,6 +41,7 @@ export class StartupService implements OnApplicationBootstrap {
     await this.ensureBootstrapAdminKey();
 
     const purged = await this.idempotency.purgeExpired();
+    const purgedSessions = await this.uiSessions.purgeExpired();
     // A container that died between writing a wallet row and hearing back from dpm-wallet leaves
     // the row `provisioning`. Finishing those here means the wallet is usable by the time traffic
     // arrives, rather than on whenever someone happens to call reconcile.
@@ -46,6 +49,7 @@ export class StartupService implements OnApplicationBootstrap {
     logInfo("startup.ready", {
       mode,
       purgedIdempotencyKeys: purged,
+      purgedUiSessions: purgedSessions,
       reconciledWallets: reconciled,
     });
   }

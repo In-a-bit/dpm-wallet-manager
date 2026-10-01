@@ -64,10 +64,23 @@ describe("openapi", () => {
     "POST /v1/wallets/{id}/withdraw",
     "GET /v1/audit",
     "GET /v1/operations",
+    "POST /v1/session/login",
+    "POST /v1/session/logout",
+    "GET /v1/session/me",
+    "POST /v1/session/password",
+    "GET /v1/ui-users",
+    "POST /v1/ui-users",
+    "PATCH /v1/ui-users/{id}",
   ];
 
-  /** The only route without authentication; a probe should not need a credential. */
-  const PUBLIC_ROUTES = ["GET /v1/health"];
+  /**
+   * The routes without authentication: a probe should not need a credential, and neither can
+   * signing in, nor signing out of a session that may already have ended.
+   */
+  const PUBLIC_ROUTES = ["GET /v1/health", "POST /v1/session/login", "POST /v1/session/logout"];
+
+  /** Public, but answers 401 when the credentials it is given — a username and password — are wrong. */
+  const PUBLIC_ROUTES_CHECKING_CREDENTIALS = ["POST /v1/session/login"];
 
   it("documents every route the app serves, and no others", () => {
     expect(
@@ -170,11 +183,11 @@ describe("openapi", () => {
       }
     });
 
-    it("documents 401 on every authenticated operation, and not on the public one", () => {
+    it("documents 401 on every authenticated operation, and not on the public ones", () => {
       for (const [route, op] of operations()) {
-        expect(`${route}: ${"401" in op.responses}`).toBe(
-          `${route}: ${!PUBLIC_ROUTES.includes(route)}`,
-        );
+        const expected =
+          !PUBLIC_ROUTES.includes(route) || PUBLIC_ROUTES_CHECKING_CREDENTIALS.includes(route);
+        expect(`${route}: ${"401" in op.responses}`).toBe(`${route}: ${expected}`);
       }
     });
 
@@ -183,9 +196,11 @@ describe("openapi", () => {
       // route that gains a restriction cannot forget to say so.
       const restricted = operations().filter(
         ([route]) =>
-          /^(POST|PATCH|DELETE)/.test(route) ||
-          route === "GET /v1/api-keys" ||
-          route.startsWith("GET /v1/api-keys/{"),
+          !PUBLIC_ROUTES.includes(route) &&
+          (/^(POST|PATCH|DELETE)/.test(route) ||
+            route === "GET /v1/api-keys" ||
+            route.startsWith("GET /v1/api-keys/{") ||
+            route === "GET /v1/ui-users"),
       );
       for (const [route, op] of restricted) {
         expect(`${route}: ${"403" in op.responses}`).toBe(`${route}: true`);
@@ -287,7 +302,7 @@ describe("openapi", () => {
       expect(code.enum).toContain("EXTERNAL_TRANSFER_FORBIDDEN");
       expect(code.enum).toContain("OPERATIONS_WALLET_REQUIRED");
       expect(schemaFor("CreateApiKeyDto").properties?.role).toMatchObject({
-        enum: ["admin", "operator"],
+        enum: ["admin", "operator", "readonly"],
       });
       expect(schemaFor("PlatformStatusDto").properties?.mode).toMatchObject({
         enum: ["segregated", "shared"],

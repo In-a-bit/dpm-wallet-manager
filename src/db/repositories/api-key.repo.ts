@@ -18,6 +18,7 @@ export type ApiKey = {
   revokedAt: string | null;
   rotatedFromId: string | null;
   createdByKeyId: string | null;
+  createdByUserId: string | null;
   createdAt: string;
 };
 
@@ -31,6 +32,7 @@ export type NewApiKey = {
   expiresAt: string | null;
   rotatedFromId: string | null;
   createdByKeyId: string | null;
+  createdByUserId: string | null;
   createdAt: string;
 };
 
@@ -133,6 +135,7 @@ function toApiKey(row: ApiKeyEntity): ApiKey {
     revokedAt: row.revokedAt,
     rotatedFromId: row.rotatedFromId,
     createdByKeyId: row.createdByKeyId,
+    createdByUserId: row.createdByUserId,
     createdAt: row.createdAt,
   };
 }

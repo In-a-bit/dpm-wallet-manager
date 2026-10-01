@@ -27,8 +27,8 @@ const PREFIX_SECRET_CHARS = 8;
 /** Crockford-ish base32 without the vowels that form words, or the 0/O and 1/l lookalikes. */
 const ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789";
 
-const ROLE_CODES: Record<ApiKeyRole, string> = { admin: "ad", operator: "op" };
-const ROLE_BY_CODE: Record<string, ApiKeyRole> = { ad: "admin", op: "operator" };
+const ROLE_CODES: Record<ApiKeyRole, string> = { admin: "ad", operator: "op", readonly: "ro" };
+const ROLE_BY_CODE: Record<string, ApiKeyRole> = { ad: "admin", op: "operator", ro: "readonly" };
 
 export type ParsedApiKey = {
   /** The full presented key, as given. */

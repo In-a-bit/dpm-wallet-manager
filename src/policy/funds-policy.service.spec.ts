@@ -17,6 +17,8 @@ const wallet = (kind: Wallet["kind"]): Wallet =>
 
 const actor = (role: Actor["role"]): Actor => ({
   keyId: `${role}-key`,
+  userId: null,
+  username: null,
   role,
   prefix: `dpmm_test_${role.slice(0, 2)}`,
   name: role,

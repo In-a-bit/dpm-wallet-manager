@@ -13,6 +13,12 @@ export const AuditAction = {
   KeyBootstrap: "key.bootstrap",
   AuthFailed: "auth.failed",
 
+  SessionLogin: "session.login",
+  SessionLogout: "session.logout",
+  SessionPassword: "session.password",
+  UserCreate: "user.create",
+  UserUpdate: "user.update",
+
   PlatformModeBurned: "platform.mode_burned",
   PlatformMasterWalletCreate: "platform.master_wallet_create",
   PlatformOperationsWalletCreate: "platform.operations_wallet_create",

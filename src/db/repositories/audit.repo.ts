@@ -9,6 +9,8 @@ export type AuditEvent = {
   id: number;
   actorKeyId: string | null;
   actorRole: string | null;
+  actorUserId: string | null;
+  actorUsername: string | null;
   walletId: string | null;
   action: string;
   outcome: string;
@@ -25,6 +27,7 @@ export type AuditFilter = {
   outcome?: string;
   walletId?: string;
   actorKeyId?: string;
+  actorUserId?: string;
   from?: string;
   to?: string;
 };
@@ -56,6 +59,9 @@ export class AuditRepository {
     if (filter.actorKeyId) {
       query.andWhere("e.actor_key_id = :actorKeyId", { actorKeyId: filter.actorKeyId });
     }
+    if (filter.actorUserId) {
+      query.andWhere("e.actor_user_id = :actorUserId", { actorUserId: filter.actorUserId });
+    }
     if (filter.from) query.andWhere("e.created_at >= :from", { from: filter.from });
     if (filter.to) query.andWhere("e.created_at <= :to", { to: filter.to });
 
@@ -74,6 +80,8 @@ function toEvent(row: AuditEventEntity): AuditEvent {
     id: row.id,
     actorKeyId: row.actorKeyId,
     actorRole: row.actorRole,
+    actorUserId: row.actorUserId,
+    actorUsername: row.actorUsername,
     walletId: row.walletId,
     action: row.action,
     outcome: row.outcome,

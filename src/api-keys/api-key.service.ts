@@ -48,6 +48,7 @@ export class ApiKeyService {
       expiresAt: input.expiresAt ?? null,
       rotatedFromId: null,
       createdByKeyId: actor?.keyId ?? null,
+      createdByUserId: actor?.userId ?? null,
     });
     await this.audit.record({
       actor,
@@ -84,6 +85,7 @@ export class ApiKeyService {
       expiresAt: null,
       rotatedFromId: existing.id,
       createdByKeyId: actor?.keyId ?? null,
+      createdByUserId: actor?.userId ?? null,
     });
 
     const expiresAt = new Date(Date.now() + graceSeconds * 1000).toISOString();
@@ -201,6 +203,7 @@ export class ApiKeyService {
       expiresAt: null,
       rotatedFromId: null,
       createdByKeyId: null,
+      createdByUserId: null,
       presetKey: configured,
     });
     await this.audit.record({
@@ -222,6 +225,7 @@ export class ApiKeyService {
     expiresAt: string | null;
     rotatedFromId: string | null;
     createdByKeyId: string | null;
+    createdByUserId: string | null;
     presetKey?: string | undefined;
   }): Promise<MintedApiKeyDto> {
     const parsed = input.presetKey
@@ -239,6 +243,7 @@ export class ApiKeyService {
       expiresAt: input.expiresAt,
       rotatedFromId: input.rotatedFromId,
       createdByKeyId: input.createdByKeyId,
+      createdByUserId: input.createdByUserId,
       createdAt: new Date().toISOString(),
     });
     return { ...toView(stored), key: parsed.key };
@@ -280,6 +285,7 @@ function toView(key: ApiKey): ApiKeyDto {
     revokedAt: key.revokedAt,
     rotatedFromId: key.rotatedFromId,
     createdByKeyId: key.createdByKeyId,
+    createdByUserId: key.createdByUserId,
     createdAt: key.createdAt,
   };
 }

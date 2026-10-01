@@ -44,6 +44,10 @@ export class ApiKeyDto {
   @ApiProperty({ type: String, format: "uuid", nullable: true })
   createdByKeyId!: string | null;
 
+  /** The admin UI user who created the key, when one did. */
+  @ApiProperty({ type: String, format: "uuid", nullable: true })
+  createdByUserId!: string | null;
+
   @ApiProperty({ format: "date-time" })
   createdAt!: string;
 }
@@ -82,8 +86,16 @@ export class RotateApiKeyResponseDto {
 
 /** The answer to "which key am I?" — the UI's session probe. */
 export class ActorDto {
-  @ApiProperty({ format: "uuid" })
-  keyId!: string;
+  /** The calling API key. Null when the caller is a signed-in admin UI user. */
+  @ApiProperty({ type: String, format: "uuid", nullable: true })
+  keyId!: string | null;
+
+  /** The signed-in admin UI user. Null when the caller is an API key. */
+  @ApiProperty({ type: String, format: "uuid", nullable: true })
+  userId!: string | null;
+
+  @ApiProperty({ type: String, nullable: true, example: "alice" })
+  username!: string | null;
 
   @ApiProperty({ enum: API_KEY_ROLES })
   role!: ApiKeyRole;

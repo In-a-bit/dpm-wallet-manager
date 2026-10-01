@@ -59,6 +59,10 @@ export class OperationEntity {
   @Column("uuid", { name: "api_key_id", nullable: true })
   apiKeyId!: string | null;
 
+  /** The admin UI user behind the request, when it came from a signed-in browser. */
+  @Column("uuid", { name: "ui_user_id", nullable: true })
+  uiUserId!: string | null;
+
   @Index("operations_created_at")
   @Column("timestamptz", { name: "created_at", transformer: isoTimestamp })
   createdAt!: string;

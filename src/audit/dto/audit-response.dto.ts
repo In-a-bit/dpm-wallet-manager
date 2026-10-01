@@ -15,6 +15,14 @@ export class AuditEventDto {
   @ApiProperty({ type: String, nullable: true, example: "admin" })
   actorRole!: string | null;
 
+  /** The admin UI user behind the request. Null for an API key or a decision no request caused. */
+  @ApiProperty({ type: String, format: "uuid", nullable: true })
+  actorUserId!: string | null;
+
+  /** That user's name at the time, so the trail still reads right after an account changes. */
+  @ApiProperty({ type: String, nullable: true, example: "alice" })
+  actorUsername!: string | null;
+
   @ApiProperty({ type: String, format: "uuid", nullable: true })
   walletId!: string | null;
 
@@ -95,6 +103,10 @@ export class OperationDto {
 
   @ApiPropertyOptional({ type: String, format: "uuid", nullable: true })
   apiKeyId!: string | null;
+
+  /** The admin UI user behind the request, when it came from a signed-in browser. */
+  @ApiPropertyOptional({ type: String, format: "uuid", nullable: true })
+  uiUserId!: string | null;
 
   @ApiProperty({ format: "date-time" })
   createdAt!: string;

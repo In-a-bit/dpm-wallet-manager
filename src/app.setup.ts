@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from "@nestjs/platform-express";
 
+import { serveAdminUi } from "./admin-ui";
 import type { Config } from "./config";
 
 export const BASE_PATH = "v1";
@@ -18,6 +19,7 @@ export function configureApp(app: NestExpressApplication, config: Config): void 
   app.getHttpAdapter().getInstance().disable("x-powered-by");
   app.useBodyParser("json", { limit: MAX_BODY_SIZE });
   app.setGlobalPrefix(BASE_PATH);
+  serveAdminUi(app);
   // An explicit allowlist rather than `*`: the browser has to send X-API-Key, and a wildcard
   // origin would let any page a signed-in operator visits drive the backoffice API.
   if (config.corsOrigins.length > 0) {

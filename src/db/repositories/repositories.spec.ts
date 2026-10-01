@@ -149,6 +149,7 @@ describe("repositories", () => {
       expiresAt: null,
       rotatedFromId: null,
       createdByKeyId: null,
+      createdByUserId: null,
       createdAt: now(),
       ...over,
     });
@@ -177,6 +178,8 @@ describe("repositories", () => {
       await audit.insert({
         actorKeyId: null,
         actorRole: "admin",
+        actorUserId: null,
+        actorUsername: null,
         walletId,
         action: "meta.withdraw.external",
         outcome: "success",
@@ -202,6 +205,7 @@ describe("repositories", () => {
         resultSummary: "0xhash",
         status: "signed",
         apiKeyId: null,
+        uiUserId: null,
         createdAt: now(),
       });
       expect((await operations.query({ walletId }, 10, 0)).total).toBe(1);

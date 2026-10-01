@@ -23,6 +23,12 @@ describe("api key format", () => {
     });
   });
 
+  it("gives a readonly key its own role code, and reads it back", () => {
+    const minted = mintApiKey("live", "readonly");
+    expect(minted.key).toMatch(/^dpmm_live_ro_[a-z0-9]{32}$/);
+    expect(parseApiKey(minted.key)?.role).toBe("readonly");
+  });
+
   it("never repeats a secret", () => {
     const keys = new Set(Array.from({ length: 200 }, () => mintApiKey("live", "admin").key));
     expect(keys.size).toBe(200);

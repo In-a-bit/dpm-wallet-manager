@@ -74,6 +74,21 @@ export function IsLabel(options?: ValidationOptions) {
   );
 }
 
+/** Letters, digits and `.`, `_`, `-`, `@`: readable in a log line, and no lookalike spaces. */
+export const USERNAME_PATTERN = /^[A-Za-z0-9._@-]{3,64}$/;
+
+/** An admin UI username. Compared case-insensitively; see the `ui_users` unique index. */
+export function IsUsername(options?: ValidationOptions) {
+  return applyDecorators(
+    Trimmed(),
+    IsString(options),
+    Matches(USERNAME_PATTERN, {
+      message: "must be 3-64 letters, digits, '.', '_', '-' or '@'",
+      ...options,
+    }),
+  );
+}
+
 /** A USDC-style decimal amount, e.g. "10" or "10.25". Range checks belong to the SDK upstream. */
 export function IsDecimalAmount(options?: ValidationOptions) {
   return applyDecorators(

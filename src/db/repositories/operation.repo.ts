@@ -15,6 +15,7 @@ export type Operation = {
   resultSummary: string | null;
   status: string;
   apiKeyId: string | null;
+  uiUserId: string | null;
   createdAt: string;
 };
 

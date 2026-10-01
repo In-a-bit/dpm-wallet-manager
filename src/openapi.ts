@@ -23,8 +23,12 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
           "**Sign-only.** Every response is a signed artefact for the caller to submit — orders " +
           "go to the CLOB, meta-transactions to relayer-api's `/submit`. This service never " +
           "broadcasts anything.\n\n" +
-          "Authenticate with `X-API-Key`. Two roles: `admin` for administration, `operator` for " +
-          "operations; admin is a superset of operator. Signing routes accept `Idempotency-Key`.",
+          "Authenticate with `X-API-Key`. Three roles, each reaching everything below it: " +
+          "`admin` for administration, `operator` for operations, `readonly` for reading. " +
+          "The admin UI (served at `/admin`) signs in through `/v1/session/login` instead and " +
+          "is then authenticated by an HttpOnly session cookie; a cookie-authenticated request " +
+          "that changes anything must also send `X-Requested-With: dpmm-admin`. Signing routes " +
+          "accept `Idempotency-Key`.",
       )
       .setVersion("1")
       // Declared, but not required globally: `@ApiAuth()` applies it per controller, so
@@ -36,6 +40,8 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       .addTag("meta-tx", "Proxy meta-transactions, gated by the funds policy")
       .addTag("api-keys", "Credential administration")
       .addTag("audit", "The decision log and the artefact log")
+      .addTag("session", "Admin UI sign-in, sign-out and password")
+      .addTag("ui-users", "Admin UI accounts and their roles")
       .addTag("health", "Liveness")
       .build(),
   );

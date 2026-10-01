@@ -53,7 +53,14 @@ export class ApiKeyAuthenticator {
     if (isExpired(stored)) throw await this.reject("expired", parsed.prefix, context);
 
     void this.touch(stored.id);
-    return { keyId: stored.id, role: stored.role, prefix: stored.prefix, name: stored.name };
+    return {
+      keyId: stored.id,
+      userId: null,
+      username: null,
+      role: stored.role,
+      prefix: stored.prefix,
+      name: stored.name,
+    };
   }
 
   /**
