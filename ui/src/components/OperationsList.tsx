@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, type Query } from "../api";
 import { formatTime, shortId } from "../format";
 import { useLoad } from "../hooks";
+import { Address } from "./Copy";
 import { Link } from "./Layout";
 import { Pagination } from "./Pagination";
 import { Badge, LoadState, StatusBadge } from "./Status";
@@ -52,7 +53,8 @@ export function OperationsList({ filters, showWallet = true }: { filters: Query;
                   <StatusBadge value={op.status} />
                 </td>
                 <td className="wrap">
-                  {op.resultSummary ?? <span className="muted">—</span>}
+                  {/* An order hash or a from:nonce pair: shortened, with the full value one click away. */}
+                  <Address value={op.resultSummary} />
                   <div className="muted small-text">
                     hash <code title={op.requestHash}>{shortId(op.requestHash)}</code>
                   </div>

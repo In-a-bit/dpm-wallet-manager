@@ -99,7 +99,7 @@ table.clickable tbody tr:hover, table.clickable tbody tr:focus-visible { backgro
 tr.dim td:not(:last-child) { opacity: .55; }
 tr.detail-row td { background: var(--bg); }
 td select { width: auto; padding: 3px 8px; font-size: .9rem; }
-.row-actions { display: flex; gap: 6px; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .pagination { display: flex; align-items: center; gap: 8px; justify-content: flex-end; padding-top: 12px; flex-wrap: wrap; }
 .pagination span { margin-right: auto; font-size: .9rem; }
 pre.json { margin: 8px 0 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
