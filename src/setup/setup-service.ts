@@ -27,9 +27,24 @@ export type SetupView = {
   steps: StepProgress[];
   lastError?: string;
   backupAcknowledged: boolean;
+  /** Whether the admin UI has an owner yet; until it has, the page asks for one. */
+  ownerCreated: boolean;
 };
 
 const MODES: readonly CustodyMode[] = ["shared", "segregated"];
+
+/** Mirrors the wallet manager's own rule, so the common mistake is caught before the call. */
+const MIN_OWNER_PASSWORD = 12;
+
+/** The manager's refusal, in words: it answers `{ error: { code, message } }`. */
+function ownerRefusal(status: number, body: unknown): string {
+  const error = (body as { error?: { code?: string; message?: string } } | undefined)?.error;
+  if (error?.code === "USERNAME_TAKEN") return "That username is already taken; choose another.";
+  if (error?.code === "VALIDATION_FAILED") {
+    return "Use 3-64 letters, digits, '.', '_', '-' or '@' for the username, and at least 12 characters for the password.";
+  }
+  return `The wallet manager refused (${status}): ${error?.message ?? "unknown error"}`;
+}
 
 /**
  * The setup flow, shared by the browser page and the terminal: check a key, start, retry, and hand
@@ -41,6 +56,8 @@ export class SetupService {
   constructor(
     private readonly deps: ProvisioningDeps,
     private readonly fetchImpl: FetchLike = fetch,
+    /** Where the admin UI is reached from outside the stack, for the backup kit. */
+    private readonly adminUiUrl?: string,
   ) {}
 
   view(): SetupView {
@@ -53,7 +70,48 @@ export class SetupService {
       steps: progress(state),
       lastError: state.lastError,
       backupAcknowledged: state.backupAcknowledged,
+      ownerCreated: state.ownerCreated,
     };
+  }
+
+  /**
+   * Notices an owner that already exists — an install set up before the admin UI, whose owner was
+   * then created another way — so the page does not ask for a second one. Quiet on failure: the
+   * worst case is offering a form whose submission the manager then refuses.
+   */
+  async refreshOwnerStatus(): Promise<void> {
+    const state = this.deps.store.load();
+    if (state.ownerCreated || !isComplete(state) || !state.secrets) return;
+    const listed = await this.deps
+      .http("GET", `${this.deps.managerUrl}/v1/ui-users`, { apiKey: state.secrets.adminKey })
+      .catch(() => undefined);
+    const users = (listed?.status === 200 ? (listed.body as { items?: unknown }).items : []) as
+      Array<{ role?: string; status?: string }> | undefined;
+    if (!users?.some((user) => user.role === "owner" && user.status === "active")) return;
+    this.deps.store.update((next) => {
+      next.ownerCreated = true;
+    });
+  }
+
+  /**
+   * Creates the admin UI's first owner through the wallet manager's own API, with the admin key
+   * setup holds. The password is passed straight through and never stored here.
+   */
+  async createOwner(username: string, password: string): Promise<void> {
+    const state = this.deps.store.load();
+    if (!isComplete(state) || !state.secrets) throw new SetupError("Finish setup first.");
+    if (state.ownerCreated) throw new SetupError("The owner account already exists.");
+    if (password.length < MIN_OWNER_PASSWORD) {
+      throw new SetupError(`The password needs at least ${MIN_OWNER_PASSWORD} characters.`);
+    }
+    const created = await this.deps.http("POST", `${this.deps.managerUrl}/v1/ui-users`, {
+      apiKey: state.secrets.adminKey,
+      body: { username: username.trim(), password, role: "owner" },
+    });
+    if (created.status !== 201) throw new SetupError(ownerRefusal(created.status, created.body));
+    this.deps.store.update((next) => {
+      next.ownerCreated = true;
+    });
   }
 
   async checkKey(input: KeyCheckInput): Promise<KeyCheckResult> {
@@ -108,7 +166,7 @@ export class SetupService {
   }
 
   backupKit(): string {
-    return renderBackupKit(this.deps.store.load());
+    return renderBackupKit(this.deps.store.load(), this.adminUiUrl);
   }
 
   /** The URL and key the builder's own backend is configured with, once setup is done. */
@@ -148,7 +206,7 @@ function parseMode(input: StartInput): CustodyMode {
  * Everything needed to recover the install on another machine, and nothing that can be looked up
  * again. Plain text on purpose: it must open anywhere, years from now.
  */
-export function renderBackupKit(state: SetupState): string {
+export function renderBackupKit(state: SetupState, adminUiUrl?: string): string {
   if (!state.answers || !state.secrets || !state.platform) {
     throw new SetupError("There is nothing to back up until setup has started.");
   }
@@ -160,6 +218,7 @@ export function renderBackupKit(state: SetupState): string {
     `Builder:            ${state.platform.owner.name} (id ${state.platform.owner.id})`,
     `Environment:        ${state.answers.environment} (${state.answers.dpmApiUrl})`,
     `Custody mode:       ${state.answers.mode}`,
+    ...(adminUiUrl ? [`Admin UI:           ${adminUiUrl} (sign in with your owner account)`] : []),
     "",
     "-- Secrets --",
     `Wallet encryption key:   ${state.secrets.walletEncryptionKey}`,

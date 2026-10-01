@@ -25,11 +25,13 @@ const CONFIG_DIR = env("SETUP_CONFIG_DIR", "/config");
 const LISTEN_PORT = Number(env("SETUP_PORT", "8480"));
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
 const PIN_FILE = "setup-pin";
+/** Where the builder reaches the wallet manager (and its admin UI) from outside the stack. */
+const MANAGER_PUBLIC_URL = env("SETUP_MANAGER_PUBLIC_URL", `http://localhost:${MANAGER_PORT}`);
 
 function main(): void {
   const store = new SetupStateStore(CONFIG_DIR);
   const deps = provisioningDeps(store);
-  const service = new SetupService(deps);
+  const service = new SetupService(deps, fetch, `${MANAGER_PUBLIC_URL}/admin`);
 
   const command = process.argv[2];
   if (command === "kit") return void process.stdout.write(service.backupKit());
@@ -59,7 +61,7 @@ function startServer(service: SetupService, deps: ProvisioningDeps): void {
   const server = createSetupServer({
     service,
     pin: setupPin(),
-    managerPublicUrl: env("SETUP_MANAGER_PUBLIC_URL", `http://localhost:${MANAGER_PORT}`),
+    managerPublicUrl: MANAGER_PUBLIC_URL,
     liveStatus: () => liveStatus(deps.http, deps.store, deps),
   });
   server.listen(LISTEN_PORT, "0.0.0.0", () => {

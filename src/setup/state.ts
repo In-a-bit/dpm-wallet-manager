@@ -29,13 +29,18 @@ export type SetupState = {
   running: boolean;
   lastError?: string;
   backupAcknowledged: boolean;
+  /**
+   * Whether the admin UI has an owner account. Only the fact is kept: the password goes straight
+   * to the wallet manager and is never written here.
+   */
+  ownerCreated: boolean;
 };
 
 const STATE_FILE = "setup-state.json";
 const OWNER_ONLY = 0o600;
 
 export function emptyState(): SetupState {
-  return { completedSteps: [], running: false, backupAcknowledged: false };
+  return { completedSteps: [], running: false, backupAcknowledged: false, ownerCreated: false };
 }
 
 export class SetupStateStore {

@@ -74,6 +74,24 @@ export const INDEX_HTML = `<!doctype html>
     </div>
   </section>
 
+  <section id="screen-owner" hidden>
+    <h2>Create your login</h2>
+    <p>This is the account you sign in to the admin dashboard with. From there you can add more people, each with their own login.</p>
+    <form id="owner-form">
+      <label>Username
+        <input id="owner-username" autocomplete="username" maxlength="64" required>
+      </label>
+      <label>Password <span class="muted">(at least 12 characters)</span>
+        <input id="owner-password" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+      </label>
+      <label>Password again
+        <input id="owner-password2" type="password" autocomplete="new-password" minlength="12" maxlength="256" required>
+      </label>
+      <button type="submit" class="primary" id="owner-submit">Create login</button>
+    </form>
+    <p id="owner-error" class="error" role="alert"></p>
+  </section>
+
   <section id="screen-backup" hidden>
     <h2>Save your backup kit</h2>
     <p>This file holds the keys to your install. <strong>Without it, a lost or broken computer cannot be recovered.</strong> Store it in a password manager or another safe, private place.</p>
@@ -89,6 +107,7 @@ export const INDEX_HTML = `<!doctype html>
     <p class="muted">Give these two values to whoever runs your backend. Keep the key private.</p>
     <dl class="summary">
       <dt>Wallet manager address</dt><dd><code id="manager-url"></code></dd>
+      <dt>Admin dashboard</dt><dd><a id="admin-ui-url" href="#" target="_blank" rel="noopener"></a></dd>
       <dt>Backend key</dt><dd><code id="operator-key"></code> <button type="button" class="link" id="copy-key">Copy</button></dd>
     </dl>
     <h3>Health</h3>
@@ -143,6 +162,7 @@ button, .button { display: inline-block; font: inherit; padding: 10px 18px; marg
 button:disabled { opacity: .5; cursor: not-allowed; }
 button.link { border: 0; background: none; color: var(--accent); padding: 0; margin: 4px 0; }
 form { display: flex; gap: 8px; align-items: center; }
+#owner-form { display: block; max-width: 420px; }
 form button { margin-top: 0; }
 .steps { list-style: none; padding: 0; margin: 16px 0; }
 .steps li { padding: 6px 0 6px 28px; position: relative; }
@@ -162,7 +182,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 export const APP_JS = `(() => {
   const PIN_KEY = "dpm-setup-pin";
   const $ = (id) => document.getElementById(id);
-  const screens = ["pin", "wizard", "progress", "backup", "status"];
+  const screens = ["pin", "wizard", "progress", "owner", "backup", "status"];
   let checkedKey = null;
   let pollTimer = null;
 
@@ -297,6 +317,8 @@ export const APP_JS = `(() => {
     }
     if (state.connection) {
       $("manager-url").textContent = state.connection.managerUrl;
+      $("admin-ui-url").textContent = state.connection.adminUiUrl;
+      $("admin-ui-url").href = state.connection.adminUiUrl;
       $("operator-key").textContent = state.connection.operatorKey;
     }
     try {
@@ -325,11 +347,30 @@ export const APP_JS = `(() => {
       pollTimer = setTimeout(refresh, 2000);
       return;
     }
+    if (!state.ownerCreated) return show("owner");
     if (!state.backupAcknowledged) return show("backup");
     show("status");
     renderStatus(state);
     pollTimer = setTimeout(refresh, 15000);
   }
+
+  // ── Owner login ──
+  $("owner-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const error = $("owner-error");
+    error.textContent = "";
+    if ($("owner-password").value !== $("owner-password2").value) {
+      error.textContent = "The two passwords are not the same.";
+      return;
+    }
+    $("owner-submit").disabled = true;
+    try {
+      await api("POST", "/api/owner", { username: $("owner-username").value, password: $("owner-password").value });
+      $("owner-password").value = ""; $("owner-password2").value = "";
+      refresh();
+    } catch (err) { error.textContent = err.message; }
+    $("owner-submit").disabled = false;
+  });
 
   refresh();
 })();

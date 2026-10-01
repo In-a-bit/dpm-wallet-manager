@@ -213,11 +213,26 @@ class FakeStack {
       return { status: 502, body: { error: { code: "X", message: "upstream said no" } } };
     }
     if (path === "/v1/api-keys") return { status: 201, body: { key: "dpmm_dev_op_x" } };
+    if (path === "/v1/ui-users") return this.uiUsers(method, options);
     if (path === "/v1/platform") return { status: 200, body: this.platform(options?.apiKey) };
     return { status: 200, body: { status: "ok" } };
   };
 
   mode = "shared";
+  owners: Array<{ username: string; role: string; status: string }> = [];
+  lastUserBody: unknown;
+
+  private uiUsers(method: string, options?: { apiKey?: string; body?: unknown }): HttpResult {
+    if (method === "GET")
+      return { status: 200, body: { items: this.owners, total: this.owners.length } };
+    this.lastUserBody = options?.body;
+    const { username } = options?.body as { username: string };
+    if (this.owners.some((owner) => owner.username === username)) {
+      return { status: 409, body: { error: { code: "USERNAME_TAKEN", message: "taken" } } };
+    }
+    this.owners.push({ username, role: "owner", status: "active" });
+    return { status: 201, body: { id: "u1", username } };
+  }
 
   private platform(apiKey?: string): unknown {
     if (!apiKey) return {};
@@ -396,5 +411,71 @@ describe("setup server", () => {
     } finally {
       server.close();
     }
+  });
+});
+
+describe("SetupService owner login", () => {
+  async function provisioned(stack = new FakeStack()) {
+    const dir = tempDir();
+    const deps = provisioningDeps(stack, dir, []);
+    seedStarted(deps.store, "shared");
+    await provision(deps);
+    return {
+      stack,
+      dir,
+      deps,
+      service: new SetupService(deps, fetch, "http://localhost:3000/admin"),
+    };
+  }
+
+  it("creates the owner with the admin key, and never writes the password down", async () => {
+    const { stack, dir, deps, service } = await provisioned();
+    await service.createOwner("  alice  ", "a long enough passphrase");
+
+    expect(stack.lastUserBody).toEqual({
+      username: "alice",
+      password: "a long enough passphrase",
+      role: "owner",
+    });
+    expect(service.view().ownerCreated).toBe(true);
+    const onDisk = fs.readFileSync(path.join(dir, "setup-state.json"), "utf8");
+    expect(onDisk).not.toContain("a long enough passphrase");
+    expect(deps.store.load().ownerCreated).toBe(true);
+  });
+
+  it("refuses before setup has finished, and a second time", async () => {
+    const early = new SetupService(provisioningDeps(new FakeStack(), tempDir(), []));
+    await expect(early.createOwner("alice", "a long enough passphrase")).rejects.toThrow(
+      /Finish setup/,
+    );
+
+    const { service } = await provisioned();
+    await service.createOwner("alice", "a long enough passphrase");
+    await expect(service.createOwner("bob", "a long enough passphrase")).rejects.toThrow(
+      /already exists/,
+    );
+  });
+
+  it("explains a short password and a taken username", async () => {
+    const { stack, service } = await provisioned();
+    await expect(service.createOwner("alice", "short")).rejects.toThrow(/at least 12/);
+    stack.owners.push({ username: "alice", role: "viewer", status: "active" });
+    await expect(service.createOwner("alice", "a long enough passphrase")).rejects.toThrow(
+      /already taken/,
+    );
+  });
+
+  it("notices an owner that already exists, so it does not ask again", async () => {
+    const stack = new FakeStack();
+    stack.owners.push({ username: "pre-existing", role: "owner", status: "active" });
+    const { service } = await provisioned(stack);
+    expect(service.view().ownerCreated).toBe(false);
+    await service.refreshOwnerStatus();
+    expect(service.view().ownerCreated).toBe(true);
+  });
+
+  it("names the admin UI in the backup kit", async () => {
+    const { service } = await provisioned();
+    expect(service.backupKit()).toContain("Admin UI:           http://localhost:3000/admin");
   });
 });

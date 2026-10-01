@@ -63,6 +63,7 @@ function apiRoutes(options: ServerOptions, pinGuard: PinGuard): Record<string, R
       sendJson(res, 401, { message: pinGuard.lockedMessage() ?? "That PIN is not right." });
     },
     "GET /api/state": async (_req, res) => {
+      await service.refreshOwnerStatus();
       sendJson(res, 200, {
         ...service.view(),
         environments: ENVIRONMENTS,
@@ -80,6 +81,14 @@ function apiRoutes(options: ServerOptions, pinGuard: PinGuard): Record<string, R
     "POST /api/start": async (req, res) => {
       await service.start((await readJson(req)) as never);
       sendJson(res, 202, service.view());
+    },
+    "POST /api/owner": async (req, res) => {
+      const { username, password } = (await readJson(req)) as {
+        username?: string;
+        password?: string;
+      };
+      await service.createOwner(String(username ?? ""), String(password ?? ""));
+      sendJson(res, 201, service.view());
     },
     "POST /api/retry": async (_req, res) => {
       service.resume();
@@ -108,7 +117,11 @@ function apiRoutes(options: ServerOptions, pinGuard: PinGuard): Record<string, R
 function connection(options: ServerOptions): unknown {
   const details = options.service.connectionDetails();
   if (!details || !options.service.view().backupAcknowledged) return undefined;
-  return { managerUrl: options.managerPublicUrl, operatorKey: details.operatorKey };
+  return {
+    managerUrl: options.managerPublicUrl,
+    adminUiUrl: `${options.managerPublicUrl}/admin`,
+    operatorKey: details.operatorKey,
+  };
 }
 
 function serveStatic(path: string, res: http.ServerResponse): boolean {

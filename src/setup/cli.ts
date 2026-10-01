@@ -21,6 +21,7 @@ export async function runCli(
     if (service.view().phase === "new") await askAndStart(io, service);
     else console.log("\nSetup was already started; resuming.\n");
     await runWithProgress(service, readState);
+    await createOwnerLogin(io, service);
     await handOverBackupKit(io, service);
     printConnection(service);
   } catch (err) {
@@ -117,6 +118,46 @@ function printNewlyDone(state: Parameters<typeof progress>[0], printed: Set<stri
   }
 }
 
+/** The admin UI's first owner, asked for here exactly as the page asks for it. */
+async function createOwnerLogin(io: readline.Interface, service: SetupService): Promise<void> {
+  await service.refreshOwnerStatus();
+  if (service.view().ownerCreated) return;
+  console.log("\nCreate your login for the admin dashboard.");
+  for (;;) {
+    const username = await io.question("Username: ");
+    const password = await askHidden(io, "Password (at least 12 characters): ");
+    if ((await askHidden(io, "Password again: ")) !== password) {
+      console.log("✕ The two passwords are not the same.\n");
+      continue;
+    }
+    try {
+      await service.createOwner(username, password);
+      console.log("✓ Login created.");
+      return;
+    } catch (err) {
+      if (!(err instanceof SetupError)) throw err;
+      console.log(`✕ ${err.message}\n`);
+    }
+  }
+}
+
+/**
+ * A question whose answer is not echoed. readline has no switch for this, so the prompt is
+ * written first and every echo of the answer is then swallowed until Enter.
+ */
+async function askHidden(io: readline.Interface, prompt: string): Promise<string> {
+  const echo = io as unknown as { _writeToOutput: (text: string) => void };
+  const original = echo._writeToOutput.bind(io);
+  process.stdout.write(prompt);
+  echo._writeToOutput = () => undefined;
+  try {
+    return await io.question("");
+  } finally {
+    echo._writeToOutput = original;
+    process.stdout.write("\n");
+  }
+}
+
 async function handOverBackupKit(io: readline.Interface, service: SetupService): Promise<void> {
   if (service.view().backupAcknowledged) return;
   console.log(
@@ -136,5 +177,6 @@ function printConnection(service: SetupService): void {
   if (!details) return;
   console.log("\nYour install is running. Give your backend:");
   console.log(`  Backend key: ${details.operatorKey}`);
-  console.log("  Wallet manager address: see ./dpm-custody status\n");
+  console.log("  Wallet manager address: see ./dpm-custody status");
+  console.log("Admin dashboard: <wallet manager address>/admin, signed in with the login above.\n");
 }
