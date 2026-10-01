@@ -43,11 +43,17 @@ On the page, type the PIN, then:
 3. **Choose how your users' funds are held.** If you're not sure, choose
    **"Each user holds their own funds"**. This choice can't be changed later.
 4. Click **Start setup** and wait a minute or two.
-5. **Download the backup kit** and store it somewhere safe and private, such as a password
+5. **Create your login** for the admin dashboard: a username and a password of at least 12
+   characters.
+6. **Download the backup kit** and store it somewhere safe and private, such as a password
    manager. If you lose this computer, the backup kit is the only way to recover.
 
-The last page shows two values: the **wallet manager address** and the **backend key**. Give
-them to whoever runs your backend. That's it.
+The last page shows:
+
+- the **wallet manager address** and the **backend key**. Give these two to whoever runs your
+  backend.
+- the **admin dashboard** address (`…/admin`). Sign in there with the login you just created to
+  see your wallets, manage API keys, read the audit log, and add more people.
 
 ### No browser on this machine?
 

@@ -25,6 +25,15 @@ COPY src/ src/
 
 RUN npm run build
 
+# The admin UI is its own npm project (ui/), built after the server because `nest build` empties
+# dist/ first. Vite writes it to dist/ui, which src/admin-ui.ts serves at /admin; nothing else
+# about the UI reaches the runtime image.
+COPY ui/package.json ui/package-lock.json ui/
+RUN --mount=type=cache,target=/root/.npm \
+    npm --prefix ui ci
+COPY ui/ ui/
+RUN npm --prefix ui run build
+
 # Drop the dev dependencies from the tree the runtime stage inherits.
 RUN npm prune --omit=dev
 

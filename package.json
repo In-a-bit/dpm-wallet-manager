@@ -9,6 +9,7 @@
     "dev": "nest start --watch",
     "dev:debug": "nest start --debug=9241 --watch",
     "build": "nest build",
+    "build:ui": "npm --prefix ui ci && npm --prefix ui run build",
     "start": "nest start",
     "start:prod": "node dist/main",
     "typeorm": "typeorm-ts-node-commonjs -d src/db/data-source.ts",

@@ -1,6 +1,8 @@
 # compiled output
 /dist
 /node_modules
+# The admin UI (ui/) is its own npm project.
+/ui/node_modules
 /build
 
 # Logs
