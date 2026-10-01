@@ -111,8 +111,8 @@ For anything else, send the output of `dpm-custody logs` to the platform team.
 
 The steps above are what a builder does. This part is for the platform team: what a platform
 needs before builders can install against it, how to try the install yourself (local or dev),
-and how to release it for production. Sandbox is
-listed on the setup page but does not exist yet.
+and how to release it for production. The setup page offers Production, Development and
+Custom (any dpm-api address); add an environment in `src/setup/environments.ts`.
 
 ## What every environment needs first
 

@@ -83,11 +83,11 @@ describe("environments", () => {
 
 describe("generateInstallSecrets", () => {
   it("produces values each service accepts at boot", () => {
-    const secrets = generateInstallSecrets("sandbox");
+    const secrets = generateInstallSecrets("dev");
     expect(secrets.walletEncryptionKey).toMatch(/^[0-9a-f]{64}$/);
     expect(secrets.managerMasterKey).toMatch(/^[0-9a-f]{64}$/);
     expect(secrets.walletApiKey).toMatch(/^dpmw_[0-9a-f]{40}$/);
-    expect(parseApiKey(secrets.adminKey)).toMatchObject({ role: "admin", environment: "sandbox" });
+    expect(parseApiKey(secrets.adminKey)).toMatchObject({ role: "admin", environment: "dev" });
   });
 
   it("never repeats", () => {
@@ -100,15 +100,15 @@ describe("generateInstallSecrets", () => {
 describe("config writer", () => {
   const inputs: InstallInputs = {
     answers: {
-      environment: "sandbox",
+      environment: "dev",
       dpmApiUrl: "https://x",
       builderKey: " bld_sk_abc ",
       mode: "shared",
     },
     platform: PLATFORM,
-    secrets: generateInstallSecrets("sandbox"),
+    secrets: generateInstallSecrets("dev"),
     database: { user: "dpm", password: "p@ss/word" },
-    keyEnv: "sandbox",
+    keyEnv: "dev",
   };
 
   it("single-quotes every value and refuses one that could escape its quotes", () => {
@@ -212,7 +212,7 @@ class FakeStack {
       // dpm-wallet's error envelope, which the message has to be dug out of.
       return { status: 502, body: { error: { code: "X", message: "upstream said no" } } };
     }
-    if (path === "/v1/api-keys") return { status: 201, body: { key: "dpmm_sandbox_op_x" } };
+    if (path === "/v1/api-keys") return { status: 201, body: { key: "dpmm_dev_op_x" } };
     if (path === "/v1/platform") return { status: 200, body: this.platform(options?.apiKey) };
     return { status: 200, body: { status: "ok" } };
   };
@@ -254,13 +254,13 @@ function provisioningDeps(
 function seedStarted(store: SetupStateStore, mode: "shared" | "segregated"): void {
   store.update((state: SetupState) => {
     state.answers = {
-      environment: "sandbox",
+      environment: "dev",
       dpmApiUrl: "https://x",
       builderKey: "bld_sk_a",
       mode,
     };
     state.platform = PLATFORM;
-    state.secrets = generateInstallSecrets("sandbox");
+    state.secrets = generateInstallSecrets("dev");
   });
 }
 
@@ -274,7 +274,7 @@ describe("provision", () => {
     const state = await provision(deps);
 
     expect(isComplete(state)).toBe(true);
-    expect(state.operatorKey).toBe("dpmm_sandbox_op_x");
+    expect(state.operatorKey).toBe("dpmm_dev_op_x");
     expect(written).toHaveLength(1);
     expect(stack.calls.filter((c) => c.startsWith("POST"))).toEqual([
       "POST /v1/vault/init",
@@ -334,7 +334,7 @@ describe("SetupService.start", () => {
     const service = new SetupService(provisioningDeps(new FakeStack(), tempDir(), []), fetchOk);
     await expect(
       service.start({
-        environment: "sandbox",
+        environment: "dev",
         builderKey: "bld_sk_a",
         mode: "shared",
         confirmModeIsPermanent: false,
@@ -347,7 +347,7 @@ describe("SetupService.start", () => {
     const deps = provisioningDeps(new FakeStack(), tempDir(), []);
     const service = new SetupService(deps, fetchOk);
     const input = {
-      environment: "sandbox",
+      environment: "dev",
       builderKey: "bld_sk_a",
       mode: "shared",
       confirmModeIsPermanent: true,

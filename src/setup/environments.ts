@@ -3,7 +3,7 @@
  * the rest of its configuration (see platform-config.ts); everything else — the other services'
  * URLs, the chain, the contracts — comes back from there, so this is the only list to maintain.
  */
-export type EnvironmentId = "prod" | "sandbox" | "dev" | "custom";
+export type EnvironmentId = "prod" | "dev" | "custom";
 
 /** The environment the page starts with selected. */
 export const DEFAULT_ENVIRONMENT: EnvironmentId = "prod";
@@ -27,14 +27,6 @@ export const ENVIRONMENTS: readonly Environment[] = [
     description: "Real markets and real funds.",
     dpmApiUrl: "https://api.dpm.network",
     keyEnv: "live",
-    advanced: false,
-  },
-  {
-    id: "sandbox",
-    label: "Sandbox",
-    description: "For trying things out. Test funds only.",
-    dpmApiUrl: "https://api.sandbox.dpm.network",
-    keyEnv: "sandbox",
     advanced: false,
   },
   {
