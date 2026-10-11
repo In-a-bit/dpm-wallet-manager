@@ -6,15 +6,16 @@ const registrationCalls = (harness: Harness): string[] =>
     .map((request) => request.path);
 
 /**
- * The master wallet is the one place USDC leaves the platform, and every withdrawal from it is a
- * meta-transaction — which dpm-wallet refuses to sign until the DPM platform has registered the
- * EOA. Leaving that as a separate manual step meant the exit door could be built and then found
- * locked at the worst possible moment, so provisioning does it.
+ * The platform wallets move funds only by meta-transaction, which dpm-wallet refuses to sign (and
+ * relayer-api to relay) until the DPM platform has registered the EOA. The master wallet is the
+ * one exit; the operations wallet funds users in segregated mode and trades in shared. Leaving
+ * their registration as a separate manual step meant either could be built and then found locked
+ * at its first transfer, so provisioning does it.
  *
- * Nothing else changes: the operations wallet and ordinary user wallets keep the explicit
- * attestation flow, because deciding when they join the platform is an operator's call.
+ * Ordinary user wallets keep the explicit attestation flow, because deciding when they join the
+ * platform is an operator's call.
  */
-describe("master wallet registration", () => {
+describe("platform wallet registration", () => {
   let harness: Harness;
 
   beforeEach(async () => {
@@ -37,12 +38,31 @@ describe("master wallet registration", () => {
     expect(registrationCalls(harness)).toHaveLength(1);
   });
 
-  it("leaves the operations wallet to be registered by an operator", async () => {
+  it("registers the operations wallet with the DPM platform as it is created", async () => {
     const created = await harness.post("/v1/platform/operations-wallet", { body: {} });
 
     expect(created.status).toBe(200);
-    expect(created.body).toMatchObject({ kind: "operations", dpmRegistered: false });
-    expect(registrationCalls(harness)).toHaveLength(0);
+    expect(created.body).toMatchObject({
+      kind: "operations",
+      status: "active",
+      dpmRegistered: true,
+    });
+    expect(registrationCalls(harness)).toHaveLength(1);
+  });
+
+  // An install made before the operations wallet was registered automatically has an active,
+  // unregistered one. Calling the idempotent create endpoint again is the repair.
+  it("registers an existing unregistered operations wallet on the next create call", async () => {
+    const created = await harness.post("/v1/platform/operations-wallet", { body: {} });
+    await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
+      body: { registered: false },
+    });
+
+    const again = await harness.post("/v1/platform/operations-wallet", { body: {} });
+
+    expect(again.status).toBe(200);
+    expect(again.body).toMatchObject({ id: created.body.id, dpmRegistered: true });
+    expect(registrationCalls(harness)).toHaveLength(2);
   });
 
   it("leaves an ordinary wallet to be registered by an operator", async () => {

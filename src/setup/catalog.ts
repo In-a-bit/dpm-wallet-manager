@@ -75,14 +75,14 @@ export const JOURNEY: readonly JourneyItem[] = [
     id: "master-wallet",
     title: "Create the master wallet",
     short: "Creates your company's master wallet, which owns the install's funds.",
-    long: "The master wallet is your cold store: it never trades, and it is the only wallet allowed to send funds out of the install, and only with the admin key. You refill the operations wallet from it. Your backend registers it with the platform before it is used.",
+    long: "The master wallet is your cold store: it never trades, and it is the only wallet allowed to send funds out of the install, and only with the admin key. You refill the operations wallet from it. It is registered with the platform as it is created, which is what lets the platform's relayer move its funds without it needing gas of its own.",
     fix: "The platform may be busy. Wait a few minutes. If it keeps failing, contact support.",
   },
   {
     id: "operations-wallet",
     title: "Create the operations wallet",
     short: "Creates the working wallet your backend moves users' funds with.",
-    long: "In segregated mode it never trades: it is the pot you fund your users' wallets from, and where they move funds back to. In shared mode it holds everyone's funds and pays for every trade. Your backend registers it with the platform before it is used.",
+    long: "In segregated mode it never trades: it is the pot you fund your users' wallets from, and where they move funds back to. In shared mode it holds everyone's funds and pays for every trade. It is registered with the platform as it is created, so the platform's relayer can move its funds.",
     fix: "The platform may be busy. Wait a few minutes. If it keeps failing, contact support.",
   },
   {

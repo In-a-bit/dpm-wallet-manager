@@ -193,12 +193,12 @@ async function waitForManager({ deps, progress }: StepContext): Promise<void> {
 }
 
 async function createMasterWallet({ deps, state, progress }: StepContext): Promise<void> {
-  progress("Asking the wallet manager to create the master wallet and its address");
+  progress("Creating the master wallet, then registering it with the platform");
   await postAsAdmin(deps, state, "/v1/platform/master-wallet", {}, "Creating the master wallet");
 }
 
 async function createOperationsWallet({ deps, state, progress }: StepContext): Promise<void> {
-  progress("Asking the wallet manager to create the operations wallet and its address");
+  progress("Creating the operations wallet, then registering it with the platform");
   await postAsAdmin(
     deps,
     state,
@@ -240,8 +240,8 @@ async function verify({ deps, state, progress }: StepContext): Promise<void> {
 
 type PlatformStatus = {
   mode?: string;
-  masterWallet?: unknown;
-  operationsWallet?: unknown;
+  masterWallet?: { dpmRegistered?: boolean } | null;
+  operationsWallet?: { dpmRegistered?: boolean } | null;
   upstream?: { reachable?: boolean; vault?: { initialized?: boolean } };
 };
 
@@ -251,6 +251,13 @@ function platformProblem(platform: PlatformStatus, mode: string): string | undef
   if (!platform.upstream.vault?.initialized) return "the key vault is not initialised";
   if (!platform.masterWallet) return "there is no master wallet";
   if (!platform.operationsWallet) return "there is no operations wallet";
+  // Unregistered, a platform wallet cannot move a cent: relayer-api relays only for addresses
+  // the platform knows.
+  if (!platform.masterWallet.dpmRegistered)
+    return "the master wallet is not registered with the platform";
+  if (!platform.operationsWallet.dpmRegistered) {
+    return "the operations wallet is not registered with the platform";
+  }
   return undefined;
 }
 

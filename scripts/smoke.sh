@@ -61,13 +61,19 @@ ok "mode is $MODE"
 
 MASTER_ID="$(call POST /platform/master-wallet '{}' | field id)"
 [ -n "$MASTER_ID" ] || fail "no master wallet"
+[ "$(call GET "/wallets/$MASTER_ID" | field dpmRegistered)" = "true" ] ||
+  fail "the master wallet is not registered with the platform"
 [ "$(status POST /platform/master-wallet '{}' "$OPERATOR_KEY")" = "403" ] ||
   fail "an operator key created the master wallet"
-ok "master wallet $MASTER_ID (admin only)"
+ok "master wallet $MASTER_ID (admin only, registered)"
 
-OPS_ID="$(call POST /platform/operations-wallet '{}' '' "$OPERATOR_KEY" | field id)"
+OPS="$(call POST /platform/operations-wallet '{}' '' "$OPERATOR_KEY")"
+OPS_ID="$(echo "$OPS" | field id)"
 [ -n "$OPS_ID" ] || fail "no operations wallet"
-ok "operations wallet $OPS_ID (operator reachable)"
+# Unregistered, it could never be relayed: no funding users, no trading.
+[ "$(echo "$OPS" | field dpmRegistered)" = "true" ] ||
+  fail "the operations wallet is not registered with the platform"
+ok "operations wallet $OPS_ID (operator reachable, registered)"
 
 # ── 3. a user wallet ─────────────────────────────────────────────────────────
 WALLET="$(call POST /wallets "{\"externalId\":\"smoke-$(date +%s)\"}" '' "$OPERATOR_KEY")"

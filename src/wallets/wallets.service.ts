@@ -28,6 +28,15 @@ import { CONFIG } from "../tokens";
 /** Postgres' unique-violation code, the one an `EXTERNAL_ID_TAKEN` arrives as. */
 const UNIQUE_VIOLATION = "23505";
 
+/**
+ * The wallets this service registers with the DPM platform itself, as it creates them: the
+ * master wallet, the only exit, and the operations wallet, which funds users (segregated) or
+ * trades for them (shared). Both move funds only through relayer-api, which relays only for
+ * registered addresses. User wallets join the platform when the operator decides, through the
+ * attestation flow.
+ */
+const PLATFORM_KINDS: ReadonlySet<WalletKind> = new Set(["master", "operations"]);
+
 @Injectable()
 export class WalletsService {
   constructor(
@@ -88,7 +97,7 @@ export class WalletsService {
    */
   async reconcile(id: string, actor?: Actor): Promise<Wallet> {
     const wallet = await this.require(id);
-    if (wallet.status !== "provisioning") return wallet;
+    if (wallet.status !== "provisioning") return this.registerIfPlatform(wallet);
 
     const reconciled = await this.provision(wallet);
     await this.audit.record({
@@ -212,6 +221,22 @@ export class WalletsService {
   }
 
   /**
+   * An active platform wallet the DPM platform has never registered — one created before the
+   * operations wallet was registered automatically — is registered now, so calling the create
+   * endpoint again is the repair. Anything else is returned as it is.
+   */
+  private async registerIfPlatform(wallet: Wallet): Promise<Wallet> {
+    if (!PLATFORM_KINDS.has(wallet.kind) || wallet.dpmRegistered || !isReady(wallet)) return wallet;
+    const registered = await this.registerWithDpm(wallet);
+    const updated = await this.wallets.setDpmRegistered(
+      wallet.id,
+      registered.dpmRegistered,
+      new Date().toISOString(),
+    );
+    return updated ?? wallet;
+  }
+
+  /**
    * Registers a wallet's EOA with the DPM platform, through dpm-wallet — which holds both the
    * signing key and the builder credential the platform authenticates the call with, so the
    * whole exchange happens in one hop from here.
@@ -246,11 +271,11 @@ export class WalletsService {
       }
     }
 
-    // Before the wallet is marked ready, not after: a master wallet the DPM platform has never
-    // seen cannot sign the withdrawal it exists for, and an active row that fails at the first
-    // withdrawal is worse than one still visibly half-built. A failure here throws, leaving the
-    // row `provisioning` for `reconcile` and the boot sweep to finish.
-    if (wallet.kind === "master" && !address.dpmRegistered) {
+    // Before the wallet is marked ready, not after: a platform wallet the DPM platform has never
+    // seen cannot sign a single transfer (relayer-api has no nonce for it), and an active row
+    // that fails at its first transfer is worse than one still visibly half-built. A failure
+    // here throws, leaving the row `provisioning` for `reconcile` and the boot sweep to finish.
+    if (PLATFORM_KINDS.has(wallet.kind) && !address.dpmRegistered) {
       address = await this.registerWithDpm(wallet);
     }
 

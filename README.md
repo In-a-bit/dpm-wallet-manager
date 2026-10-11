@@ -60,9 +60,21 @@ never has to infer what was decided.
 | | created by | purpose |
 |---|---|---|
 | **master** | `POST /v1/platform/master-wallet`, **admin key** | The only wallet USDC may leave the platform from. Never gets an allowance, so it cannot trade — both are enforced, not conventions. |
-| **operations** | `POST /v1/platform/operations-wallet`, **operator key** | In `shared` mode, the treasury: makes every BUY, receives every SELL. |
+| **operations** | `POST /v1/platform/operations-wallet`, **operator key** | In `shared` mode, the treasury: makes every BUY, receives every SELL. In `segregated` mode it never trades: users' wallets are funded from it, and it receives what they move back. |
 
 Both are ordinary Turnkey wallets upstream. All the specialness lives here.
+
+**Both are registered with the DPM platform as they are created.** Every transfer is a
+meta-transaction that relayer-api relays and pays the gas for, and it relays only for addresses
+the platform has registered. Unregistered, a platform wallet could not move a cent, with or without
+POL. A registration that fails leaves the wallet `provisioning`, and calling the create endpoint
+again finishes it. The same call also registers a platform wallet that was created, active, before
+registration was automatic. User wallets are different: they join the platform when the operator
+decides, through `dpm-attestation` then `dpm-registered`.
+
+What stays with the builder's backend: in `shared` mode the operations wallet needs an exchange
+allowance before it can trade (`POST /wallets/:id/allowance`, then submit to relayer-api). This
+service only signs; it never submits.
 
 ## The money rule
 
@@ -196,7 +208,7 @@ client from it rather than hand-writing one. The table below is a map, not the r
 | `GET` | `/wallets` | `?kind&status&q&limit&offset` |
 | `GET` | `/wallets/:id`, `/wallets/by-external/:externalId` | |
 | `PATCH` | `/wallets/:id` | **admin** — `{ label?, status? }` |
-| `POST` | `/wallets/:id/reconcile` | finish a half-done provisioning |
+| `POST` | `/wallets/:id/reconcile` | finish a half-done provisioning (a platform wallet is also registered) |
 | `POST` | `/wallets/:id/dpm-attestation` | EOA + proof of control, to register with the platform |
 | `POST` | `/wallets/:id/dpm-registered` | `{ registered }` — a precondition for every meta-tx |
 

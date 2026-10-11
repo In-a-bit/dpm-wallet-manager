@@ -263,6 +263,7 @@ class FakeStack {
 
   mode = "shared";
   operationsCreated = false;
+  registered = true;
   owners: Array<{ username: string; role: string; status: string }> = [];
   lastUserBody: unknown;
 
@@ -282,8 +283,8 @@ class FakeStack {
     if (!apiKey) return {};
     return {
       mode: this.mode,
-      masterWallet: { id: "m" },
-      operationsWallet: this.operationsCreated ? { id: "o" } : null,
+      masterWallet: { id: "m", dpmRegistered: this.registered },
+      operationsWallet: this.operationsCreated ? { id: "o", dpmRegistered: this.registered } : null,
       upstream: { reachable: true, vault: { initialized: true } },
     };
   }
@@ -353,6 +354,15 @@ describe("provision", () => {
 
     expect(stack.count("POST /v1/platform/operations-wallet")).toBe(1);
     expect(isComplete(deps.store.load())).toBe(true);
+  });
+
+  it("does not call an install ready while a platform wallet is unregistered", async () => {
+    const stack = new FakeStack();
+    stack.registered = false;
+    const deps = provisioningDeps(stack, tempDir(), []);
+    seedStarted(deps.store, "shared");
+
+    await expect(provision(deps)).rejects.toThrow(/master wallet is not registered/);
   });
 
   it("does not call an install ready without its operations wallet", async () => {
