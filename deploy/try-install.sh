@@ -13,6 +13,9 @@
 #   --build             build the images from source instead, from this checkout and
 #   --wallet-src DIR    a dpm-wallet checkout             (default: ../dpm-wallet, if it exists)
 #   --dir DIR           where to install                          (default ~/dpm-custody-try)
+#   --name NAME         the install's Docker project name              (default dpm-custody)
+#                       Two installs with different names and folders run side by side, e.g.
+#                       one segregated and one shared: --name dpm-custody-shared --dir ~/dpm-custody-shared
 #
 # The builder private key comes from that platform's backoffice (Custody Builders → create a
 # builder → New key); without it on the command line the script asks for it. Every answer is
@@ -31,6 +34,7 @@ IMAGE_TAG="main"
 BUILD=false
 WALLET_SRC=""
 INSTALL_DIR="$HOME/dpm-custody-try"
+INSTALL_NAME="dpm-custody"
 BUILDER_KEY=""
 COMMAND=start
 
@@ -57,6 +61,7 @@ parse_args() {
       --build) BUILD=true ;;
       --wallet-src) WALLET_SRC="${2:?--wallet-src needs a folder}"; shift ;;
       --dir) INSTALL_DIR="${2:?--dir needs a folder}"; shift ;;
+      --name) INSTALL_NAME="${2:?--name needs a name}"; shift ;;
       -h | --help | help) usage; exit 0 ;;
       -*) fail "Unknown option $1" "Run $0 --help" ;;
       # Anything else is the key: a malformed one gets a message about keys, not the usage text.
@@ -90,10 +95,23 @@ body_of() { sed '$d' <<<"$1"; }
 
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
-# free_port <preferred> prints the preferred port, or the next free one after it.
+# claimed_ports lists every host port a container on this machine publishes, running or stopped.
+# A stopped install's port is free right now, but taking it would clash once both are started.
+claimed_ports() {
+  local ids
+  ids="$(docker ps -aq)"
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086 # one id per word
+  docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' $ids |
+    tr ' ' '\n' | grep -E '^[0-9]+$' | sort -u
+}
+
+# free_port <preferred> prints the preferred port, or the next one after it that is neither in
+# use nor claimed by another container.
 free_port() {
-  local port="$1"
-  while port_in_use "$port"; do port=$((port + 1)); done
+  local port="$1" claimed
+  claimed="$(claimed_ports)"
+  while port_in_use "$port" || grep -qx "$port" <<<"$claimed"; do port=$((port + 1)); done
   echo "$port"
 }
 
@@ -116,11 +134,20 @@ check_no_other_install() {
     fail "An install already exists in $INSTALL_DIR." \
       "Check it: $0 verify --dir $INSTALL_DIR" "Or start over: $0 clean --dir $INSTALL_DIR"
   fi
-  if docker compose ls -q 2>/dev/null | grep -qx dpm-custody; then
-    fail "Another dpm-custody install is running on this machine (they share one Docker project name)." \
-      "Stop it first: in its folder, docker compose --env-file .env -f compose.yml down"
+  case "$INSTALL_NAME" in
+    [a-z0-9]*) ;;
+    *) fail "--name must start with a lowercase letter or digit." ;;
+  esac
+  case "$INSTALL_NAME" in
+    *[!a-z0-9_-]*) fail "--name may only use lowercase letters, digits, '-' and '_'." ;;
+  esac
+  # Running or stopped: Docker treats two installs with one name as one install.
+  if docker compose ls -a -q 2>/dev/null | grep -qx "$INSTALL_NAME"; then
+    fail "Another install on this machine is already named \"$INSTALL_NAME\"." \
+      "To run a second install beside it, give this one its own name and folder:" \
+      "  $0 --name dpm-custody-2 --dir ~/dpm-custody-2 …"
   fi
-  ok "none"
+  ok "none named \"$INSTALL_NAME\" in $INSTALL_DIR"
 }
 
 ask_platform() {
@@ -253,14 +280,14 @@ build_images() {
 install() {
   local source manager_port
   manager_port="$(free_port 3000)"
-  step "Install into $INSTALL_DIR (wallet manager on :$manager_port)"
+  step "Install \"$INSTALL_NAME\" into $INSTALL_DIR (wallet manager on :$manager_port)"
   source="$(mktemp -d)"
   cp "$SCRIPT_DIR/compose.yml" "$SCRIPT_DIR/dpm-custody" "$source/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$IMAGE_TAG" "$IMAGE_TAG" >"$source/versions.env"
   # The installer goes on to setup in this terminal, with the two answers checked above preset.
   local status=0
   DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" \
-    DPM_CUSTODY_MANAGER_PORT="$manager_port" \
+    DPM_CUSTODY_MANAGER_PORT="$manager_port" DPM_CUSTODY_NAME="$INSTALL_NAME" \
     SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" \
     sh "$SCRIPT_DIR/install.sh" || status=$?
   rm -rf "$source"

@@ -224,6 +224,24 @@ unless you pass it as the last argument. `--images` defaults to `main`. It then:
 
 If you used `--dir`, pass the same `--dir` to both.
 
+### Two installs side by side (say, one segregated and one shared)
+
+Give the second install its own **name** and **folder**, and a new builder:
+
+```sh
+./deploy/try-install.sh --build                                                     # first: dpm-custody, ~/dpm-custody-try
+./deploy/try-install.sh --build --name dpm-custody-shared --dir ~/dpm-custody-shared  # second
+```
+
+The name prefixes the install's containers, volumes and network (it's written into its `.env` as
+`COMPOSE_PROJECT_NAME`), so the two never touch each other. The only port either one publishes is
+the wallet manager's, and the script gives each its own: the first free one from 3000 that no
+other container has claimed, even a stopped one. `verify` and `clean` find the install by its
+folder, so pass the same `--dir`. Choose each install's mode when its setup asks.
+
+A builder installing for real can do the same with `DPM_CUSTODY_NAME=… DPM_CUSTODY_DIR=…` before
+`sh`.
+
 ### Preparing a platform on your own computer
 
 Any way you run prediction-go works, as long as:

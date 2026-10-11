@@ -9,6 +9,8 @@
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
 # DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (3000) when it is taken.
+# DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
+# are all prefixed with it, so two installs with different names run side by side.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
 # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY answer setup's first two questions (still checked).
 set -eu
@@ -17,6 +19,7 @@ DIR="${DPM_CUSTODY_DIR:-$HOME/dpm-custody}"
 RELEASE="${DPM_CUSTODY_RELEASE:-latest}"
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
 MANAGER_PORT="${DPM_CUSTODY_MANAGER_PORT:-3000}"
+NAME="${DPM_CUSTODY_NAME:-dpm-custody}"
 
 say() { printf '%s\n' "$*"; }
 fail() {
@@ -50,6 +53,8 @@ write_env() {
   umask 077
   {
     say "# Written by the installer. Keep this file private: it holds the database password."
+    # Overrides compose.yml's `name:`, which is what keeps this install apart from any other.
+    say "COMPOSE_PROJECT_NAME=$NAME"
     say "POSTGRES_USER=dpm"
     say "POSTGRES_PASSWORD=$(random_password)"
     say "MANAGER_BIND=127.0.0.1"
@@ -57,6 +62,21 @@ write_env() {
     say "MANAGER_PUBLIC_URL=http://localhost:$MANAGER_PORT"
     grep -E '^DPM_WALLET(_MANAGER)?_TAG=' "$DIR/versions.env"
   } >"$DIR/.env"
+}
+
+# check_name refuses a name another install on this machine already uses: Docker would treat the
+# two as one, and the new install would take over the other's containers and data.
+check_name() {
+  case "$NAME" in
+    [a-z0-9]*) ;;
+    *) fail "DPM_CUSTODY_NAME must start with a lowercase letter or digit." ;;
+  esac
+  case "$NAME" in
+    *[!a-z0-9_-]*) fail "DPM_CUSTODY_NAME may only use lowercase letters, digits, '-' and '_'." ;;
+  esac
+  if docker compose ls -a -q 2>/dev/null | grep -qx "$NAME"; then
+    fail "Another install on this machine is already named \"$NAME\". Choose another name with DPM_CUSTODY_NAME=…"
+  fi
 }
 
 # wait_for_setup waits until the setup container can run a command, which is what setup needs.
@@ -86,6 +106,7 @@ main() {
   if [ -f "$DIR/.env" ]; then
     say "  Found an existing install in $DIR; starting it."
   else
+    check_name
     say "  Installing into $DIR ..."
     for f in compose.yml versions.env dpm-custody; do fetch_file "$f"; done
     chmod +x "$DIR/dpm-custody"
