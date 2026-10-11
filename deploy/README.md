@@ -224,20 +224,38 @@ unless you pass it as the last argument. `--images` defaults to `main`. It then:
 
 If you used `--dir`, pass the same `--dir` to both.
 
-### Two installs side by side (say, one segregated and one shared)
+### Two installs side by side: one segregated, one shared
 
-Give the second install its own **name** and **folder**, and a new builder:
+Each install needs its own **name**, its own **folder** and its own **builder**: create two
+custody builders in the backoffice and issue a key for each. Name each install after its mode,
+so you can always tell them apart:
 
 ```sh
-./deploy/try-install.sh --build                                                     # first: dpm-custody, ~/dpm-custody-try
-./deploy/try-install.sh --build --name dpm-custody-shared --dir ~/dpm-custody-shared  # second
+./deploy/try-install.sh --build --name dpm-custody-segregated --dir ~/dpm-custody-segregated
+#   setup asks for the mode: choose Segregated
+./deploy/try-install.sh --build --name dpm-custody-shared --dir ~/dpm-custody-shared
+#   setup asks for the mode: choose Shared
 ```
 
-The name prefixes the install's containers, volumes and network (it's written into its `.env` as
-`COMPOSE_PROJECT_NAME`), so the two never touch each other. The only port either one publishes is
-the wallet manager's, and the script gives each its own: the first free one from 3000 that no
-other container has claimed, even a stopped one. `verify` and `clean` find the install by its
-folder, so pass the same `--dir`. Choose each install's mode when its setup asks.
+`--build` is only needed once: the second run reuses the images the first built, unless the
+source changed in between.
+
+How they stay apart:
+
+- **Containers, volumes and network** are all prefixed with the name, which is written into the
+  install's `.env` as `COMPOSE_PROJECT_NAME`. The two never share anything.
+- **Ports:** the only port an install publishes is its wallet manager's. Each gets the first free
+  port from 3000 that no other container has claimed, even a stopped one. It's in the install's
+  `.env` as `MANAGER_PORT`, and the setup dashboard shows it at the end.
+- **A name already used** by another install, running or stopped, is refused.
+
+Everything else finds the install by its folder:
+
+```sh
+./deploy/try-install.sh verify --dir ~/dpm-custody-shared   # smoke test one install
+~/dpm-custody-shared/dpm-custody status                      # or any everyday command
+./deploy/try-install.sh clean --dir ~/dpm-custody-shared     # remove one install only
+```
 
 A builder installing for real can do the same with `DPM_CUSTODY_NAME=… DPM_CUSTODY_DIR=…` before
 `sh`.

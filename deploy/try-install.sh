@@ -15,7 +15,9 @@
 #   --dir DIR           where to install                          (default ~/dpm-custody-try)
 #   --name NAME         the install's Docker project name              (default dpm-custody)
 #                       Two installs with different names and folders run side by side, e.g.
-#                       one segregated and one shared: --name dpm-custody-shared --dir ~/dpm-custody-shared
+#                       one segregated and one shared (see deploy/README.md):
+#                         --name dpm-custody-segregated --dir ~/dpm-custody-segregated
+#                         --name dpm-custody-shared     --dir ~/dpm-custody-shared
 #
 # The builder private key comes from that platform's backoffice (Custody Builders → create a
 # builder → New key); without it on the command line the script asks for it. Every answer is
