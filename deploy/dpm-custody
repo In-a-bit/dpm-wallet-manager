@@ -4,8 +4,8 @@
 #   ./dpm-custody start        start everything (also after a reboot, if Docker does not)
 #   ./dpm-custody stop         stop everything; nothing is deleted
 #   ./dpm-custody status       what is running
-#   ./dpm-custody open         print the setup page address and PIN
-#   ./dpm-custody setup        run setup in this terminal instead of the browser
+#   ./dpm-custody setup        set up, or see where setup stands (safe to run again)
+#   ./dpm-custody support      write a report to send to support (no secrets in it)
 #   ./dpm-custody logs [svc]   recent logs (all services, or one)
 #   ./dpm-custody backup       save the databases and keys into ./backups
 #   ./dpm-custody backup-kit   print the backup kit again
@@ -18,15 +18,43 @@ compose() { docker compose --env-file .env -f compose.yml "$@"; }
 
 env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
 
-setup_url() {
-  local port
-  port="$(env_value SETUP_PORT)"
-  echo "http://localhost:${port:-8480}"
+# cmd_support writes everything support needs into one file, with keys masked: setup's own report
+# (checklist, journal, service checks) plus what only the host knows (Docker, containers, logs).
+cmd_support() {
+  local file
+  file="support-$(date +%Y%m%d-%H%M%S).txt"
+  echo "Writing $file ..."
+  {
+    echo "DPM custody support report"
+    echo "Send this file to the platform team. It holds no keys: they are shown masked."
+    echo
+    echo "== Host =="
+    echo "OS:               $(uname -srm)"
+    echo "Docker:           $(docker version --format '{{.Server.Version}}' 2>&1)"
+    echo "Docker Compose:   $(docker compose version --short 2>&1)"
+    echo "Install folder:   $(pwd)"
+    echo "Image versions:   dpm-wallet $(env_value DPM_WALLET_TAG), dpm-wallet-manager $(env_value DPM_WALLET_MANAGER_TAG)"
+    echo
+    echo "== Containers =="
+    compose ps -a 2>&1
+    echo
+    compose exec -T setup node dist/setup/main support 2>&1 || echo "(setup did not answer)"
+    for service in setup dpm-wallet dpm-wallet-manager postgres; do
+      echo
+      echo "== Logs: $service (last 200 lines) =="
+      compose logs --no-color --tail 200 "$service" 2>&1
+    done
+  } | mask_keys >"$file"
+  chmod 600 "$file"
+  echo "Done. Send $(pwd)/$file to the platform team."
 }
 
-cmd_open() {
-  echo "Setup page: $(setup_url)"
-  echo "PIN:        $(env_value SETUP_PIN)"
+# mask_keys hides any key that may still appear in a service log, keeping its last 4 characters.
+mask_keys() {
+  sed -E \
+    -e 's/bld_sk_[A-Za-z0-9_-]*([A-Za-z0-9_-]{4})/bld_sk_…\1/g' \
+    -e 's/(dpmm_[a-z0-9]+_[a-z]{2}_)[a-z0-9]*([a-z0-9]{4})/\1…\2/g' \
+    -e 's/dpmw_[a-f0-9]*([a-f0-9]{4})/dpmw_…\1/g'
 }
 
 cmd_backup() {
@@ -73,15 +101,16 @@ set_env() {
 }
 
 case "${1:-help}" in
-  start) compose up -d && cmd_open ;;
+  start) compose up -d ;;
   stop) compose stop ;;
   status) compose ps ;;
-  open) cmd_open ;;
-  # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still checked).
+  # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still
+  # checked); SETUP_INSTALL_SECONDS is how long the installer took, for the checklist.
   setup)
     compose exec ${SETUP_PLATFORM_URL:+-e SETUP_PLATFORM_URL} ${SETUP_BUILDER_KEY:+-e SETUP_BUILDER_KEY} \
-      setup node dist/setup/main cli
+      ${SETUP_INSTALL_SECONDS:+-e SETUP_INSTALL_SECONDS} setup node dist/setup/main setup
     ;;
+  support) cmd_support ;;
   logs) shift; compose logs --tail 200 "$@" ;;
   backup) cmd_backup ;;
   backup-kit) compose exec -T setup node dist/setup/main kit ;;

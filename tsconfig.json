@@ -23,8 +23,10 @@
     "noEmitOnError": true,
     "declaration": false,
     "incremental": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // The setup dashboard (src/setup/tui) is React for the terminal, bundled apart by esbuild.
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

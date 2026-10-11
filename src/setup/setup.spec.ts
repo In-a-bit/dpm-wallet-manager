@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,13 +27,18 @@ import {
   type InstallConfig,
 } from "./platform-config";
 import { generateInstallSecrets } from "./secrets";
-import { createSetupServer, PinGuard } from "./server";
+import { JOURNEY } from "./catalog";
+import { journey, stepDetails } from "./journey";
+import { Journal, mask, type JournalEvent } from "./journal";
 import { SetupService } from "./setup-service";
 import { SetupStateStore, type SetupState } from "./state";
+import { knownSecrets, supportReport } from "./support";
+import { SetupWorker } from "./worker";
 import {
   isComplete,
   progress,
   provision,
+  STEPS,
   type HttpResult,
   type ProvisioningDeps,
   type SetupHttp,
@@ -414,43 +418,198 @@ describe("SetupService.start", () => {
   });
 });
 
-describe("PinGuard", () => {
-  it("locks out after repeated wrong PINs, even for the right one", () => {
-    const guard = new PinGuard("123456");
-    expect(guard.allows("123456")).toBe(true);
-    for (let i = 0; i < 10; i++) guard.allows("000000");
-    expect(guard.allows("123456")).toBe(false);
-    expect(guard.lockedMessage()).toMatch(/Too many/);
+describe("SetupService and the worker", () => {
+  const fetchOk: FetchLike = async () => new Response(JSON.stringify(PLATFORM), { status: 200 });
+  const input = {
+    environment: "dev",
+    builderKey: "bld_sk_abcdef123456",
+    mode: "shared",
+    confirmModeIsPermanent: true,
+  };
+
+  it("records the answers and leaves provisioning to the worker", async () => {
+    const stack = new FakeStack();
+    const deps = provisioningDeps(stack, tempDir(), []);
+    await new SetupService(deps, fetchOk).start(input);
+
+    expect(stack.calls).toEqual([]);
+    expect(deps.store.load().installId).toMatch(/^[0-9a-f]{8}$/);
+    await new SetupWorker(deps).tick();
+    expect(isComplete(deps.store.load())).toBe(true);
+  });
+
+  it("stops at a failure until a retry is asked for, then carries on", async () => {
+    const stack = new FakeStack();
+    stack.failures.set("/v1/platform/master-wallet", 1);
+    const deps = provisioningDeps(stack, tempDir(), []);
+    const service = new SetupService(deps, fetchOk);
+    await service.start(input);
+    const worker = new SetupWorker(deps);
+
+    await worker.tick();
+    expect(deps.store.load().lastError).toMatch(/upstream said no/);
+    await worker.tick();
+    expect(stack.count("POST /v1/platform/master-wallet")).toBe(1);
+
+    service.retry();
+    expect(service.retryPending()).toBe(true);
+    await worker.tick();
+    expect(isComplete(deps.store.load())).toBe(true);
+    expect(service.retryPending()).toBe(false);
   });
 });
 
-describe("setup server", () => {
-  it("answers a failing route with its message instead of crashing", async () => {
-    const service = new SetupService(provisioningDeps(new FakeStack(), tempDir(), []));
-    const server = createSetupServer({
-      service,
-      pin: "123456",
-      managerPublicUrl: "http://localhost:3000",
-      liveStatus: async () => ({}),
+describe("journal", () => {
+  it("masks keys by their shape and last four characters", () => {
+    const text =
+      "key bld_sk_supersecretvalue1234 admin dpmm_dev_ad_abcdefghjkmnpqrs and 0123456789abcdef";
+    expect(mask(text, ["0123456789abcdef"])).toBe(
+      "key bld_sk_…1234 admin dpmm_dev_ad_…pqrs and …cdef",
+    );
+  });
+
+  it("is masked on disk, and read back incrementally", () => {
+    const dir = tempDir();
+    const journal = new Journal(dir, () => ["the-wallet-secret"]);
+    journal.append({ type: "note", message: "uses the-wallet-secret" });
+    const first = journal.readFrom(0);
+    expect(first.entries).toHaveLength(1);
+    expect(fs.readFileSync(journal.file, "utf8")).not.toContain("the-wallet-secret");
+
+    journal.append({ type: "note", message: "second" });
+    fs.appendFileSync(journal.file, '{"type":"note"'); // a line still being written
+    const next = journal.readFrom(first.offset);
+    expect(next.entries.map((entry) => entry.type === "note" && entry.message)).toEqual(["second"]);
+  });
+});
+
+describe("step reporting", () => {
+  it("journals each step's start, progress and end, and the failure that stops it", async () => {
+    const stack = new FakeStack();
+    stack.failures.set("/v1/platform/master-wallet", 1);
+    const events: JournalEvent[] = [];
+    const deps = {
+      ...provisioningDeps(stack, tempDir(), []),
+      report: (e: JournalEvent) => void events.push(e),
+    };
+    seedStarted(deps.store, "segregated");
+
+    await expect(provision(deps)).rejects.toThrow();
+    const kinds = events.map((e) => `${e.type}:${"step" in e ? e.step : ""}`);
+    expect(kinds.slice(0, 3)).toEqual([
+      "step.start:write-config",
+      "step.progress:write-config",
+      "step.done:write-config",
+    ]);
+    expect(kinds).toContain("step.fail:master-wallet");
+    expect(kinds).not.toContain("step.start:operations-wallet");
+  });
+
+  it("names every step in the catalogue, in order", () => {
+    const ids = JOURNEY.map((item) => item.id);
+    const positions = STEPS.map((step) => ids.indexOf(step.id));
+    expect(positions.every((at) => at >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+});
+
+describe("journey", () => {
+  it("asks for the platform on a new install, with everything else still to come", () => {
+    const { rows, position, total } = journey(emptyLike(), [], { asking: "platform" });
+    expect(rows.map((row) => row.status).slice(0, 3)).toEqual(["done", "asking", "pending"]);
+    expect(position).toBe(2);
+    expect(total).toBe(JOURNEY.length);
+  });
+
+  it("shows the running step with what it is doing, and skips what the mode does not need", () => {
+    const store = new SetupStateStore(tempDir());
+    seedStarted(store, "segregated");
+    store.update((state) => {
+      state.completedSteps = ["write-config"];
+      state.running = true;
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const { port } = server.address() as AddressInfo;
-    try {
-      const kit = await fetch(`http://127.0.0.1:${port}/api/backup-kit`, {
-        headers: { "X-Setup-Pin": "123456" },
-      });
-      expect(kit.status).toBe(400);
-      expect(await kit.json()).toEqual({ message: expect.stringMatching(/nothing to back up/) });
+    const at = new Date().toISOString();
+    const rows = journey(
+      store.load(),
+      [
+        { type: "step.start", step: "wallet-ready", at, pid: 1 },
+        {
+          type: "step.progress",
+          step: "wallet-ready",
+          message: "Still starting (check 3)",
+          at,
+          pid: 1,
+        },
+      ],
+      {},
+    ).rows;
+    const byId = Object.fromEntries(rows.map((row) => [row.id, row]));
+    expect(byId.key).toMatchObject({ status: "done", result: "Acme (#7)" });
+    expect(byId["wallet-ready"]).toMatchObject({
+      status: "running",
+      live: "Still starting (check 3)",
+    });
+    expect(byId["operations-wallet"]?.status).toBe("skipped");
+  });
 
-      const state = await fetch(`http://127.0.0.1:${port}/api/state`, {
-        headers: { "X-Setup-Pin": "123456" },
-      });
-      expect(state.status).toBe(200);
-    } finally {
-      server.close();
-    }
+  it("marks the step that failed, with its error", () => {
+    const store = new SetupStateStore(tempDir());
+    seedStarted(store, "shared");
+    store.update((state) => {
+      state.completedSteps = ["write-config", "wallet-ready"];
+      state.lastError = "Creating the key vault failed (502)";
+    });
+    const failed = journey(store.load(), [], {}).rows.find((row) => row.status === "failed");
+    expect(failed).toMatchObject({
+      id: "vault-init",
+      error: "Creating the key vault failed (502)",
+    });
+  });
+
+  it("gathers a step's journal lines, including its requests", () => {
+    const at = new Date().toISOString();
+    const details = stepDetails(
+      [
+        { type: "step.start", step: "vault-init", at, pid: 1 },
+        {
+          type: "http",
+          method: "POST",
+          url: "http://w/v1/vault/init",
+          status: 502,
+          ms: 40,
+          at,
+          pid: 1,
+        },
+        { type: "step.fail", step: "vault-init", ms: 41, error: "no", at, pid: 1 },
+        { type: "step.start", step: "other", at, pid: 1 },
+      ],
+      "vault-init",
+    );
+    expect(details.map((entry) => entry.type)).toEqual(["step.start", "http", "step.fail"]);
   });
 });
+
+describe("support report", () => {
+  it("describes the install without any of its secrets", async () => {
+    const stack = new FakeStack();
+    const dir = tempDir();
+    const deps = provisioningDeps(stack, dir, []);
+    seedStarted(deps.store, "shared");
+    const journal = new Journal(dir, () => knownSecrets(deps.store.load()));
+    await provision({ ...deps, report: (event) => journal.append(event) });
+    const state = deps.store.load();
+    journal.append({ type: "note", message: `leaked ${state.secrets?.walletEncryptionKey}` });
+
+    const report = supportReport(state, journal, [{ label: "Wallet service", ok: true }]);
+    expect(report).toContain("Acme (#7)");
+    expect(report).toContain("[done   ] Check everything works");
+    for (const secret of knownSecrets(state)) expect(report).not.toContain(secret);
+  });
+});
+
+function emptyLike(): SetupState {
+  return new SetupStateStore(tempDir()).load();
+}
 
 describe("SetupService owner login", () => {
   async function provisioned(stack = new FakeStack()) {

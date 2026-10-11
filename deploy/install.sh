@@ -4,12 +4,11 @@
 #   curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh | sh
 #
 # It checks Docker, puts three files in ~/dpm-custody (override with DPM_CUSTODY_DIR), writes
-# .env with a fresh database password and setup PIN, starts the stack, then runs setup in this
-# terminal. Running it again on an existing install starts it and finishes setup if it is not
+# .env with a fresh database password, starts the stack, then runs setup in this terminal. Running it again on an existing install starts it and finishes setup if it is not
 # done; nothing is overwritten.
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
-# DPM_CUSTODY_SETUP_PORT / DPM_CUSTODY_MANAGER_PORT move the two ports (8480 / 3000) when taken.
+# DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (3000) when it is taken.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
 # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY answer setup's first two questions (still checked).
 set -eu
@@ -17,7 +16,6 @@ set -eu
 DIR="${DPM_CUSTODY_DIR:-$HOME/dpm-custody}"
 RELEASE="${DPM_CUSTODY_RELEASE:-latest}"
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
-SETUP_PORT="${DPM_CUSTODY_SETUP_PORT:-8480}"
 MANAGER_PORT="${DPM_CUSTODY_MANAGER_PORT:-3000}"
 
 say() { printf '%s\n' "$*"; }
@@ -47,7 +45,6 @@ fetch_file() {
 }
 
 random_password() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
-random_pin() { LC_ALL=C tr -dc '0-9' </dev/urandom | head -c 6; }
 
 write_env() {
   umask 077
@@ -55,8 +52,6 @@ write_env() {
     say "# Written by the installer. Keep this file private: it holds the database password."
     say "POSTGRES_USER=dpm"
     say "POSTGRES_PASSWORD=$(random_password)"
-    say "SETUP_PIN=$(random_pin)"
-    say "SETUP_PORT=$SETUP_PORT"
     say "MANAGER_BIND=127.0.0.1"
     say "MANAGER_PORT=$MANAGER_PORT"
     say "MANAGER_PUBLIC_URL=http://localhost:$MANAGER_PORT"
@@ -64,28 +59,25 @@ write_env() {
   } >"$DIR/.env"
 }
 
-wait_for_setup_page() {
+# wait_for_setup waits until the setup container can run a command, which is what setup needs.
+wait_for_setup() {
   i=0
   while [ $i -lt 90 ]; do
-    if curl -fsS -o /dev/null "http://localhost:$SETUP_PORT/" 2>/dev/null; then return 0; fi
+    if (cd "$DIR" && docker compose --env-file .env -f compose.yml exec -T setup true) >/dev/null 2>&1; then
+      return 0
+    fi
     i=$((i + 1))
     sleep 2
   done
-  fail "The setup page did not start. Run '$DIR/dpm-custody logs setup' to see why."
+  fail "The setup service did not start. Run '$DIR/dpm-custody logs setup' to see why."
 }
 
 # can_ask is true when there is a terminal to ask setup's questions in. Under `curl | sh` the
 # script's own input is the download, so the questions go to the terminal itself.
 can_ask() { (exec </dev/tty) 2>/dev/null; }
 
-print_other_ways() {
-  say "  Or finish in a browser, with the PIN $1:"
-  say "    • on this machine:          $2"
-  say "    • from your own computer:   ssh -L $SETUP_PORT:localhost:$SETUP_PORT <you>@<this-server>"
-  say "                                then open $2 there"
-}
-
 main() {
+  started="$(date +%s)"
   say ""
   say "  DPM Custody installer"
   say ""
@@ -102,22 +94,17 @@ main() {
   say "  Downloading and starting the services (the first time takes a few minutes) ..."
   (cd "$DIR" && docker compose --env-file .env -f compose.yml up -d --pull missing) ||
     fail "Docker could not start the services. See the messages above."
-  wait_for_setup_page
-
-  url="http://localhost:$SETUP_PORT"
-  pin="$(sed -n 's/^SETUP_PIN=//p' "$DIR/.env")"
+  wait_for_setup
+  # Shown in setup's checklist as the time the installation took.
+  SETUP_INSTALL_SECONDS="$(($(date +%s) - started))"
+  export SETUP_INSTALL_SECONDS
   say ""
   if ! can_ask; then
-    say "  ✓ Running. Finish setup in a terminal:  $DIR/dpm-custody setup"
+    say "  ✓ Running. To finish, run setup in a terminal:  $DIR/dpm-custody setup"
+  elif ! "$DIR/dpm-custody" setup </dev/tty; then
     say ""
-    print_other_ways "$pin" "$url"
-  elif "$DIR/dpm-custody" setup </dev/tty; then
-    :
-  else
-    say ""
-    say "  Setup did not finish. Fix what it says, then continue:  $DIR/dpm-custody setup"
-    say ""
-    print_other_ways "$pin" "$url"
+    say "  Setup is not finished. Continue any time:  $DIR/dpm-custody setup"
+    say "  Need help? Run $DIR/dpm-custody support and send the file it writes to the platform team."
     say ""
     exit 1
   fi

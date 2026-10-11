@@ -1,5 +1,6 @@
 import type { DatabaseCredentials, InstallInputs } from "./config-writer";
 import { findEnvironment } from "./environments";
+import type { JournalEvent } from "./journal";
 import { SetupError } from "./platform-config";
 import type { SetupState, SetupStateStore } from "./state";
 
@@ -25,9 +26,15 @@ export type ProvisioningDeps = {
   database: DatabaseCredentials;
   /** How long a service may take to come up; the first start runs its migrations. */
   readyTimeoutMs: number;
+  /** Where each step says what it is doing; the journal, outside tests. */
+  report?: (event: JournalEvent) => void;
 };
 
-type StepContext = { deps: ProvisioningDeps; state: SetupState };
+type StepContext = {
+  deps: ProvisioningDeps;
+  state: SetupState;
+  progress: (message: string) => void;
+};
 
 /** A change a step makes to the state, applied in the same save that marks it done. */
 type StateChange = (state: SetupState) => void;
@@ -138,42 +145,58 @@ export async function provision(deps: ProvisioningDeps): Promise<SetupState> {
 async function runStep(step: Step, deps: ProvisioningDeps): Promise<void> {
   const state = deps.store.load();
   if (!step.appliesTo(state) || state.completedSteps.includes(step.id)) return;
-  const change = await step.run({ deps, state });
+  const report = deps.report ?? (() => undefined);
+  const started = Date.now();
+  report({ type: "step.start", step: step.id });
+  const progress = (message: string) => report({ type: "step.progress", step: step.id, message });
+  let change: StateChange | void;
+  try {
+    change = await step.run({ deps, state, progress });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    report({ type: "step.fail", step: step.id, ms: Date.now() - started, error });
+    throw err;
+  }
   deps.store.update((next) => {
     if (change) change(next);
     next.completedSteps.push(step.id);
   });
+  report({ type: "step.done", step: step.id, ms: Date.now() - started });
 }
 
 // ── steps ───────────────────────────────────────────────────────────────────
 
-async function writeConfig({ deps, state }: StepContext): Promise<void> {
+async function writeConfig({ deps, state, progress }: StepContext): Promise<void> {
   const { answers, platform, secrets } = requireConfigured(state);
+  progress("Writing the settings files for the wallet service and the wallet manager");
   const keyEnv = findEnvironment(answers.environment)?.keyEnv ?? answers.environment;
   deps.writeConfig({ answers, platform, secrets, database: deps.database, keyEnv });
 }
 
-async function waitForWallet({ deps }: StepContext): Promise<void> {
-  await waitUntilHealthy(deps, `${deps.walletUrl}/v1/health`, "The wallet service");
+async function waitForWallet({ deps, progress }: StepContext): Promise<void> {
+  await waitUntilHealthy(deps, `${deps.walletUrl}/v1/health`, "The wallet service", progress);
 }
 
-async function initVault({ deps, state }: StepContext): Promise<void> {
+async function initVault({ deps, state, progress }: StepContext): Promise<void> {
   const { secrets } = requireConfigured(state);
+  progress("Asking the wallet service to create its vault with the key provider");
   const result = await deps.http("POST", `${deps.walletUrl}/v1/vault/init`, {
     apiKey: secrets.walletApiKey,
   });
   expectSuccess(result, "Creating the key vault");
 }
 
-async function waitForManager({ deps }: StepContext): Promise<void> {
-  await waitUntilHealthy(deps, `${deps.managerUrl}/v1/health`, "The wallet manager");
+async function waitForManager({ deps, progress }: StepContext): Promise<void> {
+  await waitUntilHealthy(deps, `${deps.managerUrl}/v1/health`, "The wallet manager", progress);
 }
 
-async function createMasterWallet({ deps, state }: StepContext): Promise<void> {
+async function createMasterWallet({ deps, state, progress }: StepContext): Promise<void> {
+  progress("Creating the wallet and registering it with the platform");
   await postAsAdmin(deps, state, "/v1/platform/master-wallet", {}, "Creating the master wallet");
 }
 
-async function createOperationsWallet({ deps, state }: StepContext): Promise<void> {
+async function createOperationsWallet({ deps, state, progress }: StepContext): Promise<void> {
+  progress("Creating the wallet and registering it with the platform");
   await postAsAdmin(
     deps,
     state,
@@ -183,7 +206,8 @@ async function createOperationsWallet({ deps, state }: StepContext): Promise<voi
   );
 }
 
-async function issueOperatorKey({ deps, state }: StepContext): Promise<StateChange> {
+async function issueOperatorKey({ deps, state, progress }: StepContext): Promise<StateChange> {
+  progress("Asking the wallet manager for an operator key");
   const body = await postAsAdmin(
     deps,
     state,
@@ -199,8 +223,9 @@ async function issueOperatorKey({ deps, state }: StepContext): Promise<StateChan
   };
 }
 
-async function verify({ deps, state }: StepContext): Promise<void> {
+async function verify({ deps, state, progress }: StepContext): Promise<void> {
   const { answers, secrets } = requireConfigured(state);
+  progress("Reading the wallet manager's own view of the install");
   const result = await deps.http("GET", `${deps.managerUrl}/v1/platform`, {
     apiKey: secrets.adminKey,
   });
@@ -273,9 +298,17 @@ async function waitUntilHealthy(
   deps: ProvisioningDeps,
   url: string,
   service: string,
+  progress: (message: string) => void,
 ): Promise<void> {
-  const deadline = Date.now() + deps.readyTimeoutMs;
-  while (Date.now() < deadline) {
+  const started = Date.now();
+  const deadline = started + deps.readyTimeoutMs;
+  for (let attempt = 1; Date.now() < deadline; attempt++) {
+    const waited = Math.round((Date.now() - started) / 1000);
+    progress(
+      attempt === 1
+        ? `Waiting for ${service.toLowerCase()} to answer`
+        : `Still starting (check ${attempt}, ${waited}s so far; the first start prepares its database)`,
+    );
     const healthy = await deps.http("GET", url).then(
       (result) => result.status === 200,
       () => false,
@@ -284,6 +317,6 @@ async function waitUntilHealthy(
     await deps.sleep(POLL_INTERVAL_MS);
   }
   throw new SetupError(
-    `${service} did not start in time. Run "./dpm-custody logs" to see why, then click Retry.`,
+    `${service} did not start within ${Math.round(deps.readyTimeoutMs / 60_000)} minutes.`,
   );
 }

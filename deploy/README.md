@@ -31,40 +31,48 @@ curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/downlo
 irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 ```
 
-It downloads and starts the service, then asks you a few questions in the same window. Each
-answer is checked as soon as you give it. If one is wrong, it says why and asks again.
+It downloads and starts the service, then opens the **setup dashboard** in the same window.
 
-## Step 2: Answer the setup questions
+## Step 2: Follow the setup dashboard
+
+The dashboard is a checklist of everything setup does. Each line shows ✔ when it's done, a
+spinner while it runs, and ○ while it's still to come. The box at the bottom explains the
+highlighted line in plain words, and asks you a question when one is needed. Every answer is
+checked as soon as you give it. If one is wrong, it says why and asks again.
 
 1. **Choose the platform** you're joining. If you're not sure, ask the platform team.
 2. **Paste your builder private key.** It isn't shown as you paste it. It should say
    "Connecting as" followed by your company's name.
-3. **Choose how your users' funds are held.** If you're not sure, choose
-   **"Each user holds their own funds"**. This choice can't be changed later, so you type `yes`
-   to confirm it.
-4. **Wait a minute or two** while each step gets a ✓.
+3. **Choose how your users' funds are held.** If you're not sure, choose **Segregated**. This
+   choice can't be changed later, so you type `yes` to confirm it.
+4. **Wait a minute or two** while each step gets a ✔. While you wait:
+   - **↑ and ↓** pick a step.
+   - **?** explains it in more detail.
+   - **d** shows exactly what it did: each request, its answer and its timing.
 5. **Create your login** for the admin dashboard: a username and a password of at least 12
    characters.
-6. **Save the backup kit.** It's printed in the window. Copy all of it somewhere safe and
-   private, such as a password manager, then press Enter. If you lose this computer, the backup
-   kit is the only way to recover.
+6. **Save the backup kit.** It's printed above the dashboard. Copy all of it somewhere safe and
+   private, such as a password manager, then type `saved`. If you lose this computer, the backup
+   kit is the only way to recover. Never send it to anyone, support included.
 
-At the end it shows the **backend key**. Give it, with the wallet manager address
-(`./dpm-custody status` shows it), to whoever runs your backend. The **admin dashboard** is at
-that address followed by `/admin`. Sign in there with the login you just created to see your
-wallets, manage API keys, read the audit log, and add more people.
+The last screen shows the **backend key** and the **wallet manager address**. Give both to
+whoever runs your backend. The **admin dashboard** is at that address followed by `/admin`.
+Sign in there with the login you just created to see your wallets, manage API keys, read the
+audit log, and add more people.
+
+You can close the window at any time, even halfway through: setup carries on in the
+background. Run `~/dpm-custody/dpm-custody setup` to see it again. On Windows, use the command
+the installer printed.
 
 ### If setup stops
 
-Fix what the message says, then continue where it stopped: `~/dpm-custody/dpm-custody setup`
-on Mac and Linux. On Windows, run the command the installer printed. Finished steps aren't
-repeated.
+The dashboard says which step stopped, why, and what to try. Fix that, then press **r** to try
+again. Finished steps aren't repeated.
 
-### Prefer a browser?
-
-The same setup is also a web page, at the address and PIN `~/dpm-custody/dpm-custody open`
-prints. On a server with no screen, reach it from your own computer:
-`ssh -L 8480:localhost:8480 you@your-server`, then open <http://localhost:8480> there.
+If it keeps stopping, run `~/dpm-custody/dpm-custody support`. It writes one file with
+everything support needs: the checklist, what each step did and when, the state of each service,
+and their recent logs. Keys in it are masked, so it's safe to email. Send that file to the
+platform team, with the **reference** shown on the dashboard.
 
 ## Everyday use
 
@@ -77,7 +85,8 @@ Everything lives in the `dpm-custody` folder in your home folder. On Mac and Lin
 | see what's running           | `~/dpm-custody/dpm-custody status`  |
 | make a backup                | `~/dpm-custody/dpm-custody backup`  |
 | update to the newest version | `~/dpm-custody/dpm-custody upgrade` |
-| get help from support        | `~/dpm-custody/dpm-custody logs`    |
+| get help from support        | `~/dpm-custody/dpm-custody support` |
+| see setup again              | `~/dpm-custody/dpm-custody setup`   |
 
 On Windows, open PowerShell in `%USERPROFILE%\dpm-custody` and use
 `docker compose --env-file .env -f compose.yml` followed by `up -d`, `stop`, `ps` or `logs`.
@@ -91,24 +100,24 @@ machine. It contains secrets, so keep it private.
   Running it again is always safe: it never overwrites an existing install.
 - **"This key was not accepted":** copy the whole key again, and check you chose the right
   platform.
-- **Setup stopped with an error:** fix what the message says, then run
-  `~/dpm-custody/dpm-custody setup` (or click **Retry** on the page). Finished steps are kept.
-- **Port already in use:** another program uses 8480 or 3000. Rerun the installer with
-  different ports, e.g. `DPM_CUSTODY_SETUP_PORT=8481 DPM_CUSTODY_MANAGER_PORT=3001` before
-  `sh`.
+- **Setup stopped with an error:** fix what the dashboard says, then press **r**. Finished steps
+  are kept.
+- **Port already in use:** another program uses port 3000. Rerun the installer with another
+  port, e.g. `DPM_CUSTODY_MANAGER_PORT=3001` before `sh`.
 
-For anything else, send the output of `dpm-custody logs` to the platform team.
+For anything else, run `dpm-custody support` and send the file it writes to the platform team.
 
 ## For administrators
 
 - **Services:** Postgres, dpm-wallet, dpm-wallet-manager and a setup service. All come from the
   public images `ghcr.io/in-a-bit/dpm-wallet` and `ghcr.io/in-a-bit/dpm-wallet-manager`. See
   `compose.yml`.
-- **Network exposure:** only the setup page (8480) and the manager API (3000) are published,
-  both on `127.0.0.1`. To reach the manager from another host, set `MANAGER_BIND=0.0.0.0` in
+- **Network exposure:** only the manager API (3000) is published, on `127.0.0.1`. Setup has no
+  port: it runs in a terminal, inside its container. To reach the manager from another host, set `MANAGER_BIND=0.0.0.0` in
   `.env` and put TLS in front of it.
-- **Configuration:** the setup page writes both services' configuration into the `config`
-  volume. It gets the platform values from dpm-api `GET /wallet-install/config`, authenticated
+- **Configuration:** setup writes both services' configuration into the `config` volume. It
+  also keeps its state there, plus `setup-journal.jsonl`, a masked log of every step, which the
+  support report includes. It gets the platform values from dpm-api `GET /wallet-install/config`, authenticated
   with the builder key, and generates every other secret itself.
 - **Credentials:** the builder private key is the install's only platform credential, the same
   way an LP key is for a liquidity provider. dpm-api, gamma-api and relayer-api all accept it
@@ -201,8 +210,8 @@ unless you pass it as the last argument. `--images` defaults to `main`. It then:
    supports self-install, then that it accepts your key (and names your builder). A wrong answer
    is asked for again; a problem on the platform's side stops the run and says what to fix.
 2. **Prepares the images:** it pulls or builds them.
-3. **Installs** into `~/dpm-custody-try` (`--dir` to change). It uses ports 8480 and 3000, or the
-   next free ones if those are taken.
+3. **Installs** into `~/dpm-custody-try` (`--dir` to change). It uses port 3000, or the next
+   free one if that's taken.
 4. **Sets up** with the install's own terminal setup (`dpm-custody setup`). That setup checks the
    platform and key again, from inside the install, without asking for them again. Then it asks
    for the custody mode, creates your admin login, and shows the backup kit.
@@ -306,28 +315,22 @@ docker build -t "ghcr.io/in-a-bit/dpm-wallet:$TAG" "$WALLET_SRC"
 docker build -t "ghcr.io/in-a-bit/dpm-wallet-manager:$TAG" .
 ```
 
-**5. Install.** If 8480 or 3000 is taken on your machine, change the two port variables.
+**5. Install.** If 3000 is taken on your machine, change the port variable.
 
 ```sh
 SRC=$(mktemp -d)
 cp deploy/compose.yml deploy/dpm-custody "$SRC/"
 printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$TAG" "$TAG" > "$SRC/versions.env"
 DPM_CUSTODY_DIR=~/dpm-custody-try DPM_CUSTODY_SOURCE="$SRC" \
-  DPM_CUSTODY_SETUP_PORT=8480 DPM_CUSTODY_MANAGER_PORT=3000 sh deploy/install.sh
+  DPM_CUSTODY_MANAGER_PORT=3000 SETUP_PLATFORM_URL="$PLATFORM" sh deploy/install.sh
 ```
 
-It ends with `✓ Ready`.
+**6. Setup.** The installer goes straight on to the setup dashboard. `SETUP_PLATFORM_URL` has
+already answered the platform question, so:
 
-**6. Setup.**
-
-```sh
-SETUP_PLATFORM_URL="$PLATFORM" ~/dpm-custody-try/dpm-custody setup
-```
-
-1. It checks the platform, then asks for your key. It should say "Connecting as" followed by
-   your builder's name.
-2. Pick a mode and type `yes`. Wait until every step has a ✓.
-3. Create the admin login, save the backup kit, and press Enter.
+1. Paste your key. It should say "Connecting as" followed by your builder's name.
+2. Pick a mode and type `yes`. Wait until every step has a ✔.
+3. Create the admin login, save the backup kit, and type `saved`.
 
 **7. Verify.**
 
@@ -379,7 +382,7 @@ reserved for testing) and issue its key. Run the pre-flight check against
 curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh | sh
 ```
 
-When setup asks, choose **Production**, paste the key and choose a mode.
+When the setup dashboard asks, choose **Production**, paste the key and choose a mode.
 
 **5. Verify.** From your dpm-wallet-manager checkout, run
 `./deploy/try-install.sh verify --dir ~/dpm-custody`. This is real production: use small

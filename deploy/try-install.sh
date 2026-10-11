@@ -251,17 +251,16 @@ build_images() {
 }
 
 install() {
-  local source setup_port manager_port
-  setup_port="$(free_port 8480)"
+  local source manager_port
   manager_port="$(free_port 3000)"
-  step "Install into $INSTALL_DIR (setup page :$setup_port, wallet manager :$manager_port)"
+  step "Install into $INSTALL_DIR (wallet manager on :$manager_port)"
   source="$(mktemp -d)"
   cp "$SCRIPT_DIR/compose.yml" "$SCRIPT_DIR/dpm-custody" "$source/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$IMAGE_TAG" "$IMAGE_TAG" >"$source/versions.env"
   # The installer goes on to setup in this terminal, with the two answers checked above preset.
   local status=0
   DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" \
-    DPM_CUSTODY_SETUP_PORT="$setup_port" DPM_CUSTODY_MANAGER_PORT="$manager_port" \
+    DPM_CUSTODY_MANAGER_PORT="$manager_port" \
     SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" \
     sh "$SCRIPT_DIR/install.sh" || status=$?
   rm -rf "$source"

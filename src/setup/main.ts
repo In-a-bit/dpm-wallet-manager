@@ -1,58 +1,86 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
 import path from "node:path";
 
 import { runCli } from "./cli";
 import { MANAGER_PORT, WALLET_PORT, writeInstallConfig } from "./config-writer";
 import { fetchHttp } from "./http";
+import { excerpt, Journal } from "./journal";
 import { liveStatus } from "./live-status";
-import { createSetupServer } from "./server";
 import { SetupService } from "./setup-service";
 import { SetupStateStore } from "./state";
-import type { ProvisioningDeps } from "./steps";
+import type { ProvisioningDeps, SetupHttp } from "./steps";
+import { knownSecrets, supportReport } from "./support";
+import type { DashboardModule, DashboardOptions } from "./tui/options";
+import { SetupWorker } from "./worker";
 
 /**
  * Entry point of the `setup` service in deploy/compose.yml. It runs from the dpm-wallet-manager
  * image but never loads the manager's configuration — producing that configuration is its job.
  *
- *   node dist/setup/main          the setup page (default)
- *   node dist/setup/main cli      the same flow in the terminal; SETUP_PLATFORM_URL and
- *                                 SETUP_BUILDER_KEY answer its first two questions (still checked)
+ *   node dist/setup/main          the worker: runs provisioning once answers exist (default)
+ *   node dist/setup/main setup    asks the questions and shows progress: the dashboard in a
+ *                                 terminal, plain lines otherwise. SETUP_PLATFORM_URL and
+ *                                 SETUP_BUILDER_KEY answer the first two questions (still checked)
  *   node dist/setup/main kit      print the backup kit again
+ *   node dist/setup/main support  print the setup half of the support report
  */
 const env = (name: string, fallback: string): string => process.env[name] || fallback;
 
 const CONFIG_DIR = env("SETUP_CONFIG_DIR", "/config");
-const LISTEN_PORT = Number(env("SETUP_PORT", "8480"));
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
-const PIN_FILE = "setup-pin";
 /** Where the builder reaches the wallet manager (and its admin UI) from outside the stack. */
 const MANAGER_PUBLIC_URL = env("SETUP_MANAGER_PUBLIC_URL", `http://localhost:${MANAGER_PORT}`);
 
-function main(): void {
+async function main(): Promise<void> {
   const store = new SetupStateStore(CONFIG_DIR);
-  const deps = provisioningDeps(store);
-  const service = new SetupService(deps, fetch, `${MANAGER_PUBLIC_URL}/admin`);
+  const journal = new Journal(CONFIG_DIR, () => knownSecrets(store.load()));
+  const deps = provisioningDeps(store, journal);
+  const service = new SetupService(deps, journalledFetch(journal), `${MANAGER_PUBLIC_URL}/admin`);
 
-  const command = process.argv[2];
-  if (command === "kit") return void process.stdout.write(service.backupKit());
-  if (command === "cli") {
-    return void runCli(service, () => store.load(), {
-      platformUrl: process.env.SETUP_PLATFORM_URL,
-      builderKey: process.env.SETUP_BUILDER_KEY,
-    });
+  switch (process.argv[2] ?? "worker") {
+    case "worker":
+      return new SetupWorker(deps, journal).start();
+    case "kit":
+      return void process.stdout.write(service.backupKit());
+    case "support": {
+      const { checks } = await liveStatus(deps.http, store, deps);
+      return void process.stdout.write(supportReport(store.load(), journal, checks));
+    }
+    case "setup":
+    case "cli": {
+      const presets = {
+        platformUrl: process.env.SETUP_PLATFORM_URL,
+        builderKey: process.env.SETUP_BUILDER_KEY,
+      };
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        return runCli(service, () => store.load(), presets, journal);
+      }
+      const options: DashboardOptions = {
+        service,
+        journal,
+        presets,
+        installSeconds: Number(process.env.SETUP_INSTALL_SECONDS) || undefined,
+        managerPublicUrl: MANAGER_PUBLIC_URL,
+      };
+      // The dashboard is ESM (Ink needs top-level await), bundled apart; see package.json.
+      const { runDashboard } = await importEsm<DashboardModule>(path.join(__dirname, "tui.mjs"));
+      return runDashboard(options);
+    }
+    default:
+      console.error(`Unknown command "${process.argv[2]}". Use setup, kit or support.`);
+      process.exitCode = 2;
   }
-  // Only the server clears a stale `running`: it is the container's main process, so when it
-  // starts nothing else can be mid-run, whereas the terminal flow runs beside it.
-  store.update((state) => {
-    state.running = false;
-  });
-  startServer(service, deps);
 }
 
-function provisioningDeps(store: SetupStateStore): ProvisioningDeps {
+/** A real `import()`: TypeScript turns the plain one into `require`, which cannot load ESM. */
+// eslint-disable-next-line @typescript-eslint/no-implied-eval -- a fixed string, not input: the only way to keep a real import() through the CommonJS compile.
+const importEsm = new Function("specifier", "return import(specifier)") as <T>(
+  specifier: string,
+) => Promise<T>;
+
+function provisioningDeps(store: SetupStateStore, journal: Journal): ProvisioningDeps {
   return {
-    http: fetchHttp,
+    http: journalledHttp(journal),
+    report: (event) => journal.append(event),
     store,
     writeConfig: (inputs) => writeInstallConfig(CONFIG_DIR, inputs),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -63,32 +91,53 @@ function provisioningDeps(store: SetupStateStore): ProvisioningDeps {
   };
 }
 
-function startServer(service: SetupService, deps: ProvisioningDeps): void {
-  const server = createSetupServer({
-    service,
-    pin: setupPin(),
-    managerPublicUrl: MANAGER_PUBLIC_URL,
-    liveStatus: () => liveStatus(deps.http, deps.store, deps),
-  });
-  server.listen(LISTEN_PORT, "0.0.0.0", () => {
-    console.log(`[setup] listening on :${LISTEN_PORT}`);
-  });
-  service.resume();
+/** Every request a step makes, with its outcome and timing, goes to the journal. */
+function journalledHttp(journal: Journal): SetupHttp {
+  return async (method, url, options) => {
+    const started = Date.now();
+    try {
+      const result = await fetchHttp(method, url, options);
+      journal.append({
+        type: "http",
+        method,
+        url,
+        ms: Date.now() - started,
+        status: result.status,
+        excerpt: result.status >= 400 ? excerpt(result.body) : undefined,
+      });
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      journal.append({ type: "http", method, url, ms: Date.now() - started, error });
+      throw err;
+    }
+  };
 }
 
-/**
- * The installer usually picks the PIN and passes it in. Otherwise one is generated once and kept
- * on the config volume, so a restart does not invalidate what the person was told.
- */
-function setupPin(): string {
-  if (process.env.SETUP_PIN) return process.env.SETUP_PIN;
-  const file = path.join(CONFIG_DIR, PIN_FILE);
-  if (!fs.existsSync(file)) {
-    fs.writeFileSync(file, String(crypto.randomInt(100000, 1000000)), { mode: 0o600 });
-  }
-  const pin = fs.readFileSync(file, "utf8").trim();
-  console.log(`[setup] setup PIN: ${pin}`);
-  return pin;
+/** The same for the calls to the platform, which go through fetch directly. */
+function journalledFetch(journal: Journal): typeof fetch {
+  return async (input, init) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const method = init?.method ?? "GET";
+    const started = Date.now();
+    try {
+      const response = await fetch(input, init);
+      const body = response.status >= 400 ? excerpt(await response.clone().text()) : undefined;
+      journal.append({
+        type: "http",
+        method,
+        url,
+        ms: Date.now() - started,
+        status: response.status,
+        excerpt: body,
+      });
+      return response;
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      journal.append({ type: "http", method, url, ms: Date.now() - started, error });
+      throw err;
+    }
+  };
 }
 
 function requiredEnv(name: string): string {
@@ -100,4 +149,4 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-main();
+void main();

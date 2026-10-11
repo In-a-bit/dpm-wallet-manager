@@ -22,6 +22,8 @@ export type SetupAnswers = {
  */
 export type SetupState = {
   answers?: SetupAnswers;
+  /** A short random reference for this install, quoted to support; not a secret. */
+  installId?: string;
   platform?: InstallConfig;
   secrets?: InstallSecrets;
   operatorKey?: string;
@@ -37,6 +39,11 @@ export type SetupState = {
 };
 
 const STATE_FILE = "setup-state.json";
+/**
+ * A retry is asked for through its own file rather than the state, which the worker may be
+ * saving at the same moment: two writers of one file would lose each other's changes.
+ */
+const RETRY_FILE = "retry-requested";
 const OWNER_ONLY = 0o600;
 
 export function emptyState(): SetupState {
@@ -64,6 +71,21 @@ export class SetupStateStore {
     change(state);
     this.save(state);
     return state;
+  }
+
+  /** Asks the worker to run the remaining steps again after a failure. */
+  requestRetry(): void {
+    fs.writeFileSync(path.join(this.configDir, RETRY_FILE), new Date().toISOString(), {
+      mode: OWNER_ONLY,
+    });
+  }
+
+  retryRequested(): boolean {
+    return fs.existsSync(path.join(this.configDir, RETRY_FILE));
+  }
+
+  clearRetryRequest(): void {
+    fs.rmSync(path.join(this.configDir, RETRY_FILE), { force: true });
   }
 
   private file(): string {

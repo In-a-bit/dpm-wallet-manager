@@ -8,7 +8,8 @@
   "scripts": {
     "dev": "nest start --watch",
     "dev:debug": "nest start --debug=9241 --watch",
-    "build": "nest build",
+    "build": "nest build && npm run build:tui",
+    "build:tui": "esbuild src/setup/tui/app.tsx --bundle --platform=node --format=esm --target=node22 --jsx=automatic --packages=external --outfile=dist/setup/tui.mjs",
     "build:ui": "npm --prefix ui ci && npm --prefix ui run build",
     "start": "nest start",
     "start:prod": "node dist/main",
@@ -28,6 +29,7 @@
     "test:cov": "jest --coverage"
   },
   "dependencies": {
+    "@inkjs/ui": "2.0.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
@@ -36,7 +38,9 @@
     "class-validator": "^0.15.1",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "ink": "7.1.1",
     "pg": "^8.23.0",
+    "react": "19.2.0",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "typeorm": "^1.1.0",
@@ -52,7 +56,9 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^22.20.1",
     "@types/pg": "^8.23.1",
+    "@types/react": "19.2.2",
     "@types/supertest": "^7.0.0",
+    "esbuild": "0.28.2",
     "eslint": "^10.9.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",

@@ -3,14 +3,13 @@
 #   irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 #
 # Same steps as install.sh: check Docker, put the files in %USERPROFILE%\dpm-custody, write .env
-# with a fresh database password and setup PIN, start the stack, then run setup in this window.
+# with a fresh database password, start the stack, then run setup in this window.
 # Day-to-day commands afterwards: docker compose in that folder (see README).
 $ErrorActionPreference = "Stop"
 
 $Dir = if ($env:DPM_CUSTODY_DIR) { $env:DPM_CUSTODY_DIR } else { Join-Path $HOME "dpm-custody" }
 $Release = if ($env:DPM_CUSTODY_RELEASE) { $env:DPM_CUSTODY_RELEASE } else { "latest" }
 $Releases = "https://github.com/In-a-bit/dpm-wallet-manager/releases"
-$SetupPort = 8480
 
 function Fail($message) {
   Write-Host ""
@@ -47,8 +46,6 @@ function Write-InstallEnv {
     "# Written by the installer. Keep this file private: it holds the database password.",
     "POSTGRES_USER=dpm",
     "POSTGRES_PASSWORD=$(New-Secret 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' 32)",
-    "SETUP_PIN=$(New-Secret '0123456789' 6)",
-    "SETUP_PORT=$SetupPort",
     "MANAGER_BIND=127.0.0.1",
     "MANAGER_PORT=3000",
     "MANAGER_PUBLIC_URL=http://localhost:3000"
@@ -57,6 +54,7 @@ function Write-InstallEnv {
   [System.IO.File]::WriteAllLines((Join-Path $Dir ".env"), $lines, (New-Object System.Text.UTF8Encoding $false))
 }
 
+$InstallStart = Get-Date
 Write-Host ""
 Write-Host "  DPM Custody installer"
 Write-Host ""
@@ -77,26 +75,25 @@ $started = $LASTEXITCODE -eq 0
 Pop-Location
 if (-not $started) { Fail "Docker could not start the services. See the messages above." }
 
-$url = "http://localhost:$SetupPort"
+$Compose = @("compose", "--env-file", ".env", "-f", "compose.yml")
+Push-Location $Dir
 $ready = $false
 for ($i = 0; $i -lt 90 -and -not $ready; $i++) {
-  try { Invoke-WebRequest -UseBasicParsing $url -TimeoutSec 2 | Out-Null; $ready = $true } catch { Start-Sleep 2 }
+  docker @Compose exec -T setup true *> $null
+  if ($LASTEXITCODE -eq 0) { $ready = $true } else { Start-Sleep 2 }
 }
-if (-not $ready) { Fail "The setup page did not start. In $Dir run: docker compose logs setup" }
+if (-not $ready) { Pop-Location; Fail "The setup service did not start. In $Dir run: docker compose logs setup" }
 
-$pin = ((Get-Content (Join-Path $Dir ".env")) | Where-Object { $_ -like "SETUP_PIN=*" }) -replace "^SETUP_PIN=", ""
-$setup = "docker compose --env-file .env -f compose.yml exec setup node dist/setup/main cli"
+# Shown in setup's checklist as the time the installation took.
+$env:SETUP_INSTALL_SECONDS = [int]((Get-Date) - $InstallStart).TotalSeconds
 Write-Host ""
-Push-Location $Dir
-docker compose --env-file .env -f compose.yml exec setup node dist/setup/main cli
+docker @Compose exec -e SETUP_INSTALL_SECONDS setup node dist/setup/main setup
 $finished = $LASTEXITCODE -eq 0
 Pop-Location
 if (-not $finished) {
   Write-Host ""
-  Write-Host "  Setup did not finish. Fix what it says, then continue (in $Dir):" -ForegroundColor Yellow
-  Write-Host "      $setup"
-  Write-Host ""
-  Write-Host "  Or finish in a browser:  $url   (PIN $pin)"
+  Write-Host "  Setup is not finished. Continue any time, in $Dir :" -ForegroundColor Yellow
+  Write-Host "      docker compose --env-file .env -f compose.yml exec setup node dist/setup/main setup"
   Write-Host ""
   # Not exit: under irm | iex that would close the window, and the message with it.
   return

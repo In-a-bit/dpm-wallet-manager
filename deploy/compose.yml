@@ -1,13 +1,14 @@
 # The whole custody stack for one builder, on one machine: Postgres, dpm-wallet,
-# dpm-wallet-manager, and the setup page that configures them.
+# dpm-wallet-manager, and the setup service that configures them.
 #
 # Nobody edits this file. The installer (install.sh / install.ps1) writes .env next to it with
-# the database password, the setup PIN and the image versions; everything else is produced by the
-# setup page, which writes the two services' env files into the `config` volume. Until it has,
-# both services wait: their command below loops until /config/ready exists.
+# the database password and the image versions; everything else is produced by setup, which
+# writes the two services' env files into the `config` volume. Until it has, both services wait:
+# their command below loops until /config/ready exists.
 #
-# Only two ports leave the machine's loopback by default: the setup page (8480) and the wallet
-# manager's API (3000). dpm-wallet and Postgres are reachable only inside this stack.
+# Setup has no port: it is driven from a terminal with `./dpm-custody setup`, which runs inside
+# its container. The only port published is the wallet manager's API (3000), on loopback unless
+# MANAGER_BIND says otherwise. dpm-wallet and Postgres are reachable only inside this stack.
 
 name: dpm-custody
 
@@ -42,7 +43,7 @@ services:
     <<: *platform-host
     image: ghcr.io/in-a-bit/dpm-wallet:${DPM_WALLET_TAG:-main}
     restart: unless-stopped
-    # Wait for the setup page's configuration, load it, then do what the image always does:
+    # Wait for setup's configuration, load it, then do what the image always does:
     # migrate, then start. The file's values are single-quoted, which `.` reads verbatim.
     command:
       - sh
@@ -83,6 +84,8 @@ services:
         condition: service_healthy
     stop_grace_period: 30s
 
+  # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a
+  # closed terminal never stops a setup half-way. The terminal app runs in here too (exec).
   setup:
     <<: *platform-host
     image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
@@ -91,12 +94,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dpm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      SETUP_PIN: ${SETUP_PIN:-}
       SETUP_MANAGER_PUBLIC_URL: ${MANAGER_PUBLIC_URL:-http://localhost:3000}
-    ports:
-      # Loopback only: on a server with no screen, reach it through an SSH tunnel, or use
-      # `./dpm-custody setup` in the terminal instead.
-      - "127.0.0.1:${SETUP_PORT:-8480}:8480"
     volumes:
       - config:/config
 

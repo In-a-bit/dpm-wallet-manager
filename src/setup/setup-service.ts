@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { findEnvironment, resolveDpmApiUrl, type EnvironmentId } from "./environments";
 import {
   fetchInstallConfig,
@@ -8,7 +10,7 @@ import {
 } from "./platform-config";
 import { generateInstallSecrets } from "./secrets";
 import type { CustodyMode, SetupState } from "./state";
-import { isComplete, progress, provision, type ProvisioningDeps, type StepProgress } from "./steps";
+import { isComplete, progress, type ProvisioningDeps, type StepProgress } from "./steps";
 
 export type PlatformInput = { environment: string; customUrl?: string };
 export type KeyCheckInput = PlatformInput & { builderKey: string };
@@ -49,12 +51,11 @@ function ownerRefusal(status: number, body: unknown): string {
 }
 
 /**
- * The setup flow, shared by the browser page and the terminal: check a key, start, retry, and hand
- * over the backup kit. Neither front end holds any logic of its own.
+ * The setup flow, shared by the dashboard and the plain terminal: check a platform and a key,
+ * record the answers, ask for a retry, and hand over the backup kit. Provisioning itself runs in
+ * the worker (worker.ts), which picks the answers up; neither front end holds logic of its own.
  */
 export class SetupService {
-  private active?: Promise<SetupState>;
-
   constructor(
     private readonly deps: ProvisioningDeps,
     private readonly fetchImpl: FetchLike = fetch,
@@ -132,8 +133,8 @@ export class SetupService {
   }
 
   /**
-   * Checks the key once more, fixes every answer and secret, and starts provisioning in the
-   * background. Only the first start is accepted: after it the mode is burned in, so a second
+   * Checks the key once more and fixes every answer and secret; the worker then starts
+   * provisioning. Only the first start is accepted: after it the mode is burned in, so a second
    * set of answers would describe an install that does not exist.
    */
   async start(input: StartInput): Promise<void> {
@@ -150,21 +151,24 @@ export class SetupService {
       };
       state.platform = checked.platform;
       state.secrets = generateInstallSecrets(keyEnv);
+      state.installId = crypto.randomBytes(4).toString("hex");
     });
-    this.runInBackground();
   }
 
-  /** Resumes after a failure or a restart. A no-op while a run is already in progress. */
-  resume(): void {
+  /** Asks the worker to run the remaining steps again, after a failure. */
+  retry(): void {
     const state = this.deps.store.load();
-    if (!state.answers || isComplete(state)) return;
-    this.runInBackground();
+    if (!state.answers || isComplete(state) || !state.lastError) return;
+    this.deps.store.requestRetry();
   }
 
-  /** Runs to completion in the caller's flow; the terminal uses this. */
-  async runToCompletion(): Promise<SetupState> {
-    this.runInBackground();
-    return this.active as Promise<SetupState>;
+  /** A retry asked for and not yet picked up: the last failure no longer stands. */
+  retryPending(): boolean {
+    return this.deps.store.retryRequested();
+  }
+
+  state(): SetupState {
+    return this.deps.store.load();
   }
 
   acknowledgeBackup(): void {
@@ -190,15 +194,6 @@ export class SetupService {
     const dpmApiUrl = resolveDpmApiUrl(environment, input.customUrl);
     if (typeof dpmApiUrl !== "string") throw new SetupError(dpmApiUrl.error);
     return dpmApiUrl;
-  }
-
-  private runInBackground(): void {
-    if (this.active) return;
-    this.active = provision(this.deps).finally(() => {
-      this.active = undefined;
-    });
-    // The page polls the state for the outcome; a failure is already recorded there.
-    this.active.catch(() => undefined);
   }
 }
 

@@ -15,7 +15,7 @@ export type InstallConfig = {
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
-/** A failure worded for the person at the setup page, not for a log. */
+/** A failure worded for the person running setup, not for a log. */
 export class SetupError extends Error {}
 
 /**
@@ -88,7 +88,7 @@ const MAX_DETAIL_CHARS = 200;
 
 /**
  * A gateway in front of the platform answers failures with a whole HTML page, which is no use on
- * the setup page. Only a JSON `message` (or `error`) is worth showing, and only briefly.
+ * a person running setup. Only a JSON `message` (or `error`) is worth showing, and only briefly.
  */
 async function unexpectedStatusMessage(response: Response): Promise<string> {
   if (response.status >= 500) {
