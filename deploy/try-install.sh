@@ -3,7 +3,7 @@
 # this computer, or a shared one such as dev. It installs exactly what a builder installs; only
 # where the images come from and which platform to join are yours to choose.
 #
-#   deploy/try-install.sh [options] [bld_sk_…]   check, install and set up, all in this terminal
+#   deploy/try-install.sh [options] [bld_sk_…]   check, then install and set up as a builder does
 #   deploy/try-install.sh verify [--dir DIR]      check a finished install (runs scripts/smoke.sh)
 #   deploy/try-install.sh clean [--dir DIR]       remove the install, to start over
 #
@@ -258,20 +258,14 @@ install() {
   source="$(mktemp -d)"
   cp "$SCRIPT_DIR/compose.yml" "$SCRIPT_DIR/dpm-custody" "$source/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$IMAGE_TAG" "$IMAGE_TAG" >"$source/versions.env"
-  DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" DPM_CUSTODY_NO_BROWSER=1 \
+  # The installer goes on to setup in this terminal, with the two answers checked above preset.
+  local status=0
+  DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" \
     DPM_CUSTODY_SETUP_PORT="$setup_port" DPM_CUSTODY_MANAGER_PORT="$manager_port" \
-    sh "$SCRIPT_DIR/install.sh" >"$source/install.log" 2>&1 ||
-    fail "The installer failed. Its output:" "$(tail -n 20 "$source/install.log")"
+    SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" \
+    sh "$SCRIPT_DIR/install.sh" || status=$?
   rm -rf "$source"
-  ok "running"
-}
-
-# run_setup continues in the install's own terminal setup, which checks the platform and key again
-# from inside the install, then asks the rest: the custody mode, the admin login, the backup kit.
-run_setup() {
-  step "Setup (in this terminal)"
-  SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" "$INSTALL_DIR/dpm-custody" setup ||
-    fail "Setup did not finish." "Fix what it says, then continue: $INSTALL_DIR/dpm-custody setup"
+  [ "$status" = 0 ] || exit "$status"
 }
 
 offer_verify() {
@@ -292,7 +286,6 @@ cmd_start() {
   ask_builder_key
   prepare_images
   install
-  run_setup
   offer_verify
 }
 

@@ -3,7 +3,7 @@
 #   irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 #
 # Same steps as install.sh: check Docker, put the files in %USERPROFILE%\dpm-custody, write .env
-# with a fresh database password and setup PIN, start the stack and open the setup page.
+# with a fresh database password and setup PIN, start the stack, then run setup in this window.
 # Day-to-day commands afterwards: docker compose in that folder (see README).
 $ErrorActionPreference = "Stop"
 
@@ -85,10 +85,20 @@ for ($i = 0; $i -lt 90 -and -not $ready; $i++) {
 if (-not $ready) { Fail "The setup page did not start. In $Dir run: docker compose logs setup" }
 
 $pin = ((Get-Content (Join-Path $Dir ".env")) | Where-Object { $_ -like "SETUP_PIN=*" }) -replace "^SETUP_PIN=", ""
+$setup = "docker compose --env-file .env -f compose.yml exec setup node dist/setup/main cli"
 Write-Host ""
-Write-Host "  Ready. Finish setup in your browser:" -ForegroundColor Green
+Push-Location $Dir
+docker compose --env-file .env -f compose.yml exec setup node dist/setup/main cli
+$finished = $LASTEXITCODE -eq 0
+Pop-Location
+if (-not $finished) {
+  Write-Host ""
+  Write-Host "  Setup did not finish. Fix what it says, then continue (in $Dir):" -ForegroundColor Yellow
+  Write-Host "      $setup"
+  Write-Host ""
+  Write-Host "  Or finish in a browser:  $url   (PIN $pin)"
+  Write-Host ""
+  # Not exit: under irm | iex that would close the window, and the message with it.
+  return
+}
 Write-Host ""
-Write-Host "      Address:  $url"
-Write-Host "      PIN:      $pin"
-Write-Host ""
-Start-Process $url

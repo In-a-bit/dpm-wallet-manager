@@ -31,37 +31,40 @@ curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/downlo
 irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 ```
 
-When it finishes, it shows an **address** and a **6-digit PIN**, and opens your browser.
+It downloads and starts the service, then asks you a few questions in the same window. Each
+answer is checked as soon as you give it. If one is wrong, it says why and asks again.
 
-## Step 2: Finish in the browser
-
-On the page, type the PIN, then:
+## Step 2: Answer the setup questions
 
 1. **Choose the platform** you're joining. If you're not sure, ask the platform team.
-2. **Paste your builder private key** and click **Check key**. It should say
+2. **Paste your builder private key.** It isn't shown as you paste it. It should say
    "Connecting as" followed by your company's name.
 3. **Choose how your users' funds are held.** If you're not sure, choose
-   **"Each user holds their own funds"**. This choice can't be changed later.
-4. Click **Start setup** and wait a minute or two.
+   **"Each user holds their own funds"**. This choice can't be changed later, so you type `yes`
+   to confirm it.
+4. **Wait a minute or two** while each step gets a ✓.
 5. **Create your login** for the admin dashboard: a username and a password of at least 12
    characters.
-6. **Download the backup kit** and store it somewhere safe and private, such as a password
-   manager. If you lose this computer, the backup kit is the only way to recover.
+6. **Save the backup kit.** It's printed in the window. Copy all of it somewhere safe and
+   private, such as a password manager, then press Enter. If you lose this computer, the backup
+   kit is the only way to recover.
 
-The last page shows:
+At the end it shows the **backend key**. Give it, with the wallet manager address
+(`./dpm-custody status` shows it), to whoever runs your backend. The **admin dashboard** is at
+that address followed by `/admin`. Sign in there with the login you just created to see your
+wallets, manage API keys, read the audit log, and add more people.
 
-- the **wallet manager address** and the **backend key**. Give these two to whoever runs your
-  backend.
-- the **admin dashboard** address (`…/admin`). Sign in there with the login you just created to
-  see your wallets, manage API keys, read the audit log, and add more people.
+### If setup stops
 
-### No browser on this machine?
+Fix what the message says, then continue where it stopped: `~/dpm-custody/dpm-custody setup`
+on Mac and Linux. On Windows, run the command the installer printed. Finished steps aren't
+repeated.
 
-Some servers have no screen. You have two options:
+### Prefer a browser?
 
-- **From your own computer:** connect with `ssh -L 8480:localhost:8480 you@your-server`, then
-  open <http://localhost:8480> on your computer.
-- **In the terminal:** run `~/dpm-custody/dpm-custody setup`. It asks the same questions.
+The same setup is also a web page, at the address and PIN `~/dpm-custody/dpm-custody open`
+prints. On a server with no screen, reach it from your own computer:
+`ssh -L 8480:localhost:8480 you@your-server`, then open <http://localhost:8480> there.
 
 ## Everyday use
 
@@ -88,8 +91,8 @@ machine. It contains secrets, so keep it private.
   Running it again is always safe: it never overwrites an existing install.
 - **"This key was not accepted":** copy the whole key again, and check you chose the right
   platform.
-- **Setup stopped with an error:** fix what the message says, then click **Retry**. Finished
-  steps are kept.
+- **Setup stopped with an error:** fix what the message says, then run
+  `~/dpm-custody/dpm-custody setup` (or click **Retry** on the page). Finished steps are kept.
 - **Port already in use:** another program uses 8480 or 3000. Rerun the installer with
   different ports, e.g. `DPM_CUSTODY_SETUP_PORT=8481 DPM_CUSTODY_MANAGER_PORT=3001` before
   `sh`.
@@ -117,8 +120,8 @@ For anything else, send the output of `dpm-custody logs` to the platform team.
 
 The steps above are what a builder does. This part is for the platform team: what a platform
 needs before builders can install against it, how to try the install yourself (local or dev),
-and how to release it for production. The setup page offers Production, Development and
-Custom (any dpm-api address); add an environment in `src/setup/environments.ts`.
+and how to release it for production. Setup offers Production, Development and Custom (any
+dpm-api address); add an environment in `src/setup/environments.ts`.
 
 ## What every environment needs first
 
@@ -227,7 +230,7 @@ Any way you run prediction-go works, as long as:
   PUBLIC_RELAYER_API_URL=http://localhost:8085
   ```
 
-  `localhost` is fine: the setup page rewrites it so its containers can reach your computer.
+  `localhost` is fine: setup rewrites it so its containers can reach your computer.
   Restart dpm-api after changing them.
 
 - **Backoffice:** the backoffice is running (the prediction-backoffice UI and its backend), so
@@ -376,8 +379,7 @@ reserved for testing) and issue its key. Run the pre-flight check against
 curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh | sh
 ```
 
-On the setup page, keep **Production** (it's preselected), paste the key, choose a mode, then
-click **Start setup**.
+When setup asks, choose **Production**, paste the key and choose a mode.
 
 **5. Verify.** From your dpm-wallet-manager checkout, run
 `./deploy/try-install.sh verify --dir ~/dpm-custody`. This is real production: use small

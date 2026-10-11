@@ -28,9 +28,17 @@ export async function runCli(
   });
   try {
     if (readState().running) {
-      throw new SetupError("Setup is already running from the browser page. Follow it there.");
+      throw new SetupError(
+        "Setup is already running, from another terminal or the browser page. Follow it there.",
+      );
     }
-    if (service.view().phase === "new") await askAndStart(io, service, presets);
+    const view = service.view();
+    if (view.phase === "done" && view.ownerCreated && view.backupAcknowledged) {
+      console.log("\n✓ Setup is already done.");
+      printConnection(service);
+      return;
+    }
+    if (view.phase === "new") await askAndStart(io, service, presets);
     else console.log("\nSetup was already started; resuming.\n");
     await runWithProgress(service, readState);
     await createOwnerLogin(io, service);

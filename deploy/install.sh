@@ -4,13 +4,14 @@
 #   curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh | sh
 #
 # It checks Docker, puts three files in ~/dpm-custody (override with DPM_CUSTODY_DIR), writes
-# .env with a fresh database password and setup PIN, starts the stack and opens the setup page.
-# Running it again on an existing install just starts it; nothing is overwritten.
+# .env with a fresh database password and setup PIN, starts the stack, then runs setup in this
+# terminal. Running it again on an existing install starts it and finishes setup if it is not
+# done; nothing is overwritten.
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
 # DPM_CUSTODY_SETUP_PORT / DPM_CUSTODY_MANAGER_PORT move the two ports (8480 / 3000) when taken.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
-# DPM_CUSTODY_NO_BROWSER=1 never opens a browser (when setup continues in the terminal).
+# SETUP_PLATFORM_URL / SETUP_BUILDER_KEY answer setup's first two questions (still checked).
 set -eu
 
 DIR="${DPM_CUSTODY_DIR:-$HOME/dpm-custody}"
@@ -73,16 +74,15 @@ wait_for_setup_page() {
   fail "The setup page did not start. Run '$DIR/dpm-custody logs setup' to see why."
 }
 
-open_browser() {
-  url="$1"
-  [ -z "${DPM_CUSTODY_NO_BROWSER:-}" ] || return 1
-  if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
-    open "$url" && return 0
-  fi
-  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "$url" >/dev/null 2>&1 && return 0
-  fi
-  return 1
+# can_ask is true when there is a terminal to ask setup's questions in. Under `curl | sh` the
+# script's own input is the download, so the questions go to the terminal itself.
+can_ask() { (exec </dev/tty) 2>/dev/null; }
+
+print_other_ways() {
+  say "  Or finish in a browser, with the PIN $1:"
+  say "    • on this machine:          $2"
+  say "    • from your own computer:   ssh -L $SETUP_PORT:localhost:$SETUP_PORT <you>@<this-server>"
+  say "                                then open $2 there"
 }
 
 main() {
@@ -107,18 +107,19 @@ main() {
   url="http://localhost:$SETUP_PORT"
   pin="$(sed -n 's/^SETUP_PIN=//p' "$DIR/.env")"
   say ""
-  say "  ✓ Ready. Finish setup in your browser:"
-  say ""
-  say "      Address:  $url"
-  say "      PIN:      $pin"
-  say ""
-  if open_browser "$url"; then
-    say "  (Your browser should open by itself.)"
+  if ! can_ask; then
+    say "  ✓ Running. Finish setup in a terminal:  $DIR/dpm-custody setup"
+    say ""
+    print_other_ways "$pin" "$url"
+  elif "$DIR/dpm-custody" setup </dev/tty; then
+    :
   else
-    say "  No browser on this machine? Either:"
-    say "    • from your own computer:  ssh -L $SETUP_PORT:localhost:$SETUP_PORT <you>@<this-server>"
-    say "      then open $url there, or"
-    say "    • finish here in the terminal:  $DIR/dpm-custody setup"
+    say ""
+    say "  Setup did not finish. Fix what it says, then continue:  $DIR/dpm-custody setup"
+    say ""
+    print_other_ways "$pin" "$url"
+    say ""
+    exit 1
   fi
   say ""
   say "  Later: $DIR/dpm-custody (start, stop, status, backup, ...)"
