@@ -254,6 +254,7 @@ class FakeStack {
       // dpm-wallet's error envelope, which the message has to be dug out of.
       return { status: 502, body: { error: { code: "X", message: "upstream said no" } } };
     }
+    if (path === "/v1/platform/operations-wallet") this.operationsCreated = true;
     if (path === "/v1/api-keys") return { status: 201, body: { key: "dpmm_dev_op_x" } };
     if (path === "/v1/ui-users") return this.uiUsers(method, options);
     if (path === "/v1/platform") return { status: 200, body: this.platform(options?.apiKey) };
@@ -261,6 +262,7 @@ class FakeStack {
   };
 
   mode = "shared";
+  operationsCreated = false;
   owners: Array<{ username: string; role: string; status: string }> = [];
   lastUserBody: unknown;
 
@@ -281,7 +283,7 @@ class FakeStack {
     return {
       mode: this.mode,
       masterWallet: { id: "m" },
-      operationsWallet: this.mode === "shared" ? { id: "o" } : null,
+      operationsWallet: this.operationsCreated ? { id: "o" } : null,
       upstream: { reachable: true, vault: { initialized: true } },
     };
   }
@@ -341,7 +343,7 @@ describe("provision", () => {
     ]);
   });
 
-  it("skips the operations wallet in segregated mode", async () => {
+  it("creates the operations wallet in segregated mode too: it is what funds users' wallets", async () => {
     const stack = new FakeStack();
     stack.mode = "segregated";
     const deps = provisioningDeps(stack, tempDir(), []);
@@ -349,7 +351,20 @@ describe("provision", () => {
 
     await provision(deps);
 
-    expect(stack.count("POST /v1/platform/operations-wallet")).toBe(0);
+    expect(stack.count("POST /v1/platform/operations-wallet")).toBe(1);
+    expect(isComplete(deps.store.load())).toBe(true);
+  });
+
+  it("does not call an install ready without its operations wallet", async () => {
+    const stack = new FakeStack();
+    stack.mode = "segregated";
+    const deps = provisioningDeps(stack, tempDir(), []);
+    seedStarted(deps.store, "segregated");
+    deps.store.update((state) => {
+      state.completedSteps = STEPS.filter((step) => step.id !== "verify").map((step) => step.id);
+    });
+
+    await expect(provision(deps)).rejects.toThrow(/there is no operations wallet/);
   });
 
   it("resumes after a failure without repeating the steps that finished", async () => {
@@ -502,7 +517,7 @@ describe("step reporting", () => {
       "step.done:write-config",
     ]);
     expect(kinds).toContain("step.fail:master-wallet");
-    expect(kinds).not.toContain("step.start:operations-wallet");
+    expect(kinds).not.toContain("step.start:issue-operator-key");
   });
 
   it("names every step in the catalogue, in order", () => {
@@ -521,7 +536,7 @@ describe("journey", () => {
     expect(total).toBe(JOURNEY.length);
   });
 
-  it("shows the running step with what it is doing, and skips what the mode does not need", () => {
+  it("shows the running step with what it is doing, and what is still to come", () => {
     const store = new SetupStateStore(tempDir());
     seedStarted(store, "segregated");
     store.update((state) => {
@@ -549,7 +564,7 @@ describe("journey", () => {
       status: "running",
       live: "Still starting (check 3)",
     });
-    expect(byId["operations-wallet"]?.status).toBe("skipped");
+    expect(byId["operations-wallet"]?.status).toBe("pending");
   });
 
   it("marks the step that failed, with its error", () => {

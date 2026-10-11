@@ -33,7 +33,7 @@ container whose environment disagrees with the burned value **refuses to start**
 |---|---|---|
 | Who holds USDC | every wallet, its own | the **operations wallet**, all of it |
 | Order `recipient` | never used | used on every trade |
-| Operations wallet | allowed, unused | required |
+| Operations wallet | funds users' wallets and takes funds back; never trades | makes every BUY, receives every SELL |
 
 ### How an order is routed
 

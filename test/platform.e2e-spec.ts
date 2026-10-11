@@ -124,10 +124,10 @@ describe("platform", () => {
       await harness.close();
     });
 
-    it("still allows an operations wallet, but says it is unused", async () => {
+    it("creates an operations wallet, and says it funds users rather than trades", async () => {
       const created = await harness.post("/v1/platform/operations-wallet", { body: {} });
       expect(created.status).toBe(200);
-      expect(created.body.note).toMatch(/segregated/);
+      expect(created.body.note).toMatch(/segregated mode.*never trades.*funds users' wallets/);
     });
   });
 

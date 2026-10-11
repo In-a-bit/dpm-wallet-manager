@@ -77,9 +77,11 @@ export const STEPS: readonly Step[] = [
     run: createMasterWallet,
   },
   {
+    // Both modes: in shared it makes every trade; in segregated it never trades, but it is the pot
+    // users' wallets are funded from and the one they move funds back to.
     id: "operations-wallet",
     label: "Create the operations wallet",
-    appliesTo: (state) => state.answers?.mode === "shared",
+    appliesTo: always,
     run: createOperationsWallet,
   },
   {
@@ -191,12 +193,12 @@ async function waitForManager({ deps, progress }: StepContext): Promise<void> {
 }
 
 async function createMasterWallet({ deps, state, progress }: StepContext): Promise<void> {
-  progress("Creating the wallet and registering it with the platform");
+  progress("Asking the wallet manager to create the master wallet and its address");
   await postAsAdmin(deps, state, "/v1/platform/master-wallet", {}, "Creating the master wallet");
 }
 
 async function createOperationsWallet({ deps, state, progress }: StepContext): Promise<void> {
-  progress("Creating the wallet and registering it with the platform");
+  progress("Asking the wallet manager to create the operations wallet and its address");
   await postAsAdmin(
     deps,
     state,
@@ -248,7 +250,7 @@ function platformProblem(platform: PlatformStatus, mode: string): string | undef
   if (!platform.upstream?.reachable) return "the wallet manager cannot reach the wallet service";
   if (!platform.upstream.vault?.initialized) return "the key vault is not initialised";
   if (!platform.masterWallet) return "there is no master wallet";
-  if (mode === "shared" && !platform.operationsWallet) return "there is no operations wallet";
+  if (!platform.operationsWallet) return "there is no operations wallet";
   return undefined;
 }
 

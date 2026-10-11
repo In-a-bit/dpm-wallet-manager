@@ -40,7 +40,7 @@ export const JOURNEY: readonly JourneyItem[] = [
     id: "mode",
     title: "Choose how funds are held",
     short: "Decide whether each user holds their own funds, or your company pays for their trades.",
-    long: 'In "segregated" mode each user\'s wallet holds and spends its own funds. In "shared" mode one operations wallet of yours pays for every user\'s trades. This is written into the database and can never be changed.',
+    long: 'In "segregated" mode each user\'s wallet holds and spends its own funds; you send them funds from your operations wallet. In "shared" mode your operations wallet holds everyone\'s funds and pays for every trade. This is written into the database and can never be changed.',
     fix: "If you are not sure, choose segregated, and ask the platform team before confirming.",
   },
   {
@@ -75,14 +75,14 @@ export const JOURNEY: readonly JourneyItem[] = [
     id: "master-wallet",
     title: "Create the master wallet",
     short: "Creates your company's master wallet, which owns the install's funds.",
-    long: "The master wallet is the only one allowed to send funds out of the install. It is registered with the platform, so this step talks to the platform's services too.",
+    long: "The master wallet is your cold store: it never trades, and it is the only wallet allowed to send funds out of the install, and only with the admin key. You refill the operations wallet from it. Your backend registers it with the platform before it is used.",
     fix: "The platform may be busy. Wait a few minutes. If it keeps failing, contact support.",
   },
   {
     id: "operations-wallet",
     title: "Create the operations wallet",
-    short: "Creates the wallet that pays for your users' trades (shared mode only).",
-    long: "In shared mode one operations wallet buys on behalf of every user, so users never need funds of their own. It is created and registered with the platform like the master wallet.",
+    short: "Creates the working wallet your backend moves users' funds with.",
+    long: "In segregated mode it never trades: it is the pot you fund your users' wallets from, and where they move funds back to. In shared mode it holds everyone's funds and pays for every trade. Your backend registers it with the platform before it is used.",
     fix: "The platform may be busy. Wait a few minutes. If it keeps failing, contact support.",
   },
   {

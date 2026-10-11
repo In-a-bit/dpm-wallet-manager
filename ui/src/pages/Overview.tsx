@@ -92,7 +92,11 @@ export function OverviewPage() {
           <WalletCard
             title="Operations wallet"
             wallet={data.operationsWallet}
-            missing={data.mode === "segregated" ? "Not needed in segregated mode." : "Missing: shared mode needs an operations wallet."}
+            missing={
+              data.mode === "segregated"
+                ? "Missing: it funds users' wallets in segregated mode."
+                : "Missing: shared mode needs an operations wallet to trade."
+            }
           />
         </div>
       )}

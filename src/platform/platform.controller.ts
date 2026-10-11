@@ -66,8 +66,8 @@ export class PlatformController {
    *
    * Operator-reachable: standing up the treasury is operations work rather than administration.
    * In shared mode it holds all the collateral — it makes every BUY and receives every SELL. In
-   * segregated mode it is allowed but unused, and the response says so rather than refusing, so
-   * one provisioning script works for both deployments.
+   * segregated mode it never trades, but it is still needed: it is the pot users' wallets are
+   * funded from and the destination when they move funds back, both internal transfers.
    *
    * Idempotent — returns the existing wallet rather than refusing a second call.
    */
@@ -86,7 +86,11 @@ export class PlatformController {
       ...toWalletResponse(wallet),
       ...(this.platform.isShared
         ? {}
-        : { note: "This install runs in segregated mode; the operations wallet is unused." }),
+        : {
+            note:
+              "This install runs in segregated mode: the operations wallet never trades. It funds " +
+              "users' wallets and receives what they move back.",
+          }),
     };
   }
 }

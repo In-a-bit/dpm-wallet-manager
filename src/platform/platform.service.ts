@@ -118,7 +118,8 @@ export class PlatformService {
 
   /**
    * The operations wallet: in shared mode the treasury that makes every BUY and receives every
-   * SELL. Operator-reachable, because provisioning it is part of standing the platform up rather
+   * SELL; in segregated mode the pot users' wallets are funded from, which never trades.
+   * Operator-reachable, because provisioning it is part of standing the platform up rather
    * than an act of administration — and an admin key works here too.
    */
   createOperationsWallet(actor: Actor, label?: string): Promise<Wallet> {

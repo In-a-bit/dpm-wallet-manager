@@ -75,14 +75,15 @@ export class WalletResponseDto {
 }
 
 /**
- * A platform wallet, which may carry a note. Segregated installs may still create an operations
- * wallet — the endpoint says it is unused rather than refusing, so one provisioning script works
- * for both deployments.
+ * A platform wallet, which may carry a note. In a segregated install the operations wallet never
+ * trades, and the note says what it is for instead: funding users' wallets and taking funds back.
  */
 export class PlatformWalletResponseDto extends WalletResponseDto {
   /** Present only when there is something about this wallet the caller should know. */
   @ApiPropertyOptional({
-    example: "This install runs in segregated mode; the operations wallet is unused.",
+    example:
+      "This install runs in segregated mode: the operations wallet never trades. It funds " +
+      "users' wallets and receives what they move back.",
   })
   note?: string;
 }
