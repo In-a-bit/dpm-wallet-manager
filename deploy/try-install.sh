@@ -211,7 +211,7 @@ ask_builder_key() {
     can_ask || exit 1
     BUILDER_KEY=""
   done
-  check_gamma_api
+  check_platform_apis
 }
 
 # key_ok succeeds, with the platform's answer in CONFIG, when $BUILDER_KEY can be used; otherwise
@@ -232,16 +232,32 @@ key_ok() {
   esac
 }
 
-check_gamma_api() {
-  local gamma_api events
+# check_platform_apis checks that the two other platform services accept the builder key on
+# its own on the routes an install calls. Neither probe changes anything: an empty body is
+# refused by POST /custody/users (400) only once the key has been accepted, and
+# GET /contract-info is a read. A 401 means that service still wants an app key there.
+check_platform_apis() {
+  local gamma_api relayer_api answer
   gamma_api="$(body_of "$CONFIG" | json_path services.gamma_api)"
-  events="$(http GET "$gamma_api/events?limit=1" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
-  case "$(status_of "$events")" in
-    200) ok "gamma-api ($gamma_api) accepts the builder key" ;;
-    401) fail "gamma-api at $gamma_api does not accept builder keys at its gate." \
-      "Deploy or rebuild gamma-api from a prediction-go version that accepts X-Builder-Api-Private-Key." ;;
-    *) fail "gamma-api at $gamma_api answered $(status_of "$events")." \
+  relayer_api="$(body_of "$CONFIG" | json_path services.relayer_api)"
+
+  answer="$(http POST "$gamma_api/custody/users" -H "X-Builder-Api-Private-Key: $BUILDER_KEY" \
+    -H 'Content-Type: application/json' -d '{}')"
+  case "$(status_of "$answer")" in
+    400) ok "gamma-api ($gamma_api) accepts the builder key for user registration" ;;
+    401) fail "gamma-api at $gamma_api does not accept the builder key on POST /custody/users." \
+      "Deploy gamma-api from a prediction-go version that lists it in CustodyInstallRoutes." ;;
+    *) fail "gamma-api at $gamma_api answered $(status_of "$answer")." \
       "Check the platform's PUBLIC_GAMMA_API_URL is reachable from this machine." ;;
+  esac
+
+  answer="$(http GET "$relayer_api/contract-info" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
+  case "$(status_of "$answer")" in
+    200) ok "relayer-api ($relayer_api) accepts the builder key" ;;
+    401) fail "relayer-api at $relayer_api does not accept the builder key." \
+      "Deploy relayer-api from a prediction-go version that accepts X-Builder-Api-Private-Key." ;;
+    *) fail "relayer-api at $relayer_api answered $(status_of "$answer")." \
+      "Check the platform's PUBLIC_RELAYER_API_URL is reachable from this machine." ;;
   esac
 }
 

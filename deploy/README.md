@@ -119,9 +119,17 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   also keeps its state there, plus `setup-journal.jsonl`, a masked log of every step, which the
   support report includes. It gets the platform values from dpm-api `GET /wallet-install/config`, authenticated
   with the builder key, and generates every other secret itself.
-- **Credentials:** the builder private key is the install's only platform credential, the same
-  way an LP key is for a liquidity provider. dpm-api, gamma-api and relayer-api all accept it
-  (`X-Builder-Api-Private-Key`), so no platform-wide `APP_API_KEY` is handed out or configured.
+- **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
+  platform credential, so no platform-wide `APP_API_KEY` is handed out or configured. The
+  platform accepts it without the app key only where an install needs it:
+  - dpm-api: `GET /wallet-install/config` and `POST /turnkey/sub-organizations`;
+  - gamma-api: `POST /custody/users`;
+  - relayer-api: every route, but bound to the install's own wallets. Except for
+    `GET /contract-info`, a request must name one of them in `X-Builder-Address`. That is how
+    you relay a signed meta-transaction for the master or operations wallet yourself:
+    `POST /submit` with the builder key and the wallet's EOA in `X-Builder-Address`.
+
+  Anything else, such as the CLOB, needs the app key as well. Your backend sends it.
 
 ---
 
@@ -139,9 +147,10 @@ check below tells you which one is missing; `deploy/try-install.sh` runs it for 
 
 1. **prediction-go deployed with both changes**
    - dpm-api serves `GET /wallet-install/config`.
-   - gamma-api's gate accepts `X-Builder-Api-Private-Key`.
-   - **Order:** deploy gamma-api before any install that runs without `APP_API_KEY`, or user
-     registration answers 401.
+   - gamma-api accepts `X-Builder-Api-Private-Key` alone on `POST /custody/users`, and
+     relayer-api accepts it alone (bound to the builder's own wallets).
+   - **Order:** deploy gamma-api and relayer-api before any install that runs without
+     `APP_API_KEY`, or user registration and signing answer 401.
 2. **dpm-api's env sets the three public URLs**
    - `PUBLIC_DPM_API_URL`, `PUBLIC_GAMMA_API_URL`, `PUBLIC_RELAYER_API_URL`.
    - Without them, the endpoint answers 503.
@@ -320,17 +329,22 @@ curl -s -w '\nHTTP %{http_code}\n' "$PLATFORM/wallet-install/config" \
 ```
 
 This should print your builder's name, `chain_id`, `contracts` and `services`, ending
-`HTTP 200`. Any other code is explained in the pre-flight table above. Then check gamma-api at
-the address the platform just reported:
+`HTTP 200`. Any other code is explained in the pre-flight table above. Then check gamma-api and
+relayer-api at the addresses the platform just reported. Neither request changes anything:
 
 ```sh
-GAMMA=$(curl -s "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY" |
-  python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gamma_api"])')
-curl -s -o /dev/null -w 'gamma-api gate: HTTP %{http_code}\n' "$GAMMA/events?limit=1" \
+SERVICES=$(curl -s "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")
+GAMMA=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gamma_api"])' <<<"$SERVICES")
+RELAYER=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["relayer_api"])' <<<"$SERVICES")
+curl -s -o /dev/null -w 'gamma-api: HTTP %{http_code}\n' -X POST "$GAMMA/custody/users" \
+  -H "X-Builder-Api-Private-Key: $BUILDER_KEY" -H 'Content-Type: application/json' -d '{}'
+curl -s -o /dev/null -w 'relayer-api: HTTP %{http_code}\n' "$RELAYER/contract-info" \
   -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
 ```
 
-This should print `HTTP 200`. `HTTP 401` means gamma-api predates accepting builder keys.
+This should print `gamma-api: HTTP 400` (the key was accepted and the empty body refused) and
+`relayer-api: HTTP 200`. `HTTP 401` from either means that service does not accept the builder
+key there.
 
 **4. Images.** Use one of the two blocks.
 
