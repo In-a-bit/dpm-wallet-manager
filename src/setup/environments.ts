@@ -64,6 +64,13 @@ export function resolveDpmApiUrl(env: Environment, customUrl?: string): string |
   return trimmed;
 }
 
+/** The answers that name a platform by its address: a listed one by its id, any other as custom. */
+export function environmentForUrl(url: string): { environment: EnvironmentId; customUrl?: string } {
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const listed = ENVIRONMENTS.find((env) => env.dpmApiUrl === trimmed);
+  return listed ? { environment: listed.id } : { environment: "custom", customUrl: trimmed };
+}
+
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const DOCKER_HOST = "host.docker.internal";
 

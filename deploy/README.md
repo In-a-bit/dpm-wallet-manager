@@ -190,18 +190,20 @@ what else runs on the machine.
 | A platform on your computer, images built from source | `./deploy/try-install.sh --build --wallet-src ../dpm-wallet`                 |
 | Dev, with the published dev images                    | `./deploy/try-install.sh --platform https://dpm-api.inabit.dev --images dev` |
 
-`--platform` defaults to `http://localhost:8086`, and `--images` to `main`. The script asks for
-the builder key, or you can pass it as the last argument. It then:
+Everything happens in the terminal; no browser is needed. The script asks for the platform
+address (suggesting `http://localhost:8086`) unless you pass `--platform`, and for the builder key
+unless you pass it as the last argument. `--images` defaults to `main`. It then:
 
-1. **Checks** Docker, the platform and your key, and names your builder. If something is wrong,
-   it stops and says exactly what.
+1. **Checks** Docker, then each answer as soon as you give it: that the platform answers and
+   supports self-install, then that it accepts your key (and names your builder). A wrong answer
+   is asked for again; a problem on the platform's side stops the run and says what to fix.
 2. **Prepares the images:** it pulls or builds them.
 3. **Installs** into `~/dpm-custody-try` (`--dir` to change). It uses ports 8480 and 3000, or the
    next free ones if those are taken.
-4. **Prints** the page address, the PIN, the platform address to type, and the builder name to
-   expect.
-
-Finish on the page as it says, then:
+4. **Sets up** with the install's own terminal setup (`dpm-custody setup`). That setup checks the
+   platform and key again, from inside the install, without asking for them again. Then it asks
+   for the custody mode, creates your admin login, and shows the backup kit.
+5. **Offers the smoke test** (`verify`, below).
 
 ```sh
 ./deploy/try-install.sh verify   # services, platform status, and scripts/smoke.sh
@@ -311,16 +313,18 @@ DPM_CUSTODY_DIR=~/dpm-custody-try DPM_CUSTODY_SOURCE="$SRC" \
   DPM_CUSTODY_SETUP_PORT=8480 DPM_CUSTODY_MANAGER_PORT=3000 sh deploy/install.sh
 ```
 
-It ends with `✓ Ready`, the setup page address and a PIN.
+It ends with `✓ Ready`.
 
-**6. The setup page.**
+**6. Setup.**
 
-1. Enter the PIN.
-2. Click **Show more options**, choose **Custom**, and type the same address as `PLATFORM`.
-3. Paste your key and click **Check key**. It should say "Connecting as" followed by your
-   builder's name.
-4. Pick a mode, tick the box, and click **Start setup**. Wait until every step has a ✓.
-5. Download the backup kit, tick "I saved it", and click **Continue**.
+```sh
+SETUP_PLATFORM_URL="$PLATFORM" ~/dpm-custody-try/dpm-custody setup
+```
+
+1. It checks the platform, then asks for your key. It should say "Connecting as" followed by
+   your builder's name.
+2. Pick a mode and type `yes`. Wait until every step has a ✓.
+3. Create the admin login, save the backup kit, and press Enter.
 
 **7. Verify.**
 

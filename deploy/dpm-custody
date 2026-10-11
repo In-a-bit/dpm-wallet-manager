@@ -77,7 +77,11 @@ case "${1:-help}" in
   stop) compose stop ;;
   status) compose ps ;;
   open) cmd_open ;;
-  setup) compose exec setup node dist/setup/main cli ;;
+  # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still checked).
+  setup)
+    compose exec ${SETUP_PLATFORM_URL:+-e SETUP_PLATFORM_URL} ${SETUP_BUILDER_KEY:+-e SETUP_BUILDER_KEY} \
+      setup node dist/setup/main cli
+    ;;
   logs) shift; compose logs --tail 200 "$@" ;;
   backup) cmd_backup ;;
   backup-kit) compose exec -T setup node dist/setup/main kit ;;

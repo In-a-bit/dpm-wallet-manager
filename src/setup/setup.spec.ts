@@ -15,12 +15,14 @@ import {
 } from "./config-writer";
 import {
   DEFAULT_ENVIRONMENT,
+  environmentForUrl,
   findEnvironment,
   resolveDpmApiUrl,
   toContainerUrl,
 } from "./environments";
 import {
   fetchInstallConfig,
+  probePlatform,
   SetupError,
   type FetchLike,
   type InstallConfig,
@@ -138,6 +140,42 @@ describe("config writer", () => {
     expect(manager).toContain(`DPM_WALLET_API_KEY='${inputs.secrets.walletApiKey}'`);
     expect(fs.existsSync(path.join(dir, WALLET_ENV_FILE))).toBe(true);
     expect(fs.existsSync(path.join(dir, READY_MARKER))).toBe(true);
+  });
+});
+
+describe("environmentForUrl", () => {
+  it("names a listed platform by its id and any other as custom", () => {
+    expect(environmentForUrl("https://dpm-api.inabit.dev/")).toEqual({ environment: "dev" });
+    expect(environmentForUrl(" http://localhost:8086/ ")).toEqual({
+      environment: "custom",
+      customUrl: "http://localhost:8086",
+    });
+  });
+});
+
+describe("probePlatform", () => {
+  const answering =
+    (status: number): FetchLike =>
+    async () =>
+      new Response("{}", { status });
+
+  it("accepts a platform that refuses a request without a key", async () => {
+    let sentKey: string | null = "unset";
+    await probePlatform("https://x", async (_url, init) => {
+      sentKey = new Headers(init?.headers).get("X-Builder-Api-Private-Key");
+      return new Response("{}", { status: 401 });
+    });
+    expect(sentKey).toBeNull();
+  });
+
+  it("tells a wrong or outdated address apart from a wrong key", async () => {
+    await expect(probePlatform("https://x", answering(404))).rejects.toThrow(/self-install/);
+    await expect(probePlatform("https://x", answering(502))).rejects.toThrow(/unavailable/);
+    await expect(
+      probePlatform("https://x", async () => {
+        throw new TypeError("fetch failed");
+      }),
+    ).rejects.toThrow(/Could not reach/);
   });
 });
 

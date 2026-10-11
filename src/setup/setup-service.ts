@@ -1,6 +1,7 @@
 import { findEnvironment, resolveDpmApiUrl, type EnvironmentId } from "./environments";
 import {
   fetchInstallConfig,
+  probePlatform,
   SetupError,
   type FetchLike,
   type InstallConfig,
@@ -9,7 +10,8 @@ import { generateInstallSecrets } from "./secrets";
 import type { CustodyMode, SetupState } from "./state";
 import { isComplete, progress, provision, type ProvisioningDeps, type StepProgress } from "./steps";
 
-export type KeyCheckInput = { environment: string; customUrl?: string; builderKey: string };
+export type PlatformInput = { environment: string; customUrl?: string };
+export type KeyCheckInput = PlatformInput & { builderKey: string };
 export type StartInput = KeyCheckInput & { mode: string; confirmModeIsPermanent: boolean };
 
 export type KeyCheckResult = {
@@ -114,11 +116,17 @@ export class SetupService {
     });
   }
 
+  /** Checks the platform answers at the chosen address, before a key is asked for. */
+  async checkPlatform(input: PlatformInput): Promise<string> {
+    const dpmApiUrl = this.platformUrl(input);
+    await probePlatform(dpmApiUrl, this.fetchImpl);
+    return dpmApiUrl;
+  }
+
   async checkKey(input: KeyCheckInput): Promise<KeyCheckResult> {
     const environment = findEnvironment(input.environment);
     if (!environment) throw new SetupError("Choose an environment.");
-    const dpmApiUrl = resolveDpmApiUrl(environment, input.customUrl);
-    if (typeof dpmApiUrl !== "string") throw new SetupError(dpmApiUrl.error);
+    const dpmApiUrl = this.platformUrl(input);
     const platform = await fetchInstallConfig(dpmApiUrl, input.builderKey, this.fetchImpl);
     return { environment: environment.id, dpmApiUrl, platform };
   }
@@ -174,6 +182,14 @@ export class SetupService {
     const state = this.deps.store.load();
     if (!isComplete(state) || !state.operatorKey) return undefined;
     return { operatorKey: state.operatorKey };
+  }
+
+  private platformUrl(input: PlatformInput): string {
+    const environment = findEnvironment(input.environment);
+    if (!environment) throw new SetupError("Choose an environment.");
+    const dpmApiUrl = resolveDpmApiUrl(environment, input.customUrl);
+    if (typeof dpmApiUrl !== "string") throw new SetupError(dpmApiUrl.error);
+    return dpmApiUrl;
   }
 
   private runInBackground(): void {

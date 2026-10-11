@@ -35,15 +35,33 @@ export async function fetchInstallConfig(
   return withContainerUrls((await response.json()) as InstallConfig);
 }
 
+/**
+ * Checks an address before any key is asked for: the endpoint must answer, and refuse a request
+ * without a key. That tells a wrong address apart from a wrong key, which are fixed differently.
+ */
+export async function probePlatform(
+  dpmApiUrl: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<void> {
+  const response = await requestInstallConfig(dpmApiUrl, undefined, fetchImpl);
+  if (response.status === 401) return;
+  if (response.status === 404) {
+    throw new SetupError(
+      `The platform at ${dpmApiUrl} does not support self-install yet (it has no /wallet-install/config). Check the address, or ask the platform team.`,
+    );
+  }
+  throw new SetupError(await unexpectedStatusMessage(response));
+}
+
 async function requestInstallConfig(
   dpmApiUrl: string,
-  key: string,
+  key: string | undefined,
   fetchImpl: FetchLike,
 ): Promise<Response> {
   const url = `${toContainerUrl(dpmApiUrl)}/wallet-install/config`;
   try {
     return await fetchImpl(url, {
-      headers: { [BUILDER_KEY_HEADER]: key },
+      headers: key ? { [BUILDER_KEY_HEADER]: key } : {},
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {

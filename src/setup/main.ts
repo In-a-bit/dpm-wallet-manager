@@ -16,7 +16,8 @@ import type { ProvisioningDeps } from "./steps";
  * image but never loads the manager's configuration — producing that configuration is its job.
  *
  *   node dist/setup/main          the setup page (default)
- *   node dist/setup/main cli      the same flow in the terminal
+ *   node dist/setup/main cli      the same flow in the terminal; SETUP_PLATFORM_URL and
+ *                                 SETUP_BUILDER_KEY answer its first two questions (still checked)
  *   node dist/setup/main kit      print the backup kit again
  */
 const env = (name: string, fallback: string): string => process.env[name] || fallback;
@@ -35,7 +36,12 @@ function main(): void {
 
   const command = process.argv[2];
   if (command === "kit") return void process.stdout.write(service.backupKit());
-  if (command === "cli") return void runCli(service, () => store.load());
+  if (command === "cli") {
+    return void runCli(service, () => store.load(), {
+      platformUrl: process.env.SETUP_PLATFORM_URL,
+      builderKey: process.env.SETUP_BUILDER_KEY,
+    });
+  }
   // Only the server clears a stale `running`: it is the container's main process, so when it
   // starts nothing else can be mid-run, whereas the terminal flow runs beside it.
   store.update((state) => {

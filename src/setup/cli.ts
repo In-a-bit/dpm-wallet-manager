@@ -1,24 +1,36 @@
 import readline from "node:readline/promises";
+import { Writable } from "node:stream";
 
-import { ENVIRONMENTS } from "./environments";
+import { environmentForUrl, ENVIRONMENTS } from "./environments";
 import { SetupError } from "./platform-config";
-import type { SetupService } from "./setup-service";
+import type { PlatformInput, SetupService } from "./setup-service";
 import { progress } from "./steps";
 
 /**
  * The same flow as the page, in a terminal, for a server with no screen. It asks the same
  * questions in the same order and calls the same SetupService, so the two cannot drift apart.
  */
+/**
+ * Answers given before the terminal flow starts, by an installer that has already checked them.
+ * Each is checked again here, from inside the install, and asked for if it does not pass.
+ */
+export type CliPresets = { platformUrl?: string; builderKey?: string };
+
 export async function runCli(
   service: SetupService,
   readState: () => Parameters<typeof progress>[0],
+  presets: CliPresets = {},
 ): Promise<void> {
-  const io = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const io = readline.createInterface({
+    input: process.stdin,
+    output: terminal,
+    terminal: Boolean(process.stdout.isTTY),
+  });
   try {
     if (readState().running) {
       throw new SetupError("Setup is already running from the browser page. Follow it there.");
     }
-    if (service.view().phase === "new") await askAndStart(io, service);
+    if (service.view().phase === "new") await askAndStart(io, service, presets);
     else console.log("\nSetup was already started; resuming.\n");
     await runWithProgress(service, readState);
     await createOwnerLogin(io, service);
@@ -33,52 +45,93 @@ export async function runCli(
   }
 }
 
-async function askAndStart(io: readline.Interface, service: SetupService): Promise<void> {
+async function askAndStart(
+  io: readline.Interface,
+  service: SetupService,
+  presets: CliPresets,
+): Promise<void> {
   console.log("\nDPM Custody Setup\n");
-  const environment = await choose(
-    io,
-    "Which platform are you joining?",
-    ENVIRONMENTS.map((e) => [e.id, `${e.label} - ${e.description}`]),
-  );
-  const customUrl =
-    environment === "custom"
-      ? await io.question(
-          "Platform address (https://…, or http://localhost:8086 for one on this computer): ",
-        )
-      : undefined;
-  const builderKey = await askForKey(io, service, environment, customUrl);
-  const mode = await choose(io, "How should your users' funds be held?", [
-    ["segregated", "Each user holds their own funds (choose this if you are not sure)"],
-    ["shared", "Your company's operations wallet pays for users' trades"],
-  ]);
-  const confirmed = await io.question(
-    `Type "yes" to confirm "${mode}" can never be changed later: `,
-  );
-  await service.start({
-    environment,
-    customUrl,
-    builderKey,
-    mode,
-    confirmModeIsPermanent: confirmed.trim().toLowerCase() === "yes",
-  });
+  const platform = await askForPlatform(io, service, presets.platformUrl);
+  const builderKey = await askForKey(io, service, platform, presets.builderKey);
+  const mode = await askForMode(io);
+  await service.start({ ...platform, builderKey, mode, confirmModeIsPermanent: true });
+}
+
+/** Asks until the chosen platform answers, so a wrong address is not mistaken for a wrong key. */
+async function askForPlatform(
+  io: readline.Interface,
+  service: SetupService,
+  preset: string | undefined,
+): Promise<PlatformInput> {
+  if (preset) {
+    const platform = environmentForUrl(preset);
+    if (await platformAnswers(service, platform)) return platform;
+  }
+  for (;;) {
+    const environment = await choose(
+      io,
+      "Which platform are you joining?",
+      ENVIRONMENTS.map((e) => [e.id, `${e.label} - ${e.description}`]),
+    );
+    const customUrl =
+      environment === "custom"
+        ? await io.question(
+            "Platform address (https://…, or http://localhost:8086 for one on this computer): ",
+          )
+        : undefined;
+    if (await platformAnswers(service, { environment, customUrl })) {
+      return { environment, customUrl };
+    }
+  }
+}
+
+async function platformAnswers(service: SetupService, platform: PlatformInput): Promise<boolean> {
+  try {
+    const url = await service.checkPlatform(platform);
+    console.log(`✓ The platform at ${url} answers.\n`);
+    return true;
+  } catch (err) {
+    if (!(err instanceof SetupError)) throw err;
+    console.log(`✕ ${err.message}\n`);
+    return false;
+  }
 }
 
 async function askForKey(
   io: readline.Interface,
   service: SetupService,
-  environment: string,
-  customUrl: string | undefined,
+  platform: PlatformInput,
+  preset: string | undefined,
 ): Promise<string> {
+  let builderKey = preset ?? (await askHidden(io, "Paste your builder private key (bld_sk_…): "));
   for (;;) {
-    const builderKey = await io.question("Paste your builder private key (bld_sk_…): ");
     try {
-      const checked = await service.checkKey({ environment, customUrl, builderKey });
+      const checked = await service.checkKey({ ...platform, builderKey });
       console.log(`✓ Connecting as ${checked.platform.owner.name}.\n`);
       return builderKey;
     } catch (err) {
       if (!(err instanceof SetupError)) throw err;
       console.log(`✕ ${err.message}\n`);
     }
+    builderKey = await askHidden(io, "Paste your builder private key (bld_sk_…): ");
+  }
+}
+
+/** The mode is permanent, so it is taken only once it has been confirmed; otherwise asked again. */
+async function askForMode(io: readline.Interface): Promise<string> {
+  for (;;) {
+    const mode = await choose(io, "How should your users' funds be held?", [
+      ["segregated", "Each user holds their own funds (choose this if you are not sure)"],
+      ["shared", "Your company's operations wallet pays for users' trades"],
+    ]);
+    const confirmed = await io.question(
+      `Type "yes" to confirm "${mode}" can never be changed later, or anything else to choose again: `,
+    );
+    if (confirmed.trim().toLowerCase() === "yes") {
+      console.log(`✓ ${mode}\n`);
+      return mode;
+    }
+    console.log("");
   }
 }
 
@@ -142,18 +195,32 @@ async function createOwnerLogin(io: readline.Interface, service: SetupService): 
 }
 
 /**
- * A question whose answer is not echoed. readline has no switch for this, so the prompt is
- * written first and every echo of the answer is then swallowed until Enter.
+ * Where readline writes: the terminal, with a switch that swallows readline's echo while a hidden
+ * answer is typed. readline has no such switch of its own.
  */
+class Terminal extends Writable {
+  muted = false;
+
+  get columns(): number | undefined {
+    return process.stdout.columns;
+  }
+
+  override _write(chunk: Buffer, _encoding: BufferEncoding, done: () => void): void {
+    if (!this.muted) process.stdout.write(chunk);
+    done();
+  }
+}
+
+const terminal = new Terminal();
+
+/** A question whose answer is not echoed: the prompt is written first, then the echo is muted. */
 async function askHidden(io: readline.Interface, prompt: string): Promise<string> {
-  const echo = io as unknown as { _writeToOutput: (text: string) => void };
-  const original = echo._writeToOutput.bind(io);
   process.stdout.write(prompt);
-  echo._writeToOutput = () => undefined;
+  terminal.muted = true;
   try {
     return await io.question("");
   } finally {
-    echo._writeToOutput = original;
+    terminal.muted = false;
     process.stdout.write("\n");
   }
 }

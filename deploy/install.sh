@@ -10,6 +10,7 @@
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
 # DPM_CUSTODY_SETUP_PORT / DPM_CUSTODY_MANAGER_PORT move the two ports (8480 / 3000) when taken.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
+# DPM_CUSTODY_NO_BROWSER=1 never opens a browser (when setup continues in the terminal).
 set -eu
 
 DIR="${DPM_CUSTODY_DIR:-$HOME/dpm-custody}"
@@ -74,6 +75,7 @@ wait_for_setup_page() {
 
 open_browser() {
   url="$1"
+  [ -z "${DPM_CUSTODY_NO_BROWSER:-}" ] || return 1
   if command -v open >/dev/null 2>&1 && [ "$(uname)" = Darwin ]; then
     open "$url" && return 0
   fi

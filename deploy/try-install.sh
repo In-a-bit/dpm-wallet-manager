@@ -3,25 +3,30 @@
 # this computer, or a shared one such as dev. It installs exactly what a builder installs; only
 # where the images come from and which platform to join are yours to choose.
 #
-#   deploy/try-install.sh [options] [bld_sk_…]   check, install, and print what to enter on the page
+#   deploy/try-install.sh [options] [bld_sk_…]   check, install and set up, all in this terminal
 #   deploy/try-install.sh verify [--dir DIR]      check a finished install (runs scripts/smoke.sh)
 #   deploy/try-install.sh clean [--dir DIR]       remove the install, to start over
 #
 # Options:
-#   --platform URL      the platform's dpm-api address          (default http://localhost:8086)
+#   --platform URL      the platform's dpm-api address      (asked for; suggests http://localhost:8086)
 #   --images TAG        use the published images ghcr.io/in-a-bit/*:TAG   (default main)
 #   --build             build the images from source instead, from this checkout and
 #   --wallet-src DIR    a dpm-wallet checkout             (default: ../dpm-wallet, if it exists)
 #   --dir DIR           where to install                          (default ~/dpm-custody-try)
 #
 # The builder private key comes from that platform's backoffice (Custody Builders → create a
-# builder → New key); without it on the command line the script asks for it.
+# builder → New key); without it on the command line the script asks for it. Every answer is
+# checked as soon as it is given, and asked for again if it does not pass. No browser is needed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MANAGER_SRC="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-PLATFORM="http://localhost:8086"
+PLATFORM=""
+PROBLEM=""
+CONFIG=""
+BUILDER_NAME=""
+DEFAULT_PLATFORM="http://localhost:8086"
 IMAGE_TAG="main"
 BUILD=false
 WALLET_SRC=""
@@ -31,6 +36,7 @@ COMMAND=start
 
 step() { printf '\n▸ %s\n' "$*"; }
 ok() { printf '  ✓ %s\n' "$*"; }
+warn() { printf '  ✕ %s\n' "$*"; }
 fail() {
   printf '\n  ✕ %s\n' "$1"
   shift
@@ -58,8 +64,10 @@ parse_args() {
     esac
     shift
   done
-  PLATFORM="${PLATFORM%/}"
 }
+
+# can_ask is true when a wrong answer can be asked for again rather than ending the run.
+can_ask() { [ -t 0 ]; }
 
 # json_path <a.b.c> reads a nested field from JSON on stdin; empty when absent or invalid.
 json_path() {
@@ -115,53 +123,89 @@ check_no_other_install() {
   ok "none"
 }
 
-check_platform() {
-  step "Platform at $PLATFORM"
-  [ "$(status_of "$(http GET "$PLATFORM/healthz")")" = 200 ] ||
-    fail "Nothing answers at $PLATFORM/healthz." \
-      "Check the address (--platform) and that the platform's dpm-api is running."
+ask_platform() {
+  step "Platform"
+  local answer
+  while :; do
+    if [ -z "$PLATFORM" ]; then
+      can_ask || fail "No platform address." "Pass it with --platform URL."
+      read -rp "  dpm-api address [$DEFAULT_PLATFORM]: " answer
+      PLATFORM="${answer:-$DEFAULT_PLATFORM}"
+    fi
+    PLATFORM="$(tr -d '[:space:]' <<<"$PLATFORM")"
+    PLATFORM="${PLATFORM%/}"
+    if platform_ok; then
+      ok "dpm-api at $PLATFORM is up and supports self-install"
+      return
+    fi
+    warn "$PROBLEM"
+    can_ask || exit 1
+    PLATFORM=""
+  done
+}
+
+# platform_ok succeeds when $PLATFORM can be used; otherwise PROBLEM says why.
+platform_ok() {
+  case "$PLATFORM" in
+    http://?* | https://?*) ;;
+    *) PROBLEM="\"$PLATFORM\" is not an address: it should start with http:// or https://." && return 1 ;;
+  esac
+  [ "$(status_of "$(http GET "$PLATFORM/healthz")")" = 200 ] || {
+    PROBLEM="Nothing answers at $PLATFORM/healthz: check the address and that the platform's dpm-api is running."
+    return 1
+  }
   local route
   route="$(http GET "$PLATFORM/wallet-install/config")"
   case "$(status_of "$route")" in
-    401) ok "dpm-api is up and has GET /wallet-install/config" ;;
-    404) fail "This dpm-api predates self-install: it has no GET /wallet-install/config." \
-      "Deploy or rebuild dpm-api from a prediction-go version that includes it." ;;
-    *) fail "Unexpected answer from $PLATFORM/wallet-install/config: $(status_of "$route")" ;;
+    401) ;;
+    404) PROBLEM="This dpm-api predates self-install (no GET /wallet-install/config): deploy or rebuild it from a prediction-go version that includes it." && return 1 ;;
+    *) PROBLEM="Unexpected answer from $PLATFORM/wallet-install/config: $(status_of "$route")." && return 1 ;;
   esac
 }
 
-read_builder_key() {
+ask_builder_key() {
   step "Builder private key"
-  if [ -z "$BUILDER_KEY" ]; then
-    printf "  From this platform's backoffice: Custody Builders → your builder → New key → Copy.\n"
-    read -rp "  Paste it here: " BUILDER_KEY
-  fi
-  BUILDER_KEY="$(tr -d '[:space:]' <<<"$BUILDER_KEY")"
-  case "$BUILDER_KEY" in
-    bld_sk_*) ok "got a key starting bld_sk_" ;;
-    *) fail "That is not a builder private key: it should start with bld_sk_." \
-      "Copy it from the backoffice (Custody Builders → New key → Copy) and run this again." ;;
-  esac
+  while :; do
+    if [ -z "$BUILDER_KEY" ]; then
+      can_ask || fail "No builder private key." "Pass it as the last argument."
+      printf "  From this platform's backoffice: Custody Builders → your builder → New key → Copy.\n"
+      read -rsp "  Paste it here (it is not shown): " BUILDER_KEY
+      printf '\n'
+    fi
+    BUILDER_KEY="$(tr -d '[:space:]' <<<"$BUILDER_KEY")"
+    if key_ok; then
+      BUILDER_NAME="$(body_of "$CONFIG" | json_path owner.name)"
+      ok "the platform knows this key: builder \"$BUILDER_NAME\""
+      break
+    fi
+    warn "$PROBLEM"
+    can_ask || exit 1
+    BUILDER_KEY=""
+  done
+  check_gamma_api
 }
 
-preflight() {
-  step "Pre-flight with the key"
-  local config gamma_api events
-  config="$(http GET "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
-  case "$(status_of "$config")" in
+# key_ok succeeds, with the platform's answer in CONFIG, when $BUILDER_KEY can be used; otherwise
+# PROBLEM says why. A problem with the platform, not the key, ends the run: another key cannot fix it.
+key_ok() {
+  case "$BUILDER_KEY" in
+    bld_sk_?*) ;;
+    *) PROBLEM="That is not a builder private key: it should start with bld_sk_." && return 1 ;;
+  esac
+  CONFIG="$(http GET "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
+  case "$(status_of "$CONFIG")" in
     200) ;;
-    401) fail "The platform does not accept this key." \
-      "Check you copied all of it, that it was issued on this platform, and that it has not been revoked." ;;
-    409) fail "This key belongs to an embedded builder, which does not run a DPM Wallet." \
-      "Create a custody builder instead (Custody Builders → Onboard custody builder)." ;;
+    401) PROBLEM="The platform does not accept this key: check you copied all of it, that it was issued on this platform, and that it has not been revoked." && return 1 ;;
+    409) PROBLEM="This key belongs to an embedded builder, which does not run a DPM Wallet: create a custody builder instead (Custody Builders → Onboard custody builder)." && return 1 ;;
     503) fail "This platform is not configured for self-install." \
       "Its dpm-api needs PUBLIC_DPM_API_URL, PUBLIC_GAMMA_API_URL and PUBLIC_RELAYER_API_URL, then a restart." ;;
-    *) fail "GET /wallet-install/config answered $(status_of "$config"): $(body_of "$config")" ;;
+    *) fail "GET /wallet-install/config answered $(status_of "$CONFIG"): $(body_of "$CONFIG")" ;;
   esac
-  BUILDER_NAME="$(body_of "$config" | json_path owner.name)"
-  ok "the platform knows this key: builder \"$BUILDER_NAME\""
+}
 
-  gamma_api="$(body_of "$config" | json_path services.gamma_api)"
+check_gamma_api() {
+  local gamma_api events
+  gamma_api="$(body_of "$CONFIG" | json_path services.gamma_api)"
   events="$(http GET "$gamma_api/events?limit=1" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
   case "$(status_of "$events")" in
     200) ok "gamma-api ($gamma_api) accepts the builder key" ;;
@@ -214,7 +258,7 @@ install() {
   source="$(mktemp -d)"
   cp "$SCRIPT_DIR/compose.yml" "$SCRIPT_DIR/dpm-custody" "$source/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$IMAGE_TAG" "$IMAGE_TAG" >"$source/versions.env"
-  DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" \
+  DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" DPM_CUSTODY_NO_BROWSER=1 \
     DPM_CUSTODY_SETUP_PORT="$setup_port" DPM_CUSTODY_MANAGER_PORT="$manager_port" \
     sh "$SCRIPT_DIR/install.sh" >"$source/install.log" 2>&1 ||
     fail "The installer failed. Its output:" "$(tail -n 20 "$source/install.log")"
@@ -222,36 +266,34 @@ install() {
   ok "running"
 }
 
-print_next_steps() {
-  cat <<EOF
+# run_setup continues in the install's own terminal setup, which checks the platform and key again
+# from inside the install, then asks the rest: the custody mode, the admin login, the backup kit.
+run_setup() {
+  step "Setup (in this terminal)"
+  SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" "$INSTALL_DIR/dpm-custody" setup ||
+    fail "Setup did not finish." "Fix what it says, then continue: $INSTALL_DIR/dpm-custody setup"
+}
 
-────────────────────────────────────────────────────────────────────────
-  Now finish in the browser:  http://localhost:$(install_env SETUP_PORT)
-
-  1. PIN:                        $(install_env SETUP_PIN)
-  2. Click "Show more options", choose "Custom", and type:
-                                 $PLATFORM
-  3. Builder private key:        the one you just gave
-     Click "Check key": it should say "Connecting as $BUILDER_NAME".
-  4. Pick a mode, tick the box, click "Start setup".
-  5. Download the backup kit, tick "I saved it", click Continue.
-
-  Then check everything:         $0 verify --dir $INSTALL_DIR
-  Start over:                    $0 clean --dir $INSTALL_DIR
-                                 then use a NEW builder: each can be installed only once
-────────────────────────────────────────────────────────────────────────
-EOF
+offer_verify() {
+  local answer=y
+  if can_ask; then read -rp "  Run the smoke test now? It creates a wallet and signs an order. [Y/n] " answer; fi
+  case "${answer:-y}" in
+    [nN]*) printf '\n  Later: %s verify --dir %s\n' "$0" "$INSTALL_DIR" ;;
+    *) cmd_verify ;;
+  esac
+  printf '  Start over: %s clean --dir %s, then use a NEW builder: each can be installed only once.\n\n' \
+    "$0" "$INSTALL_DIR"
 }
 
 cmd_start() {
   check_tools
   check_no_other_install
-  check_platform
-  read_builder_key
-  preflight
+  ask_platform
+  ask_builder_key
   prepare_images
   install
-  print_next_steps
+  run_setup
+  offer_verify
 }
 
 # ── verify ───────────────────────────────────────────────────────────────────
@@ -265,11 +307,11 @@ cmd_verify() {
   step "Setup"
   admin_key="$("$INSTALL_DIR/dpm-custody" backup-kit 2>/dev/null | sed -n 's/^Admin API key: *//p')" || true
   [ -n "$admin_key" ] ||
-    fail "Setup has not been started yet." "Finish it in the browser: http://localhost:$(install_env SETUP_PORT)"
+    fail "Setup has not been started yet." "Run it: $INSTALL_DIR/dpm-custody setup"
   platform="$(http GET "http://localhost:$manager_port/v1/platform" -H "X-API-Key: $admin_key")"
   [ "$(status_of "$platform")" = 200 ] ||
     fail "The wallet manager is not answering yet ($(status_of "$platform"))." \
-      "Is setup finished? See http://localhost:$(install_env SETUP_PORT)"
+      "Is setup finished? Continue it: $INSTALL_DIR/dpm-custody setup"
   ok "wallet manager is up on :$manager_port in $(body_of "$platform" | json_path mode) mode"
   step "Smoke test (creates a wallet, signs an order, checks routing and the money rule)"
   BASE_URL="http://localhost:$manager_port" ADMIN_KEY="$admin_key" "$MANAGER_SRC/scripts/smoke.sh"
