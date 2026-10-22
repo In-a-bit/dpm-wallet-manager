@@ -83,6 +83,7 @@ needed for a normal install.
 | Variable                   | Default            | What it does                                                                                             |
 | -------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------- |
 | `DPM_CUSTODY_MANAGER_PORT` | `3000`             | The wallet manager's port. A taken port stops the install before anything is written, naming a free one. |
+| `DPM_CUSTODY_PUBLIC_URL`   | `http://localhost:<port>` | Where people reach the manager and its admin dashboard, e.g. `https://custody.example.com` behind a TLS proxy. An `https://` address makes the dashboard's session cookie `Secure`. Must start with `http://` or `https://`. |
 | `DPM_CUSTODY_DIR`          | `~/dpm-custody`    | Where the install goes.                                                                                  |
 | `DPM_CUSTODY_NAME`         | `dpm-custody`      | The install's name. Its containers, volumes and network all start with it. Needed for two installs.      |
 | `DPM_CUSTODY_RELEASE`      | `latest`           | Install this release instead, e.g. `v1.2.3`.                                                             |
@@ -498,6 +499,11 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   has no port: it runs in a terminal, inside its container. To reach the manager from another
   host, set `MANAGER_BIND=0.0.0.0` in `.env` and put TLS in front of it. dpm-wallet and Postgres
   are reachable only inside the stack.
+- **HTTPS:** when the admin dashboard is served over HTTPS, set `MANAGER_PUBLIC_URL` in `.env` to
+  that address (e.g. `https://custody.example.com`) and run `./dpm-custody start`. An `https://`
+  address makes the dashboard's session cookie `Secure`. To set it at install time, pass
+  `DPM_CUSTODY_PUBLIC_URL=https://…` to the installer. `UI_COOKIE_SECURE=true` or `false` in
+  `.env` overrides the address either way.
 - **Configuration:** setup writes each service's configuration into that service's own volume:
   `config-wallet` (mounted by dpm-wallet and setup) and `config-manager` (the manager and
   setup), each file readable by its owner only. Setup keeps its own state in `setup-state`,

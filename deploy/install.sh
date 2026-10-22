@@ -20,6 +20,9 @@
 # DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
 # DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (default 3000). A new install checks
 # the port first and stops, naming a free one, when another program or container has it.
+# DPM_CUSTODY_PUBLIC_URL is where people reach the manager and its admin dashboard, when that is
+# not http://localhost:<port> — e.g. https://custody.example.com behind a TLS proxy. An https://
+# address makes the dashboard's session cookie Secure.
 # DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
 # are all prefixed with it, so two installs with different names run side by side.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
@@ -31,6 +34,7 @@ RELEASE="${DPM_CUSTODY_RELEASE:-latest}"
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
 MANAGER_PORT="${DPM_CUSTODY_MANAGER_PORT:-3000}"
 NAME="${DPM_CUSTODY_NAME:-dpm-custody}"
+PUBLIC_URL="${DPM_CUSTODY_PUBLIC_URL:-http://localhost:$MANAGER_PORT}"
 
 # >>> release public key >>>
 # PLACEHOLDER: no private key exists for this one. Replace it with the real key (see
@@ -176,7 +180,7 @@ write_env() {
     say "POSTGRES_PASSWORD=$(random_password)"
     say "MANAGER_BIND=127.0.0.1"
     say "MANAGER_PORT=$MANAGER_PORT"
-    say "MANAGER_PUBLIC_URL=http://localhost:$MANAGER_PORT"
+    say "MANAGER_PUBLIC_URL=${PUBLIC_URL%/}"
     grep -E '^(DPM_WALLET(_MANAGER)?|POSTGRES)_TAG=' "$DIR/versions.env"
     version="$(sed -n 's/^RELEASE_VERSION=//p' "$DIR/versions.env" | head -n 1)"
     say "DPM_CUSTODY_VERSION=${version:-unknown}"
@@ -226,6 +230,16 @@ check_port() {
   fail "Port $MANAGER_PORT is already in use on this machine. Nothing was installed. Run the installer again with a free port, e.g. DPM_CUSTODY_MANAGER_PORT=$free (before sh)."
 }
 
+# check_public_url refuses a DPM_CUSTODY_PUBLIC_URL the manager would not boot with (it must be an
+# http(s) address) or that could break .env (spaces, quotes or line breaks).
+check_public_url() {
+  case "$PUBLIC_URL" in
+    *[[:space:]\"\'\\\`\$]*) fail "DPM_CUSTODY_PUBLIC_URL must be a plain address, e.g. https://custody.example.com." ;;
+    http://?* | https://?*) ;;
+    *) fail "DPM_CUSTODY_PUBLIC_URL must start with http:// or https://, e.g. https://custody.example.com." ;;
+  esac
+}
+
 # wait_for_setup waits until the setup container can run a command, which is what setup needs.
 wait_for_setup() {
   i=0
@@ -264,6 +278,7 @@ main() {
   else
     check_name
     check_port
+    check_public_url
     say "  Installing into $DIR ..."
     for f in compose.yml versions.env dpm-custody; do fetch_file "$f"; done
     verify_files compose.yml versions.env dpm-custody

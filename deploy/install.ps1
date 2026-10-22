@@ -32,6 +32,9 @@ $Release = if ($env:DPM_CUSTODY_RELEASE) { $env:DPM_CUSTODY_RELEASE } else { "la
 $Releases = "https://github.com/In-a-bit/dpm-wallet-manager/releases"
 $ManagerPort = if ($env:DPM_CUSTODY_MANAGER_PORT) { $env:DPM_CUSTODY_MANAGER_PORT } else { "3000" }
 $Name = if ($env:DPM_CUSTODY_NAME) { $env:DPM_CUSTODY_NAME } else { "dpm-custody" }
+# Where people reach the manager and its admin dashboard, when that is not
+# http://localhost:<port>. An https:// address makes the dashboard's session cookie Secure.
+$PublicUrl = if ($env:DPM_CUSTODY_PUBLIC_URL) { $env:DPM_CUSTODY_PUBLIC_URL.TrimEnd("/") } else { "http://localhost:$ManagerPort" }
 
 # >>> release public key >>>
 # PLACEHOLDER: no private key exists for this one. Replace it with the real key (see
@@ -204,7 +207,7 @@ function Write-InstallEnv {
     "POSTGRES_PASSWORD=$(New-Secret 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' 32)",
     "MANAGER_BIND=127.0.0.1",
     "MANAGER_PORT=$ManagerPort",
-    "MANAGER_PUBLIC_URL=http://localhost:$ManagerPort"
+    "MANAGER_PUBLIC_URL=$PublicUrl"
   ) + $versions + "DPM_CUSTODY_VERSION=$version"
   # UTF-8 without a BOM: Compose would read a BOM as part of the first variable's name.
   $envPath = Join-Path $Dir ".env"
@@ -277,6 +280,13 @@ function Test-ManagerPort {
   Fail "Port $port is already in use on this machine. Nothing was installed. Run the installer again with a free port, e.g. `$env:DPM_CUSTODY_MANAGER_PORT = `"$free`" first."
 }
 
+# Refuses a DPM_CUSTODY_PUBLIC_URL the manager would not boot with (it must be an http(s) address)
+# or that could break .env (spaces, quotes or line breaks).
+function Test-PublicUrl {
+  if ($PublicUrl -match '[\s"''`$\\]') { Fail "DPM_CUSTODY_PUBLIC_URL must be a plain address, e.g. https://custody.example.com." }
+  if ($PublicUrl -notmatch '^https?://.+') { Fail "DPM_CUSTODY_PUBLIC_URL must start with http:// or https://, e.g. https://custody.example.com." }
+}
+
 $InstallStart = Get-Date
 Write-Host ""
 Write-Host "  DPM Custody installer"
@@ -308,6 +318,7 @@ if (Test-Path (Join-Path $Dir ".env")) {
 } else {
   Test-InstallName
   Test-ManagerPort
+  Test-PublicUrl
   Write-Host "  Installing into $Dir ..."
   $files = "compose.yml", "versions.env", "dpm-custody"
   foreach ($f in $files) { Get-InstallFile $f }

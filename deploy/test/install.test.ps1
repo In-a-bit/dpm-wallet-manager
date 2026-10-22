@@ -77,6 +77,7 @@ function Invoke-Installer($dir, [hashtable]$vars = @{}, $script = (Join-Path $He
     DPM_CUSTODY_MANAGER_PORT = "$Port"; DPM_CUSTODY_NAME = $null; DPM_CUSTODY_SOURCE = $null
     EXISTING_NAME = $null; CLAIMED_PORT = $null; SETUP_PLATFORM_URL = $null; SETUP_BUILDER_KEY = $null
     DPM_CUSTODY_ASSUME_WINDOWS = $null; ICACLS_FAIL = $null; DPM_CUSTODY_TEST_SID = $null
+    DPM_CUSTODY_PUBLIC_URL = $null
   }
   foreach ($k in $vars.Keys) { $all[$k] = $vars[$k] }
   foreach ($k in $all.Keys) { [Environment]::SetEnvironmentVariable($k, $all[$k]) }
@@ -144,6 +145,15 @@ $r = Invoke-Installer (Join-Path $T "i5") @{ DPM_CUSTODY_MANAGER_PORT = "30x1" }
 Check "malformed port: refused" (($r.Code -ne 0) -and ($r.Out -match "must be a port number"))
 $r = Invoke-Installer (Join-Path $T "i6") @{ DPM_CUSTODY_NAME = "Bad.Name" }
 Check "malformed name: refused" (($r.Code -ne 0) -and ($r.Out -match "DPM_CUSTODY_NAME"))
+$d = Join-Path $T "i6u"
+$r = Invoke-Installer $d @{ DPM_CUSTODY_PUBLIC_URL = "https://custody.example.com/" }
+Check "public URL: written to .env without the trailing slash" (($r.Code -eq 0) -and ((Get-Content (Join-Path $d ".env")) -contains "MANAGER_PUBLIC_URL=https://custody.example.com"))
+$d = Join-Path $T "i6v"
+$r = Invoke-Installer $d @{ DPM_CUSTODY_PUBLIC_URL = "custody.example.com" }
+Check "public URL without http(s): refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "must start with http"))
+$d = Join-Path $T "i6w"
+$r = Invoke-Installer $d @{ DPM_CUSTODY_PUBLIC_URL = "https://x`nEVIL=1" }
+Check "public URL with a line break: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "plain address"))
 $d = Join-Path $T "i7"
 $r = Invoke-Installer $d @{ DPM_CUSTODY_NAME = "dpm-custody-shared"; EXISTING_NAME = "dpm-custody-shared" }
 Check "name in use: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "already named"))

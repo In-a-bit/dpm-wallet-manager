@@ -236,6 +236,16 @@ out="$(run "$d14" DPM_CUSTODY_NAME=dpm-custody-shared EXISTING_NAME=dpm-custody-
 check "name in use: refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d14" 2>/dev/null)" ] && echo "$out" | grep -q "already named"'
 out="$(run "$T/i15" DPM_CUSTODY_NAME=Bad.Name 2>&1)"; rc=$?
 check "malformed name: refused" '[ $rc -ne 0 ] && echo "$out" | grep -q "DPM_CUSTODY_NAME"'
+d16="$T/i16"
+out="$(run "$d16" DPM_CUSTODY_PUBLIC_URL=https://custody.example.com/ 2>&1)"; rc=$?
+check "public URL: written to .env without the trailing slash" '[ $rc -eq 0 ] && grep -qx "MANAGER_PUBLIC_URL=https://custody.example.com" "$d16/.env"'
+d17="$T/i17"
+out="$(run "$d17" DPM_CUSTODY_PUBLIC_URL=custody.example.com 2>&1)"; rc=$?
+check "public URL without http(s): refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d17" 2>/dev/null)" ] && echo "$out" | grep -q "must start with http"'
+d18="$T/i18"
+out="$(run "$d18" "DPM_CUSTODY_PUBLIC_URL=https://x
+EVIL=1" 2>&1)"; rc=$?
+check "public URL with a line break: refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d18" 2>/dev/null)" ] && echo "$out" | grep -q "plain address"'
 
 # 7. compose validates (needs a real docker; skipped when absent)
 if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/docker ]; then

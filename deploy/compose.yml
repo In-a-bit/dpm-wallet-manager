@@ -156,7 +156,11 @@ services:
       ROUTED_ORDER_RETENTION_DAYS: ${ROUTED_ORDER_RETENTION_DAYS:-}
       RETENTION_ENABLED: ${RETENTION_ENABLED:-}
       # Names this install in storage alerts. Empty means "install". Must be http(s) when set.
+      # An https:// address also turns the admin dashboard's session cookie Secure.
       MANAGER_PUBLIC_URL: ${MANAGER_PUBLIC_URL:-}
+      # true or false overrides that either way, e.g. for TLS that ends somewhere the URL does
+      # not show. Empty means "follow MANAGER_PUBLIC_URL".
+      UI_COOKIE_SECURE: ${UI_COOKIE_SECURE:-}
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
