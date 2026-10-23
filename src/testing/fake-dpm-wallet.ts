@@ -3,7 +3,11 @@ import type { AddressInfo } from "node:net";
 
 import { getAddress, keccak256, toHex } from "viem";
 
-import type { UpstreamAddress, UpstreamSignOrderRequest } from "../clients/dpm-wallet.types";
+import type {
+  UpstreamAddress,
+  UpstreamCollateralBalance,
+  UpstreamSignOrderRequest,
+} from "../clients/dpm-wallet.types";
 
 export const FAKE_UPSTREAM_API_KEY = "upstream-test-key";
 
@@ -52,6 +56,12 @@ export class FakeDpmWallet {
    */
   failRegistrationWith: { status: number; code: string } | undefined;
 
+  /** Set true to answer `POST /v1/balances` the way an install without a data-api does. */
+  balancesUnavailable = false;
+
+  /** Configured balances, keyed by lower-cased address. An unlisted address reads as empty. */
+  private readonly balanceByAddress = new Map<string, Partial<UpstreamCollateralBalance>>();
+
   private nextIndex = 0;
 
   /**
@@ -95,6 +105,13 @@ export class FakeDpmWallet {
     this.hang = false;
     this.vaultInitialized = true;
     this.failRegistrationWith = undefined;
+    this.balancesUnavailable = false;
+    this.balanceByAddress.clear();
+  }
+
+  /** Sets what `POST /v1/balances` reports for an address. */
+  setBalance(address: string, balance: Partial<UpstreamCollateralBalance>): void {
+    this.balanceByAddress.set(address.toLowerCase(), balance);
   }
 
   /** Seeds an address as if it had been minted, for the reconcile paths. */
@@ -203,6 +220,17 @@ export class FakeDpmWallet {
       }
     }
 
+    if (route === "/v1/balances" && method === "POST") {
+      if (this.balancesUnavailable) {
+        return {
+          status: 503,
+          body: { error: { code: "BALANCES_UNAVAILABLE", message: "no data-api configured" } },
+        };
+      }
+      const addresses = Array.isArray(body?.addresses) ? (body.addresses as string[]) : [];
+      return { status: 200, body: addresses.map((address) => this.balanceFor(address)) };
+    }
+
     if (route === "/v1/sign/order" && method === "POST") {
       return this.signOrder(body as unknown as UpstreamSignOrderRequest);
     }
@@ -297,6 +325,21 @@ export class FakeDpmWallet {
         signature: signatureFor(`order:${request.ref}:${request.tokenId}`),
         orderHash: keccak256(toHex(`hash:${request.ref}:${request.tokenId}:${request.side}`)),
       },
+    };
+  }
+
+  private balanceFor(address: string): UpstreamCollateralBalance {
+    const configured = this.balanceByAddress.get(address.toLowerCase()) ?? {};
+    const decimals = configured.decimals ?? 6;
+    const balanceRaw = configured.balanceRaw ?? "0";
+    return {
+      user: address,
+      decimals,
+      balanceRaw,
+      balance: balanceRaw,
+      allowanceRaw: "0",
+      updatedAt: new Date().toISOString(),
+      ...(configured.blockNumber === undefined ? {} : { blockNumber: configured.blockNumber }),
     };
   }
 

@@ -52,6 +52,7 @@ describe("openapi", () => {
     "GET /v1/wallets/by-external/{externalId}",
     "GET /v1/wallets/{id}",
     "PATCH /v1/wallets/{id}",
+    "POST /v1/wallets/balances",
     "POST /v1/wallets/{id}/reconcile",
     "POST /v1/wallets/{id}/dpm-attestation",
     "POST /v1/wallets/{id}/dpm-registered",
@@ -197,6 +198,8 @@ describe("openapi", () => {
       const restricted = operations().filter(
         ([route]) =>
           !PUBLIC_ROUTES.includes(route) &&
+          // A read despite the verb: no `@Roles`, so no 403.
+          route !== "POST /v1/wallets/balances" &&
           (/^(POST|PATCH|DELETE)/.test(route) ||
             route === "GET /v1/api-keys" ||
             route.startsWith("GET /v1/api-keys/{") ||

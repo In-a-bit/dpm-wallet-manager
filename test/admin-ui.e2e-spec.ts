@@ -50,7 +50,10 @@ describe("admin UI access", () => {
         const response = await send(harness, method, fillParams(path), harness.readonlyKey);
         const adminOnlyRead =
           route.startsWith("GET /v1/api-keys") && route !== "GET /v1/api-keys/self";
-        const refused = method !== "GET" || adminOnlyRead || route === "GET /v1/ui-users";
+        // The balances lookup is a POST only because its ids travel in the body.
+        const readLikePost = route === "POST /v1/wallets/balances";
+        const refused =
+          (method !== "GET" && !readLikePost) || adminOnlyRead || route === "GET /v1/ui-users";
         expect(`${route}: ${response.status === 403}`).toBe(`${route}: ${refused}`);
         if (!refused) expect(`${route}: ${response.status}`).not.toBe(`${route}: 401`);
       }

@@ -245,4 +245,58 @@ describe("wallets", () => {
       expect(response.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
     });
   });
+  describe("balances", () => {
+    const balances = (walletIds: unknown, apiKey?: string) =>
+      harness.post("/v1/wallets/balances", { body: { walletIds }, ...(apiKey ? { apiKey } : {}) });
+
+    it("reports each wallet's proxy balance in request order", async () => {
+      const a = (await create()).body;
+      const b = (await create()).body;
+      harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "1500000", blockNumber: 77 });
+      harness.upstream.setBalance(b.proxyAddress, { balanceRaw: "42" });
+
+      const response = await balances([b.id, a.id], harness.readonlyKey);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual([
+        { walletId: b.id, proxyAddress: b.proxyAddress, balanceMicro: "42", blockNumber: null },
+        { walletId: a.id, proxyAddress: a.proxyAddress, balanceMicro: "1500000", blockNumber: 77 },
+      ]);
+      const call = harness.upstream.requests.filter((r) => r.path === "/v1/balances").pop();
+      expect(call?.body).toEqual({ addresses: [b.proxyAddress, a.proxyAddress] });
+    });
+
+    it("reports a null block for an un-synced wallet and scales other decimals", async () => {
+      const a = (await create()).body;
+      const b = (await create()).body;
+      harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "5", blockNumber: 0 });
+      harness.upstream.setBalance(b.proxyAddress, { balanceRaw: "1234567890", decimals: 9 });
+      const response = await balances([a.id, b.id]);
+      expect(response.body[0]).toMatchObject({ balanceMicro: "5", blockNumber: null });
+      expect(response.body[1].balanceMicro).toBe("1234567");
+    });
+
+    it("answers 404 for an unknown wallet", async () => {
+      const response = await balances(["6f1f4a3e-2b1c-4d5e-8f90-123456789abc"]);
+      expect(response.status).toBe(404);
+      expect(response.body.error.code).toBe("WALLET_NOT_FOUND");
+    });
+
+    it("maps an upstream BALANCES_UNAVAILABLE to 503 with the same code", async () => {
+      const a = (await create()).body;
+      harness.upstream.balancesUnavailable = true;
+      const response = await balances([a.id]);
+      expect(response.status).toBe(503);
+      expect(response.body.error.code).toBe("BALANCES_UNAVAILABLE");
+    });
+
+    it("validates the body and requires a key", async () => {
+      expect((await balances([])).status).toBe(400);
+      expect((await balances(["nope"])).status).toBe(400);
+      const anonymous = await harness.post("/v1/wallets/balances", {
+        body: { walletIds: ["6f1f4a3e-2b1c-4d5e-8f90-123456789abc"] },
+        apiKey: null,
+      });
+      expect(anonymous.status).toBe(401);
+    });
+  });
 });

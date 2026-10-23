@@ -100,6 +100,17 @@ export type UpstreamMetaTxRequest = {
   recipient?: string;
 };
 
+/** One entry of `POST /v1/balances`, in request order. `blockNumber` is absent until synced. */
+export type UpstreamCollateralBalance = {
+  user: string;
+  decimals: number;
+  balanceRaw: string;
+  balance: string;
+  allowanceRaw: string;
+  blockNumber?: number;
+  updatedAt?: string;
+};
+
 export type UpstreamHealth = {
   status: string;
   vault?: { mode: string; initialized: boolean; ready: boolean };

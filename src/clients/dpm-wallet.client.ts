@@ -8,6 +8,7 @@ import type {
   UpstreamAddress,
   UpstreamAddressPage,
   UpstreamAttestation,
+  UpstreamCollateralBalance,
   UpstreamHealth,
   UpstreamMetaTxKind,
   UpstreamMetaTxRequest,
@@ -38,6 +39,7 @@ const CODE_MAP: Record<string, ErrorCode> = {
   CUSTOMER_NOT_REGISTERED: "WALLET_NOT_REGISTERED",
   IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT",
   VAULT_NOT_INITIALIZED: "UPSTREAM_UNAVAILABLE",
+  BALANCES_UNAVAILABLE: "BALANCES_UNAVAILABLE",
 };
 
 /** Upstream codes the caller is expected to handle rather than treat as a failure. */
@@ -125,6 +127,11 @@ export class DpmWalletClient {
     options: UpstreamCallOptions = {},
   ): Promise<UpstreamSignedCancel> {
     return this.request("POST", "/v1/sign/cancel", { body: request, ...options });
+  }
+
+  /** Collateral balances for up to 100 addresses, answered in request order. */
+  balances(addresses: string[]): Promise<UpstreamCollateralBalance[]> {
+    return this.request("POST", "/v1/balances", { body: { addresses } });
   }
 
   metaTx(

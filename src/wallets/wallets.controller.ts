@@ -28,6 +28,7 @@ import {
   ListWalletsDto,
   UpdateWalletDto,
 } from "./dto/wallet.dto";
+import { WalletBalanceDto, WalletBalancesRequestDto } from "./dto/balances.dto";
 import { DpmAttestationDto, WalletPageDto } from "./dto/wallet-page.dto";
 import { toWalletResponse, WalletResponseDto } from "./dto/wallet-response.dto";
 import { WalletsService } from "./wallets.service";
@@ -92,6 +93,29 @@ export class WalletsController {
       limit: query.limit,
       offset: query.offset,
     };
+  }
+
+  /**
+   * Collateral balances for up to 100 wallets, read through dpm-wallet.
+   *
+   * A read despite being a POST (the ids travel in the body), so `readonly` keys may call it.
+   * Each balance is for the wallet's proxy address, where the funds sit, and comes back in the
+   * order the ids were given. Declared before `:id` so the literal segment is not shadowed.
+   */
+  @Post("balances")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ operationId: "getWalletBalances", summary: "Get wallet balances" })
+  @ApiOkResponse({ type: [WalletBalanceDto] })
+  @ApiErrors(
+    "VALIDATION_FAILED",
+    "WALLET_NOT_FOUND",
+    "WALLET_NOT_READY",
+    "BALANCES_UNAVAILABLE",
+    "UPSTREAM_UNAVAILABLE",
+    "UPSTREAM_REJECTED",
+  )
+  balances(@Body() body: WalletBalancesRequestDto): Promise<WalletBalanceDto[]> {
+    return this.wallets.balances(body.walletIds);
   }
 
   /**

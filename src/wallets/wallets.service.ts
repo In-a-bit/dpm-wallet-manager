@@ -131,6 +131,35 @@ export class WalletsService {
     return this.require(id);
   }
 
+  /**
+   * Collateral balance of each wallet's proxy address, in the order the ids were given.
+   *
+   * Every id is resolved before dpm-wallet is called, so an unknown id fails the whole request
+   * with a 404 rather than returning a partial answer.
+   */
+  async balances(ids: string[]): Promise<WalletBalance[]> {
+    const wallets = await Promise.all(ids.map((id) => this.require(id)));
+    const addresses = wallets.map((wallet) => {
+      if (!wallet.proxyAddress) throw walletNotReady(wallet.id);
+      return wallet.proxyAddress;
+    });
+    const upstream = await this.upstream.balances(addresses);
+    return wallets.map((wallet, index) => {
+      const item = upstream[index];
+      if (!item) {
+        throw new ManagerError("UPSTREAM_REJECTED", "dpm-wallet returned too few balances", {
+          details: { expected: wallets.length, received: upstream.length },
+        });
+      }
+      return {
+        walletId: wallet.id,
+        proxyAddress: wallet.proxyAddress ?? "",
+        balanceMicro: toMicro(item.balanceRaw, item.decimals),
+        blockNumber: item.blockNumber ? item.blockNumber : null,
+      };
+    });
+  }
+
   async getByExternalId(externalId: string): Promise<Wallet> {
     const wallet = await this.wallets.findByExternalId(externalId);
     if (!wallet) throw walletNotFound(externalId);
@@ -334,6 +363,22 @@ export class WalletsService {
     if (!wallet) throw walletNotFound(id);
     return wallet;
   }
+}
+
+export type WalletBalance = {
+  walletId: string;
+  proxyAddress: string;
+  balanceMicro: string;
+  blockNumber: number | null;
+};
+
+/** Rescales a raw token amount to 6 decimals in bigint, truncating any finer digits. */
+function toMicro(raw: string, decimals: number): string {
+  const value = BigInt(raw);
+  if (decimals === 6) return value.toString();
+  return decimals > 6
+    ? (value / 10n ** BigInt(decimals - 6)).toString()
+    : (value * 10n ** BigInt(6 - decimals)).toString();
 }
 
 function kindAction(kind: WalletKind): AuditAction {

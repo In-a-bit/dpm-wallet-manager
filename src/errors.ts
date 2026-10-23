@@ -32,6 +32,7 @@ export const ERROR_STATUS = {
   IDEMPOTENCY_CONFLICT: 409,
   UPSTREAM_UNAVAILABLE: 502,
   UPSTREAM_REJECTED: 502,
+  BALANCES_UNAVAILABLE: 503,
   INTERNAL_ERROR: 500,
 } as const;
 
@@ -91,6 +92,9 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
     "dpm-wallet could not be reached, or answered with a server error. Safe to retry.",
   UPSTREAM_REJECTED:
     "dpm-wallet refused the request. `details.upstream` carries its own error code.",
+  BALANCES_UNAVAILABLE:
+    "dpm-wallet has no data-api configured, so it cannot report balances. Not retryable until " +
+    "the install is given one.",
   INTERNAL_ERROR: "An unexpected failure. The message is withheld.",
 };
 
