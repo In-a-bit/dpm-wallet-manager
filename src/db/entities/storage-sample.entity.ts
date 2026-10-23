@@ -45,4 +45,7 @@ export class StorageSampleEntity {
 
   @Column("text")
   level!: string;
+
+  @Column("timestamptz", { name: "oldest_important_at", nullable: true, transformer: isoTimestamp })
+  oldestImportantAt!: string | null;
 }

@@ -56,3 +56,27 @@ describe("loadConfig retention defaults", () => {
     expect(() => load({ OPERATIONS_RETENTION_DAYS: "400" })).toThrow(/ROUTED_ORDER_RETENTION_DAYS/);
   });
 });
+
+describe("loadConfig storage", () => {
+  it("defaults the storage path and leaves the public URL unset", () => {
+    expect(load()).toMatchObject({ storagePath: "/storage/pg", managerPublicUrl: undefined });
+  });
+
+  it("reads STORAGE_PATH and MANAGER_PUBLIC_URL, treating empty as unset", () => {
+    expect(
+      load({ STORAGE_PATH: "/mnt/pg", MANAGER_PUBLIC_URL: "https://custody.example.com" }),
+    ).toMatchObject({
+      storagePath: "/mnt/pg",
+      managerPublicUrl: "https://custody.example.com",
+    });
+    expect(load({ STORAGE_PATH: "", MANAGER_PUBLIC_URL: "" })).toMatchObject({
+      storagePath: "/storage/pg",
+      managerPublicUrl: undefined,
+    });
+  });
+
+  it("rejects a public URL that is not http(s)", () => {
+    expect(() => load({ MANAGER_PUBLIC_URL: "custody.example.com" })).toThrow(/MANAGER_PUBLIC_URL/);
+    expect(() => load({ MANAGER_PUBLIC_URL: "ftp://x" })).toThrow(/MANAGER_PUBLIC_URL/);
+  });
+});

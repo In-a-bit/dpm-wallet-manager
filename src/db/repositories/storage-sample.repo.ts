@@ -18,6 +18,7 @@ export type StorageSample = {
   growthBytesPerDay: number | null;
   daysToFull: number | null;
   level: string;
+  oldestImportantAt: string | null;
 };
 
 const MANAGER_TABLES = ["operations", "audit_events", "idempotency_keys"];
@@ -129,5 +130,6 @@ function toSample(row: StorageSampleEntity): StorageSample {
     growthBytesPerDay: row.growthBytesPerDay,
     daysToFull: row.daysToFull,
     level: row.level,
+    oldestImportantAt: row.oldestImportantAt,
   };
 }

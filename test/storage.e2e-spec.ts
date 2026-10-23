@@ -59,6 +59,7 @@ describe("storage", () => {
       ip: null,
       createdAt: "2020-01-01T00:00:00.000Z",
     });
+    await monitor.sampleOnce(); // the value is worked out per sample, not per request
     const body = (await harness.get("/v1/storage")).body;
     expect(body.oldestImportantAt).toBe("2020-01-01T00:00:00.000Z");
     expect(body.archiveSuggested).toBe(true);

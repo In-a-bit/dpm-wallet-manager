@@ -41,10 +41,10 @@ function isActive(item: string, path: string): boolean {
 const BANNER_POLL_MS = 5 * 60_000;
 
 /**
- * Disk pressure and archive reminders, on every page. Fetched on mount, on each navigation and
- * every 5 minutes; a failed fetch just shows nothing (the banner is advice, not a gate).
+ * Disk pressure and archive reminders, on every page. Fetched when the app opens and every
+ * 5 minutes; a failed fetch just shows nothing (the banner is advice, not a gate).
  */
-function StorageBanner({ path }: { path: string }) {
+function StorageBanner() {
   const [status, setStatus] = useState<StorageStatus | null>(null);
   useEffect(() => {
     let live = true;
@@ -59,7 +59,7 @@ function StorageBanner({ path }: { path: string }) {
       live = false;
       clearInterval(timer);
     };
-  }, [path]);
+  }, []);
 
   if (!status) return null;
   const left = status.daysToFull === null ? "" : `, about ${Math.round(status.daysToFull)} days to full`;
@@ -128,7 +128,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </button>
         </header>
         <main className="content">
-          <StorageBanner path={path} />
+          <StorageBanner />
           {children}
         </main>
       </div>

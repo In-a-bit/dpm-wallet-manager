@@ -1,8 +1,8 @@
 import { statfs as nodeStatfs } from "node:fs/promises";
 
-import { Injectable, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
+import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from "@nestjs/common";
 
-import { RETENTION_MIN_DAYS } from "../config";
+import { RETENTION_MIN_DAYS, type Config } from "../config";
 import {
   StorageSampleRepository,
   type StorageSample,
@@ -11,6 +11,7 @@ import { logInfo, logWarn } from "../observability/log";
 import { RetentionService } from "../retention/retention.service";
 import { RetentionSettingsService } from "../settings/retention-settings.service";
 import { maskWebhookUrl, StorageSettingsService } from "../settings/storage-settings.service";
+import { CONFIG } from "../tokens";
 import { daysToFull, growthPerDay, levelFor, type StorageLevel } from "./growth";
 
 const MIN_MS = 60_000;
@@ -21,7 +22,6 @@ const HISTORY_DAYS = 7;
 /** At critical, routine records are kept this long; if it is still critical a day later, less. */
 const TIGHTENED_DAYS = 30;
 const TIGHTENED_DAYS_ESCALATED = 7;
-const DEFAULT_STORAGE_PATH = "/storage/pg";
 
 export type DiskInfo = { totalBytes: number; freeBytes: number };
 export type StorageView = {
@@ -58,12 +58,12 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
   };
   fetchImpl: typeof fetch = (...args) => fetch(...args);
   webhookTimeoutMs = 5000;
-  storagePath = process.env.STORAGE_PATH?.trim() || DEFAULT_STORAGE_PATH;
+  storagePath: string;
 
   private firstTimer: NodeJS.Timeout | undefined;
   private interval: NodeJS.Timeout | undefined;
   private stopped = false;
-  private sampling = false;
+  private inflight: Promise<void> | undefined;
   private warnedUnavailable = false;
 
   private loaded = false;
@@ -74,13 +74,18 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
   /** When tightening began; it lasts until the level is ok again. */
   private tightenedSince: number | undefined;
   private lastLoggedOverride: number | undefined;
+  /** Routine days as configured, refreshed with each sample; caps what counts as tightening. */
+  private configuredDays: number | undefined;
 
   constructor(
     private readonly samples: StorageSampleRepository,
     private readonly storageSettings: StorageSettingsService,
     private readonly retentionSettings: RetentionSettingsService,
     private readonly retention: RetentionService,
-  ) {}
+    @Inject(CONFIG) private readonly config: Config,
+  ) {
+    this.storagePath = config.storagePath;
+  }
 
   onModuleInit(): void {
     this.retention.routineDaysOverride = () => this.currentOverride();
@@ -101,15 +106,20 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async tick(): Promise<void> {
-    if (this.sampling || this.stopped) return;
-    this.sampling = true;
+    if (this.inflight || this.stopped) return;
     try {
-      await this.sampleOnce();
+      await this.sampleGuarded();
     } catch (err) {
       if (!this.stopped) logWarn("storage.sample_failed", { err });
-    } finally {
-      this.sampling = false;
     }
+  }
+
+  /** One sample at a time: a caller arriving mid-sample waits for it instead of starting another. */
+  private sampleGuarded(): Promise<void> {
+    this.inflight ??= this.sampleOnce().finally(() => {
+      this.inflight = undefined;
+    });
+    return this.inflight;
   }
 
   /** Takes one sample, stores it and acts on the level. Exposed for tests and the first request. */
@@ -125,38 +135,40 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     const usedPercent = disk ? ((disk.totalBytes - disk.freeBytes) / disk.totalBytes) * 100 : null;
-    const usedBytes = (s: {
-      total: number | null;
-      free: number | null;
-      wallet: number | null;
-      manager: number;
-    }) => (s.total !== null && s.free !== null ? s.total - s.free : (s.wallet ?? 0) + s.manager);
+    // Disk-used and database-bytes readings are different quantities; the slope uses only the
+    // samples on the same basis as the newest one.
+    const basis = (h: { diskTotalBytes: number | null; diskFreeBytes: number | null }) =>
+      h.diskTotalBytes !== null && h.diskFreeBytes !== null ? "disk" : "db";
+    const reading = (h: {
+      diskTotalBytes: number | null;
+      diskFreeBytes: number | null;
+      walletDbBytes: number | null;
+      managerDbBytes: number;
+    }) =>
+      basis(h) === "disk"
+        ? (h.diskTotalBytes as number) - (h.diskFreeBytes as number)
+        : (h.walletDbBytes ?? 0) + h.managerDbBytes;
+    const current = {
+      diskTotalBytes: disk?.totalBytes ?? null,
+      diskFreeBytes: disk?.freeBytes ?? null,
+      walletDbBytes: sizes.wallet,
+      managerDbBytes: sizes.manager,
+    };
     const history = await this.samples.since(
       new Date(now.getTime() - HISTORY_DAYS * DAY_MS).toISOString(),
     );
     const series = [
-      ...history.map((h) => ({
-        at: h.at,
-        usedBytes: usedBytes({
-          total: h.diskTotalBytes,
-          free: h.diskFreeBytes,
-          wallet: h.walletDbBytes,
-          manager: h.managerDbBytes,
-        }),
-      })),
-      {
-        at: now.toISOString(),
-        usedBytes: usedBytes({
-          total: disk?.totalBytes ?? null,
-          free: disk?.freeBytes ?? null,
-          wallet: sizes.wallet,
-          manager: sizes.manager,
-        }),
-      },
+      ...history
+        .filter((h) => basis(h) === basis(current))
+        .map((h) => ({ at: h.at, usedBytes: reading(h) })),
+      { at: now.toISOString(), usedBytes: reading(current) },
     ];
     const growth = growthPerDay(series);
     const days = daysToFull(disk?.freeBytes ?? null, growth);
     const level = levelFor({ usedPercent, freeBytes: disk?.freeBytes ?? null }, growth, settings);
+
+    const oldestImportantAt = await this.samples.oldestImportantAt().catch(() => null);
+    this.configuredDays = (await this.retentionSettings.effective()).routineDays;
 
     const sample: StorageSample = {
       at: now.toISOString(),
@@ -169,6 +181,7 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
       growthBytesPerDay: growth,
       daysToFull: days,
       level,
+      oldestImportantAt,
     };
     await this.samples.insert(sample);
 
@@ -190,14 +203,12 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
   async view(): Promise<StorageView> {
     let latest = await this.samples.latest();
     if (!latest) {
-      await this.sampleOnce();
+      await this.sampleGuarded();
       latest = await this.samples.latest();
     }
     const sample = latest as StorageSample;
-    const [oldestImportantAt, retention] = await Promise.all([
-      this.samples.oldestImportantAt().catch(() => null),
-      this.retentionSettings.effective(),
-    ]);
+    const oldestImportantAt = sample.oldestImportantAt;
+    const retention = await this.retentionSettings.effective();
     const reminderMs = retention.archiveReminderDays * DAY_MS;
     return {
       at: sample.at,
@@ -226,11 +237,9 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
 
   /** The routine days now in force because of storage pressure, or null when not tightened. */
   async tightening(): Promise<{ routineDays: number; since: string } | null> {
+    this.configuredDays = (await this.retentionSettings.effective()).routineDays;
     const override = this.currentOverride();
     if (override === undefined || this.tightenedSince === undefined) return null;
-    const configured = (await this.retentionSettings.effective()).routineDays;
-    // Already shorter than the tightened value: nothing is being tightened.
-    if (configured <= override) return null;
     return { routineDays: override, since: new Date(this.tightenedSince).toISOString() };
   }
 
@@ -246,7 +255,12 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
       this.level === "critical" &&
       this.criticalSince !== undefined &&
       this.clock().getTime() - this.criticalSince >= DAY_MS;
-    return Math.max(escalated ? TIGHTENED_DAYS_ESCALATED : TIGHTENED_DAYS, RETENTION_MIN_DAYS);
+    const days = Math.max(
+      escalated ? TIGHTENED_DAYS_ESCALATED : TIGHTENED_DAYS,
+      RETENTION_MIN_DAYS,
+    );
+    // Not tightening at all when the configured days are already this short or shorter.
+    return this.configuredDays !== undefined && this.configuredDays <= days ? undefined : days;
   }
 
   /** Logs `retention.tightened` whenever the days in force change (null: back to configured). */
@@ -263,8 +277,8 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
   /** After a restart: pick up the last known level and how long it has been critical. */
   private async restoreState(now: Date): Promise<void> {
     if (this.loaded) return;
-    this.loaded = true;
     const recent = await this.samples.since(new Date(now.getTime() - 2 * DAY_MS).toISOString());
+    this.loaded = true;
     const last = recent[recent.length - 1];
     if (!last) return;
     this.level = last.level as StorageLevel;
@@ -306,8 +320,8 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
     const daily =
       !changed &&
       level !== "ok" &&
-      this.lastNotifiedAt !== undefined &&
-      at - this.lastNotifiedAt >= DAY_MS;
+      // After a restart nothing is remembered about the last notice, so the first sample is due.
+      (this.lastNotifiedAt === undefined || at - this.lastNotifiedAt >= DAY_MS);
     if (!changed && !daily) return;
     if (level === "ok" && !changed) return;
     this.lastNotifiedAt = at;
@@ -336,7 +350,7 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          install: installName(),
+          install: installName(this.config.managerPublicUrl),
           level: sample.level,
           usedPercent: sample.diskUsedPercent,
           daysToFull: sample.daysToFull,
@@ -361,9 +375,9 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
 }
 
 /** The host of MANAGER_PUBLIC_URL, which tells a webhook receiver which install is talking. */
-function installName(): string {
+function installName(publicUrl: string | undefined): string {
   try {
-    return new URL(process.env.MANAGER_PUBLIC_URL ?? "").host || "install";
+    return (publicUrl && new URL(publicUrl).host) || "install";
   } catch {
     return "install";
   }

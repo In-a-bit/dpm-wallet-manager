@@ -106,6 +106,8 @@ services:
       OPERATIONS_RETENTION_DAYS: ${OPERATIONS_RETENTION_DAYS:-}
       ROUTED_ORDER_RETENTION_DAYS: ${ROUTED_ORDER_RETENTION_DAYS:-}
       RETENTION_ENABLED: ${RETENTION_ENABLED:-}
+      # Names this install in storage alerts. Empty means "install". Must be http(s) when set.
+      MANAGER_PUBLIC_URL: ${MANAGER_PUBLIC_URL:-}
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]

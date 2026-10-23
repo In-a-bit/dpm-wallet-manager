@@ -58,6 +58,10 @@ export type Config = {
    * `platform_settings`) wins; these apply wherever the dashboard has said nothing.
    */
   retentionDefaults: RetentionDefaults;
+  /** The URL operators reach this install at; its host names the install in storage alerts. */
+  managerPublicUrl: string | undefined;
+  /** Where the Postgres volume is mounted (read-only), for the disk-usage reading. */
+  storagePath: string;
 };
 
 export type RetentionDefaults = {
@@ -96,6 +100,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     corsOrigins: parseList(env.CORS_ORIGINS),
     uiCookieSecure: optional(env.UI_COOKIE_SECURE) === "true",
     retentionDefaults: parseRetentionDefaults(env),
+    managerPublicUrl: parseHttpUrl("MANAGER_PUBLIC_URL", env.MANAGER_PUBLIC_URL),
+    storagePath: optional(env.STORAGE_PATH) ?? "/storage/pg",
   };
 }
 
@@ -123,6 +129,19 @@ function parseDays(name: string, raw: string | undefined, fallback: number): num
     );
   }
   return value;
+}
+
+/** Empty counts as unset; anything else must be an http(s) URL. */
+function parseHttpUrl(name: string, raw: string | undefined): string | undefined {
+  const text = optional(raw);
+  if (text === undefined) return undefined;
+  try {
+    const { protocol } = new URL(text);
+    if (protocol === "http:" || protocol === "https:") return text;
+  } catch {
+    // falls through to the error below
+  }
+  throw new Error(`${name} must be an http or https URL`);
 }
 
 function optional(value: string | undefined): string | undefined {

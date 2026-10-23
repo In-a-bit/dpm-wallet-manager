@@ -29,6 +29,7 @@ describe("StorageMonitorService", () => {
   let storageSettings: StorageSettingsService;
   let retention: RetentionService;
   let monitor: StorageMonitorService;
+  let makeMonitor: (publicUrl?: string) => StorageMonitorService;
   let usedPercent: number;
   let now: Date;
   let fetchImpl: jest.Mock;
@@ -76,7 +77,12 @@ describe("StorageMonitorService", () => {
       } as unknown as DpmWalletClient,
       samples,
     );
-    monitor = new StorageMonitorService(samples, storageSettings, retentionSettings, retention);
+    makeMonitor = (publicUrl?: string) =>
+      new StorageMonitorService(samples, storageSettings, retentionSettings, retention, {
+        ...config,
+        managerPublicUrl: publicUrl,
+      });
+    monitor = makeMonitor();
     now = new Date("2026-10-23T12:00:00Z");
     usedPercent = 50;
     monitor.clock = () => now;
@@ -202,6 +208,93 @@ describe("StorageMonitorService", () => {
     expect(events("storage.level")).toHaveLength(2);
   });
 
+  it('names the install by the host of MANAGER_PUBLIC_URL, or "install"', async () => {
+    await storageSettings.update({ alertWebhookUrl: SECRET_URL }, undefined);
+    usedPercent = 95;
+    const named = makeMonitor("https://custody.example.com:8443/admin");
+    named.clock = () => now;
+    named.statfs = monitor.statfs;
+    named.fetchImpl = fetchImpl;
+    await named.sampleOnce();
+    expect(JSON.parse(fetchImpl.mock.calls[0]![1].body).install).toBe("custody.example.com:8443");
+    // (the default monitor has none configured and posts "install", asserted above)
+  });
+
+  it("after a restart while critical, notifies once on the first sample, then daily", async () => {
+    await storageSettings.update({ alertWebhookUrl: SECRET_URL }, undefined);
+    usedPercent = 95;
+    await monitor.sampleOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // A new process: same database, nothing remembered in memory.
+    const restarted = makeMonitor();
+    restarted.statfs = monitor.statfs;
+    restarted.fetchImpl = fetchImpl;
+    restarted.clock = () => now;
+    advance(15 * MIN);
+    await restarted.sampleOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchImpl.mock.calls[1]![1].body).level).toBe("critical");
+    advance(15 * MIN);
+    await restarted.sampleOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    advance(24 * 60 * MIN);
+    await restarted.sampleOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("stores oldestImportantAt with the sample and serves it without recomputing", async () => {
+    await audit.insert({
+      actorKeyId: null,
+      actorRole: null,
+      actorUserId: null,
+      actorUsername: null,
+      walletId: null,
+      action: "key.create",
+      outcome: "success",
+      detail: null,
+      requestId: null,
+      ip: null,
+      createdAt: "2021-02-03T00:00:00.000Z",
+    });
+    await monitor.sampleOnce();
+    const spy = jest.spyOn(samples, "oldestImportantAt");
+    const view = await monitor.view();
+    expect(view.oldestImportantAt).toBe("2021-02-03T00:00:00.000Z");
+    expect(view.archiveSuggested).toBe(true);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("a first view() racing a timer sample takes one sample, not two", async () => {
+    await Promise.all([monitor.view(), monitor.sampleOnce().catch(() => undefined)]);
+    // view() joins or starts exactly one guarded sample; sampleOnce direct is the unguarded path
+    expect((await samples.since(ago(now, 1))).length).toBeLessThanOrEqual(2);
+    const tick = (monitor as unknown as { tick: () => Promise<void> }).tick.bind(monitor);
+    await fixture.db.query("TRUNCATE storage_samples");
+    await Promise.all([monitor.view(), tick(), tick()]);
+    expect((await samples.since(ago(now, 1))).length).toBe(1);
+  });
+
+  it("growth ignores samples on a different basis than the latest", async () => {
+    const base = {
+      diskTotalBytes: null,
+      diskFreeBytes: null,
+      diskUsedPercent: null,
+      walletDbBytes: null,
+      managerDbBytes: 1e6,
+      tables: [],
+      growthBytesPerDay: null,
+      daysToFull: null,
+      level: "ok",
+      oldestImportantAt: null,
+    };
+    // Two days of DB-only readings with huge growth, then a disk reading: the slope must not see them.
+    await samples.insert({ ...base, at: ago(now, 2), managerDbBytes: 1e6 });
+    await samples.insert({ ...base, at: ago(now, 1), managerDbBytes: 9e12 });
+    await monitor.sampleOnce();
+    expect((await samples.latest())!.growthBytesPerDay).toBeNull();
+  });
+
   it("does not POST without a webhook, and logs and survives a 500", async () => {
     usedPercent = 95;
     await monitor.sampleOnce();
@@ -255,6 +348,7 @@ describe("StorageMonitorService", () => {
       growthBytesPerDay: null,
       daysToFull: null,
       level: "ok",
+      oldestImportantAt: null,
     };
     await samples.insert({ ...base, at: ago(now, 31) });
     await samples.insert({ ...base, at: ago(now, 29) });
@@ -361,6 +455,7 @@ describe("StorageMonitorService", () => {
       usedPercent = 95;
       await monitor.sampleOnce();
       expect(await monitor.tightening()).toBeNull();
+      expect(events("retention.tightened")).toHaveLength(0);
     });
   });
 });
