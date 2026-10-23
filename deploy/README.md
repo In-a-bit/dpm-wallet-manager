@@ -148,6 +148,38 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   The platform team can tell you the address; it is the `data_api` service that
   `GET /wallet-install/config` reports.
 
+### Logs
+
+Every service keeps at most five container log files of 20 MB each (100 MB per service), then
+discards the oldest. Read them with `docker compose --env-file .env -f compose.yml logs <service>`.
+
+### Retention
+
+The manager deletes routine records after a set time: operations after 90 days, and orders that
+were signed for another wallet (routed orders) after 365 days. Important records are never deleted
+automatically. To change the defaults, add any of these to `.env` and restart the manager. An
+empty value means the default. A value set in the dashboard wins over `.env`.
+
+```sh
+OPERATIONS_RETENTION_DAYS=90        # whole days, 1 to 3650
+ROUTED_ORDER_RETENTION_DAYS=365     # whole days, 1 to 3650, not below the line above
+RETENTION_ENABLED=true              # false turns automatic deletion off
+```
+
+A bad value stops the manager from starting, and the log says which one.
+
+### Health
+
+`GET /v1/health` answers whether the process is up. `GET /v1/health/ready` also runs a database
+query and answers `200 {"status":"ok"}` or `503 {"status":"unavailable"}`; neither needs a key.
+Compose runs the ready probe on dpm-wallet (port 8090, inside the stack) and the manager (port
+3000), every 10 seconds, with a 60 second start period, and starts the manager only once dpm-wallet
+is healthy. Check with `docker compose --env-file .env -f compose.yml ps`.
+
+On a fresh install both services wait for setup to write their configuration, so they show
+`starting` and then `unhealthy` until setup finishes. That is expected, and they turn `healthy`
+by themselves afterwards.
+
 ---
 
 # Running it per environment (platform team)

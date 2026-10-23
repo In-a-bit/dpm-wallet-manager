@@ -17,8 +17,27 @@ x-platform-host: &platform-host
   extra_hosts:
     - "host.docker.internal:host-gateway"
 
+# Every service keeps at most 5 container log files of 20 MB (100 MB per service), so a long-running
+# install cannot fill the disk with logs.
+x-logging: &logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "20m"
+      max-file: "5"
+
+# Used by the two app services. The images have no curl, so the probe is a one-line node fetch.
+# start_period gives migrations time; until setup writes /config/ready the app is not running
+# yet, so it shows `starting` and then `unhealthy` until setup finishes.
+x-healthcheck: &healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 6
+  start_period: 60s
+
 services:
   postgres:
+    <<: *logging
     image: postgres:18-alpine
     restart: unless-stopped
     environment:
@@ -40,7 +59,7 @@ services:
       retries: 20
 
   dpm-wallet:
-    <<: *platform-host
+    <<: [*platform-host, *logging]
     image: ghcr.io/in-a-bit/dpm-wallet:${DPM_WALLET_TAG:-main}
     restart: unless-stopped
     # Wait for setup's configuration, load it, then do what the image always does:
@@ -54,6 +73,9 @@ services:
         node dist/db/migrate-cli && exec node dist/main
     environment:
       NODE_OPTIONS: --dns-result-order=ipv4first
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
     volumes:
       - config:/config:ro
       # Holds the vault's plaintext API key pair backup; `dpm-custody backup` copies it.
@@ -64,7 +86,7 @@ services:
     stop_grace_period: 30s
 
   dpm-wallet-manager:
-    <<: *platform-host
+    <<: [*platform-host, *logging]
     image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
     restart: unless-stopped
     command:
@@ -77,17 +99,27 @@ services:
     ports:
       # Set MANAGER_BIND=0.0.0.0 in .env when the builder's backend runs on another machine.
       - "${MANAGER_BIND:-127.0.0.1}:${MANAGER_PORT:-3000}:3000"
+    environment:
+      # Empty means "use the built-in default" (90 days, 365 days, enabled). Set in .env.
+      OPERATIONS_RETENTION_DAYS: ${OPERATIONS_RETENTION_DAYS:-}
+      ROUTED_ORDER_RETENTION_DAYS: ${ROUTED_ORDER_RETENTION_DAYS:-}
+      RETENTION_ENABLED: ${RETENTION_ENABLED:-}
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
     volumes:
       - config:/config:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      dpm-wallet:
         condition: service_healthy
     stop_grace_period: 30s
 
   # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a
   # closed terminal never stops a setup half-way. The terminal app runs in here too (exec).
   setup:
-    <<: *platform-host
+    <<: [*platform-host, *logging]
     image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
     restart: unless-stopped
     command: ["node", "dist/setup/main"]
