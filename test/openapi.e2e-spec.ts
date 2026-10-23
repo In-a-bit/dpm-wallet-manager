@@ -37,6 +37,7 @@ describe("openapi", () => {
   /** The route table, spelled out. A new endpoint fails here until it is added deliberately. */
   const EXPECTED_ROUTES = [
     "GET /v1/health",
+    "GET /v1/health/ready",
     "GET /v1/api-keys",
     "POST /v1/api-keys",
     "GET /v1/api-keys/self",
@@ -80,7 +81,12 @@ describe("openapi", () => {
    * The routes without authentication: a probe should not need a credential, and neither can
    * signing in, nor signing out of a session that may already have ended.
    */
-  const PUBLIC_ROUTES = ["GET /v1/health", "POST /v1/session/login", "POST /v1/session/logout"];
+  const PUBLIC_ROUTES = [
+    "GET /v1/health",
+    "GET /v1/health/ready",
+    "POST /v1/session/login",
+    "POST /v1/session/logout",
+  ];
 
   /** Public, but answers 401 when the credentials it is given — a username and password — are wrong. */
   const PUBLIC_ROUTES_CHECKING_CREDENTIALS = ["POST /v1/session/login"];

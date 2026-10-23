@@ -1,3 +1,5 @@
+import type { Db } from "../src/db/client";
+import { DB } from "../src/tokens";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 /**
@@ -54,6 +56,21 @@ describe("api keys", () => {
     it("leaves health public", async () => {
       const response = await harness.get("/v1/health", { apiKey: null });
       expect(response.status).toBe(200);
+    });
+
+    it("serves readiness without a key, and 503 {status} when the database query throws", async () => {
+      const ok = await harness.get("/v1/health/ready", { apiKey: null });
+      expect(ok.status).toBe(200);
+      expect(ok.body).toEqual({ status: "ok" });
+
+      const spy = jest.spyOn(harness.app.get<Db>(DB), "query").mockRejectedValue(new Error("down"));
+      try {
+        const down = await harness.get("/v1/health/ready", { apiKey: null });
+        expect(down.status).toBe(503);
+        expect(down.body).toEqual({ status: "unavailable" });
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it("identifies the calling key through self, for either role", async () => {
