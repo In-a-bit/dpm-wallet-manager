@@ -706,10 +706,10 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
 - [ ] **Step 3: viewer:**
   - pick one or more `.ndjson.gz` files;
   - the worker streams `DecompressionStream("gzip")` and splits lines;
-  - per file, SHA-256 is computed with `crypto.subtle` over the streamed bytes. Web Crypto has no
-    incremental digest, so either use a small inline incremental SHA-256 (no new dependency, about
-    100 lines, tested against `crypto.subtle` on a small buffer), or hash in chunks only when the
-    file is under 512 MB and otherwise show "not verified (too large to hash in the browser)";
+  - per file, SHA-256 is computed over the streamed compressed bytes with a small inline
+    incremental SHA-256 in `M/ui/src/archive/sha256.ts`. Web Crypto has no incremental digest,
+    and no new dependency is added. It is tested against `crypto.subtle.digest` on 0 B, 1 B, 64 B
+    and 1 MB buffers.
   - match against `GET /v1/archives` by `sha256`, showing verified, unknown or damaged (a gunzip
     or JSON error, with the line number) (Review Focus 7);
   - filters as in `ArchiveFilter`;
