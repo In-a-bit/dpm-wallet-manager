@@ -17,11 +17,14 @@ This work makes each of those safe by default, without the operator having to kn
 ## Goals
 
 1. Container logs have a fixed upper bound on disk.
-2. High-volume tables are trimmed on a schedule. Rows that matter later are kept forever.
-3. Every query that can return many rows is paged. The busiest lists stay fast however large
+2. High-volume tables are trimmed on a schedule. Rows that matter later are kept until the
+   operator archives them. Every retention period is set from the admin dashboard.
+3. The operator is warned well before the disk fills, with what to do about it. Old important
+   records can be archived to a file and removed in a few clicks.
+4. Every query that can return many rows is paged. The busiest lists stay fast however large
    the table grows, and every admin UI list pages.
-4. A restart or a stop never loses or duplicates work, and the stack reports real health.
-5. `dpm-custody upgrade` is safe: pinned and verified, backed up first, health-gated, and it
+5. A restart or a stop never loses or duplicates work, and the stack reports real health.
+6. `dpm-custody upgrade` is safe: pinned and verified, backed up first, health-gated, and it
    rolls back by itself when the new version does not come up.
 
 ## Non-goals
@@ -29,7 +32,11 @@ This work makes each of those safe by default, without the operator having to kn
 - Shipping logs anywhere (Loki, CloudWatch…). Operators who want that change the log driver.
 - Image signatures (cosign). Checksums now; signatures are a later step.
 - Zero-downtime upgrades. A short outage while containers restart is acceptable.
-- Archiving trimmed rows to files. Deleted means deleted.
+- Archiving routine rows that retention trims. Deleted means deleted. Only important records
+  are archived, and only when the operator chooses to.
+- Restoring an archive back into the database. The file is readable NDJSON; the README shows how
+  to search it.
+- `VACUUM FULL` or any other table rewrite that blocks signing.
 - Changing anything on the platform (prediction-go) or in the mocks.
 
 ## Anti-goals
@@ -37,7 +44,8 @@ This work makes each of those safe by default, without the operator having to kn
 - Never delete a row that a later request depends on. In particular, cancelling an order needs
   the row that says which wallet signed it (see "Routed orders" below).
 - Never delete a withdrawal or transfer, a denial, a failure, or any key, user, wallet or
-  setting change, from either table.
+  setting change, from either table, except through an archive the operator ran and confirmed.
+  Nothing deletes them automatically, however full the disk.
 - An upgrade must never leave the operator with a stack that is down and no instruction that
   brings it back.
 - Never move funds twice because of a restart or a retry.
@@ -47,8 +55,11 @@ This work makes each of those safe by default, without the operator having to kn
 
 ### The user's
 
-- **Retention:** audit events and transfer/withdrawal operations are kept forever.
+- **Retention:** audit events and transfer/withdrawal operations are kept until archived.
   Order-signing operations are kept 90 days, and the period is configurable.
+- **No automatic deletion of important records.** The system warns; the operator archives.
+- **Archiving is manual and easy from the admin UI.** So is setting how long each kind of record
+  is kept.
 
 ### Claude's calls (flagged to the user)
 
@@ -87,9 +98,10 @@ This work makes each of those safe by default, without the operator having to kn
 A `RetentionService` in each service runs in the background. It runs 60 s after start, then
 every hour. Each run:
 
-- deletes expired idempotency keys (and, in the manager, expired UI sessions). Today this only
-  happens at boot. The boot purge stays.
-- deletes routine rows older than their cutoff, as described below.
+- deletes expired idempotency keys (and, in the manager, expired UI sessions and old storage
+  samples). Today this only happens at boot. The boot purge stays.
+- in the manager only: deletes routine rows older than their cutoff, its own and dpm-wallet's
+  (through the maintenance endpoint below), as described below.
 
 Rules for every run:
 
@@ -100,19 +112,33 @@ Rules for every run:
 - A failure is logged (`retention.failed`) and never crashes the process.
 - Each run logs `retention.run` with the rows deleted per table.
 
-Settings come from the environment. They are validated at boot, and a bad value fails the boot.
+Settings: what the dashboard sets wins; the environment supplies the defaults.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `OPERATIONS_RETENTION_DAYS` | 90 | Routine operation rows (manager) and routine success audit rows (both services) |
-| `ROUTED_ORDER_RETENTION_DAYS` | 365 | Manager `order` rows whose signer differs from the named wallet |
-| `RETENTION_ENABLED` | true | `false` turns the scheduled job off. The boot purge of idempotency keys and sessions still runs |
+| Setting (`platform_settings` key) | Env default | Default | Meaning |
+|---|---|---|---|
+| `retention.routine_days` | `OPERATIONS_RETENTION_DAYS` | 90 | Routine operation rows (manager) and routine success audit rows (both services) |
+| `retention.routed_order_days` | `ROUTED_ORDER_RETENTION_DAYS` | 365 | Manager `order` rows whose signer differs from the named wallet |
+| `retention.enabled` | `RETENTION_ENABLED` | true | `false` stops the scheduled trimming. The boot purge of idempotency keys and sessions still runs |
+| `archive.reminder_days` | — | 730 | Important records older than this make the dashboard suggest an archive. Nothing is deleted |
 
-- Values must be whole days from 1 to 3650.
-- `ROUTED_ORDER_RETENTION_DAYS` may not be below `OPERATIONS_RETENTION_DAYS`.
-- dpm-wallet reads only `OPERATIONS_RETENTION_DAYS` and `RETENTION_ENABLED`.
-- Setup writes nothing new. The defaults apply, and an operator overrides them by adding them to
-  `.env`. Compose passes them through with empty defaults.
+- Days are whole numbers from 1 to 3650. Routed may not be below routine. The reminder may not
+  be below routine.
+- A bad env value fails the boot. A bad dashboard value is refused with 400 `VALIDATION_FAILED`.
+- `GET /v1/settings/retention` (viewer and up) returns each value and its source (`dashboard` or
+  `environment`). `PUT /v1/settings/retention` (owner/admin) changes them, writes an audit event
+  `settings.retention_update` with the old and new values, and takes effect on the next run.
+  Clearing a value returns it to the environment default.
+- Fixed and shown read-only: idempotency keys 24 h, UI sessions (their own timeouts), container
+  logs 5 × 20 MB per service.
+- **dpm-wallet does not decide its own routine cutoff.** The manager's run calls a new dpm-wallet
+  endpoint `POST /v1/maintenance/purge-routine-audit {before: ISO, batch: number}` (its API key,
+  like every other call), which deletes one batch and returns `{deleted}`. The manager loops it
+  under the same batch rules. dpm-wallet still purges its own expired idempotency keys hourly by
+  itself. One source of truth: the dashboard.
+- **Automatic tightening under storage pressure** (see section 6): at critical, the run uses 30
+  days for routine records if the setting is above that, and 7 days if the level is still critical
+  after 24 h. It logs `retention.tightened` and the dashboard says so. When the level drops below
+  warning, the configured value applies again. Important records are never touched.
 
 Indexes the trimming and paging need, added by migrations:
 
@@ -271,6 +297,82 @@ nothing:
 - an upgrade to a build carrying an additive migration;
 - an upgrade to a deliberately broken build, which must roll back automatically;
 - `rollback` after a good upgrade.
+
+### 6. Storage monitor and alerts (manager)
+
+- The manager gets a read-only mount of the Postgres volume (`pg-data:/storage/pg:ro`) used only
+  for `fs.statfs`: total and free bytes of the disk the database lives on. It never reads the
+  files.
+- Every 15 minutes it records a sample in a new `storage_samples` table: `at`, disk total and
+  free, `pg_database_size` of both databases, and per-table total size and estimated rows
+  (`pg_class.reltuples`) for `operations`, `audit_events` (both) and `idempotency_keys`. Samples
+  older than 30 days are trimmed by the retention run.
+- **Growth and days to full:** bytes per day from the 7-day least-squares slope of disk used;
+  `daysToFull = free / growth` (null when growth ≤ 0 or there are fewer than 24 h of samples).
+- **Levels** (`platform_settings`, editable on the same page, owner/admin):
+  - `storage.warning_percent` 75, `storage.warning_days` 30;
+  - `storage.critical_percent` 90, `storage.critical_days` 7;
+  - a level applies when either its percent or its days condition holds.
+- **Where the operator sees it:**
+  - `GET /v1/storage` (viewer and up) returns the latest sample, growth, days to full, level,
+    whether routine retention is tightened, and the oldest important record date.
+  - Admin UI: a banner on every page at warning (amber) or critical (red), saying what to do:
+    enlarge the disk or Docker volume, archive old records (link), free Docker space
+    (`docker system df`). Also an "archive suggested" note when important records are older than
+    `archive.reminder_days`.
+  - `./dpm-custody status` prints one storage line from `GET /v1/health/ready`'s new optional
+    field `storage: {level, usedPercent, daysToFull}` read from the latest sample. The readiness
+    status code never depends on storage, so a full-ish disk never restarts containers.
+  - Log `storage.level` when the level changes and once a day while not OK.
+  - Optional `storage.alert_webhook_url` setting: a JSON POST `{install, level, usedPercent,
+    daysToFull, dbBytes, at}` when the level changes and daily while critical, 5 s timeout, no
+    retries, failures logged. The URL must be http(s).
+- After a successful upgrade, `dpm-custody upgrade` removes the install's images other than the
+  current and previous versions.
+
+### 7. Archive (manager, admin UI)
+
+What it covers: the important records older than a cutoff the operator picks — manager
+`operations` of kind `withdraw`, manager `audit_events` not covered by routine retention, and
+dpm-wallet `audit_events` not covered by routine retention. Archives and their own audit events
+(`archive.*`) are never archived.
+
+Flow, on a new admin page **Storage** (viewers see it; owners act):
+
+1. **Pick a cutoff.** Default: `archive.reminder_days` ago. The page shows the rows per table that
+   it would cover (counted on demand, `created_at < cutoff`).
+2. **Download.** `POST /v1/archives {before}` creates an archive record (status `pending`) and
+   fixes its scope: per table, the highest `id` with `created_at < before` at this moment, so rows
+   written later are never in scope. `GET /v1/archives/:id/download` streams
+   `dpm-archive-<install>-<yyyymmdd>-<code>.ndjson.gz`, where `<code>` is 6 characters of the
+   archive id:
+   - line 1: a manifest `{archiveId, install, mode, createdAt, before, tables: {name: {maxId,
+     rows}}}`;
+   - then one line per row `{table, row}`, read in pages of 1000 (dpm-wallet rows through a new
+     paged `GET /v1/maintenance/audit-export?before&maxId&cursor`);
+   - while streaming, the server computes SHA-256 of the gzipped bytes and the row count, and on
+     completion stores both with status `downloaded`. A download that breaks off leaves `pending`
+     and can be retried.
+3. **Confirm and remove.** The confirm dialog repeats what will be deleted and asks the owner to
+   type the 6-character code from the file name. `POST /v1/archives/:id/delete {code}` refuses
+   unless the archive is `downloaded` and the code matches. It then deletes, in batches of 5000,
+   exactly the rows in scope (`id <= maxId AND created_at < before` with the same category
+   filters), dpm-wallet's through `POST /v1/maintenance/delete-archived-audit {before, maxId,
+   batch}`, followed by plain `VACUUM (ANALYZE)` on the touched tables. Status moves
+   `deleting` → `done` with the deleted counts; a failure leaves `deleting` and the button resumes.
+4. **History.** The page lists every archive: when, by whom, cutoff, rows, SHA-256, status. The
+   `archives` table is never trimmed.
+
+Rules:
+- Every step writes an audit event (`archive.create`, `archive.download`, `archive.delete`) with
+  the actor; these are never archived or trimmed.
+- One archive may be `pending`, `downloaded` or `deleting` at a time; a second `POST /v1/archives`
+  gets 409 `ARCHIVE_IN_PROGRESS`.
+- The page states plainly that deleting rows stops growth but Postgres reuses the space rather
+  than returning it to the disk.
+- API roles: create, download and delete need `admin` (UI owner); listing needs `readonly`.
+- The dpm-wallet maintenance endpoints refuse a cutoff newer than 24 h ago, as a guard.
+- The README shows how to read an archive (`gunzip -c … | head`, `jq`).
 
 ## Constraints
 
