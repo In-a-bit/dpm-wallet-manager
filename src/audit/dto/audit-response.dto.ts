@@ -54,8 +54,13 @@ export class AuditPageDto {
   @ApiProperty({ type: [AuditEventDto] })
   items!: AuditEventDto[];
 
-  @ApiProperty({ example: 512 })
-  total!: number;
+  /** Omitted when the request carried a `cursor`. */
+  @ApiPropertyOptional({ example: 512 })
+  total?: number;
+
+  /** Pass as `cursor` for the next page; `null` on the last one. */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor!: string | null;
 
   @ApiProperty({ example: 50 })
   limit!: number;
@@ -120,8 +125,13 @@ export class OperationPageDto {
   @ApiProperty({ type: [OperationDto] })
   items!: OperationDto[];
 
-  @ApiProperty({ example: 512 })
-  total!: number;
+  /** Omitted when the request carried a `cursor`. */
+  @ApiPropertyOptional({ example: 512 })
+  total?: number;
+
+  /** Pass as `cursor` for the next page; `null` on the last one. */
+  @ApiProperty({ type: String, nullable: true })
+  nextCursor!: string | null;
 
   @ApiProperty({ example: 50 })
   limit!: number;

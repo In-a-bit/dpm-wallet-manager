@@ -276,6 +276,20 @@ describe("admin UI access", () => {
       expect(again.body.error.code).toBe("USERNAME_TAKEN");
     });
 
+    it("pages the user list", async () => {
+      for (const name of ["pager-a", "pager-b", "pager-c"]) await createUser(name, "viewer");
+      const all = await harness.get("/v1/ui-users", { query: { limit: 200 } });
+      const total = all.body.items.length;
+      expect(total).toBeGreaterThanOrEqual(3);
+
+      const first = await harness.get("/v1/ui-users", { query: { limit: 2 } });
+      expect(first.body).toMatchObject({ total, limit: 2, offset: 0 });
+      expect(first.body.items).toHaveLength(2);
+      const last = await harness.get("/v1/ui-users", { query: { limit: 2, offset: total - 1 } });
+      expect(last.body.items).toHaveLength(1);
+      expect(last.body.items[0].id).toBe(all.body.items[total - 1].id);
+    });
+
     it("never returns a password hash", async () => {
       const listed = await harness.get("/v1/ui-users");
       expect(JSON.stringify(listed.body)).not.toMatch(/scrypt|passwordHash|password_hash/);

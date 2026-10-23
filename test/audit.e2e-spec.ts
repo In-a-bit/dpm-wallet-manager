@@ -163,3 +163,102 @@ describe("audit and operations", () => {
     });
   });
 });
+
+describe("cursor paging", () => {
+  let harness: Harness;
+  // Every seeded row names this wallet, so a filter isolates them from the rows the boot wrote.
+  const WALLET = "11111111-1111-4111-8111-111111111111";
+  const BASE = Date.parse("2026-01-01T00:00:00.000Z");
+
+  // Three rows share each timestamp, so only the id tie-break keeps the pages disjoint.
+  const stamp = (i: number) => new Date(BASE + Math.floor(i / 3) * 1000).toISOString();
+
+  const seedOperations = (from: number, to: number) =>
+    harness.db.query(
+      `INSERT INTO operations (id, wallet_id, signer_wallet_id, kind, mode, request_hash, status, created_at)
+       SELECT gen_random_uuid(), $1, $1, 'order', 'segregated', 'h' || i, 'ok',
+              to_timestamp($2::bigint / 1000.0 + (i / 3) )
+       FROM generate_series($3::int, $4::int) AS i`,
+      [WALLET, BASE, from, to - 1],
+    );
+
+  const seedAudit = (from: number, to: number) =>
+    harness.db.query(
+      `INSERT INTO audit_events (wallet_id, action, outcome, created_at)
+       SELECT $1, 'sign.order', 'success', to_timestamp($2::bigint / 1000.0 + (i / 3))
+       FROM generate_series($3::int, $4::int) AS i`,
+      [WALLET, BASE, from, to - 1],
+    );
+
+  beforeAll(async () => {
+    harness = await startHarness();
+  });
+  afterAll(async () => {
+    await harness.close();
+  });
+
+  const cases = [
+    { name: "operations", path: "/v1/operations", seed: seedOperations },
+    { name: "audit", path: "/v1/audit", seed: seedAudit },
+  ];
+
+  describe.each(cases)("$name", ({ path, seed }) => {
+    const page = (query: Record<string, unknown>) =>
+      harness.get(path, { query: { walletId: WALLET, ...query } });
+    const ids = (body: { items: { id: string | number }[] }) => body.items.map((i) => i.id);
+
+    beforeAll(async () => {
+      await seed(0, 120);
+    });
+
+    it("pages 50/50/20 without overlap and without a total", async () => {
+      const first = await page({ limit: 50 });
+      expect(first.body.total).toBe(120);
+      expect(first.body.items).toHaveLength(50);
+      expect(typeof first.body.nextCursor).toBe("string");
+
+      const second = await page({ limit: 50, cursor: first.body.nextCursor });
+      const third = await page({ limit: 50, cursor: second.body.nextCursor });
+      expect([second, third].map((r) => r.body.items.length)).toEqual([50, 20]);
+      for (const r of [second, third]) expect("total" in r.body).toBe(false);
+      expect(third.body.nextCursor).toBeNull();
+
+      const all = [...ids(first.body), ...ids(second.body), ...ids(third.body)];
+      expect(new Set(all).size).toBe(120);
+      const times = [first, second, third].flatMap((r) =>
+        r.body.items.map((i: { createdAt: string }) => i.createdAt),
+      );
+      expect([...times].sort().reverse()).toEqual(times);
+      expect(first.body.items[0].createdAt).toBe(stamp(119));
+    });
+
+    it("is stable when newer rows arrive between pages", async () => {
+      const original = await page({ limit: 100 });
+      const first = await page({ limit: 50 });
+      await seed(120, 125);
+      const second = await page({ limit: 50, cursor: first.body.nextCursor });
+      expect(ids(second.body)).toEqual(ids(original.body).slice(50, 100));
+    });
+
+    it("keeps the offset mode, with its total", async () => {
+      const response = await page({ limit: 10, offset: 5 });
+      expect(response.body).toMatchObject({ limit: 10, offset: 5 });
+      expect(response.body.total).toBeGreaterThanOrEqual(120);
+      expect(typeof response.body.nextCursor).toBe("string");
+    });
+
+    it("answers INVALID_CURSOR to garbage", async () => {
+      const response = await page({ cursor: "garbage" });
+      expect(response.status).toBe(400);
+      expect(response.body.error.code).toBe("INVALID_CURSOR");
+    });
+
+    it("answers INVALID_CURSOR to a well-formed cursor with the wrong kind of id", async () => {
+      const cursor = Buffer.from(
+        JSON.stringify({ createdAt: "2026-01-01T00:00:00.000Z", id: "not-an-id" }),
+      ).toString("base64url");
+      const response = await page({ cursor });
+      expect(response.body.error.code).toBe("INVALID_CURSOR");
+    });
+  });
+});

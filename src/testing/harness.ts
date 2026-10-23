@@ -48,6 +48,7 @@ export type Harness = {
   wallets: WalletRepository;
   settings: PlatformSettingsRepository;
   keys: ApiKeyRepository;
+  apiKeys: ApiKeyService;
   operations: OperationRepository;
   auditRepo: AuditRepository;
   audit: AuditLog;
@@ -156,18 +157,14 @@ export async function startHarness(
         ? bootstrapped.key.key
         : (await keyService.reveal(bootstrapped.key.id, systemActor)).key;
 
-      const existingOperator = (await keyService.list()).find(
-        (key) => key.role === "operator" && key.status === "active",
-      );
+      const existingOperator = await keyService.findActiveByRole("operator");
       // Minted through the API's own path, so the operator credential a test uses is one an admin
       // could actually have created.
       operatorKey = existingOperator
         ? (await keyService.reveal(existingOperator.id, systemActor)).key
         : (await keyService.create({ role: "operator", name: "harness-operator" }, undefined)).key;
 
-      const existingReadonly = (await keyService.list()).find(
-        (key) => key.role === "readonly" && key.status === "active",
-      );
+      const existingReadonly = await keyService.findActiveByRole("readonly");
       readonlyKey = existingReadonly
         ? (await keyService.reveal(existingReadonly.id, systemActor)).key
         : (await keyService.create({ role: "readonly", name: "harness-readonly" }, undefined)).key;
@@ -213,6 +210,7 @@ export async function startHarness(
       wallets: app.get(WalletRepository),
       settings: app.get(PlatformSettingsRepository),
       keys: app.get(ApiKeyRepository),
+      apiKeys: keyService,
       operations: app.get(OperationRepository),
       auditRepo: app.get(AuditRepository),
       audit: app.get(AuditLog),

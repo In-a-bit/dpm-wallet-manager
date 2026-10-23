@@ -1,6 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Repository } from "typeorm";
 
+import { decodeCursor, encodeCursor, invalidCursor } from "../../common/dto/cursor";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { AuditEventEntity } from "../entities";
@@ -32,7 +33,12 @@ export type AuditFilter = {
   to?: string;
 };
 
-export type AuditPage = { events: AuditEvent[]; total: number };
+export type AuditPage = {
+  events: AuditEvent[];
+  /** Absent in cursor mode, where counting the whole table is the cost being avoided. */
+  total?: number;
+  nextCursor: string | null;
+};
 
 @Injectable()
 export class AuditRepository {
@@ -70,7 +76,13 @@ export class AuditRepository {
     return deletedCount(result);
   }
 
-  async query(filter: AuditFilter, limit: number, offset: number): Promise<AuditPage> {
+  /** Newest first; keyset-based when a `cursor` is given, offset-based (with a total) otherwise. */
+  async query(
+    filter: AuditFilter,
+    limit: number,
+    offset: number,
+    cursor?: string,
+  ): Promise<AuditPage> {
     const query = this.events.createQueryBuilder("e");
     if (filter.action) query.andWhere("e.action = :action", { action: filter.action });
     if (filter.outcome) query.andWhere("e.outcome = :outcome", { outcome: filter.outcome });
@@ -84,13 +96,34 @@ export class AuditRepository {
     if (filter.from) query.andWhere("e.created_at >= :from", { from: filter.from });
     if (filter.to) query.andWhere("e.created_at <= :to", { to: filter.to });
 
-    const [rows, total] = await query
+    let total: number | undefined;
+    if (cursor !== undefined) {
+      const position = decodeCursor(cursor);
+      // The id column is a 32-bit serial; anything else would be a database error, not a 400.
+      if (!/^\d{1,10}$/.test(position.id) || Number(position.id) > 2_147_483_647) {
+        throw invalidCursor();
+      }
+      query.andWhere(
+        "(e.created_at, e.id) < (CAST(:cursorAt AS timestamptz), CAST(:cursorId AS integer))",
+        {
+          cursorAt: position.createdAt,
+          cursorId: position.id,
+        },
+      );
+    } else {
+      total = await query.getCount();
+      query.skip(offset);
+    }
+
+    const rows = await query
       .orderBy("e.created_at", "DESC")
       .addOrderBy("e.id", "DESC")
-      .take(limit)
-      .skip(offset)
-      .getManyAndCount();
-    return { events: rows.map(toEvent), total };
+      .take(limit + 1)
+      .getMany();
+    const events = rows.slice(0, limit).map(toEvent);
+    const last = events[events.length - 1];
+    const nextCursor = rows.length > limit && last ? encodeCursor(last.createdAt, last.id) : null;
+    return total === undefined ? { events, nextCursor } : { events, total, nextCursor };
   }
 }
 

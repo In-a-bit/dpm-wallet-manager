@@ -63,7 +63,7 @@ export class StartupService implements OnApplicationBootstrap {
    */
   private async ensureBootstrapAdminKey(): Promise<void> {
     if (this.config.skipStartupKeyBootstrap) return;
-    if ((await this.apiKeys.list()).length > 0) return;
+    if (await this.apiKeys.exists()) return;
 
     const { key, created } = await this.apiKeys.bootstrap("bootstrap");
     if (!created) return;

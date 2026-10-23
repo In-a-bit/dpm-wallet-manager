@@ -31,11 +31,14 @@ export class AuditController {
    * alerted on without matching every other withdrawal.
    *
    * Newest first. Details are redacted before they are stored, so no row holds a credential.
+   *
+   * Page with `cursor` (the previous page's `nextCursor`); `offset` paging still works but is
+   * deprecated, because it skips or repeats rows when new ones arrive between requests.
    */
   @Get("audit")
   @ApiOperation({ operationId: "queryAudit", summary: "Query the decision log" })
   @ApiOkResponse({ type: AuditPageDto })
-  @ApiErrors("VALIDATION_FAILED")
+  @ApiErrors("VALIDATION_FAILED", "INVALID_CURSOR")
   async query(@Query() query: AuditQueryDto): Promise<AuditPageDto> {
     const page = await this.audit.query(
       {
@@ -49,8 +52,15 @@ export class AuditController {
       },
       query.limit,
       query.offset,
+      query.cursor,
     );
-    return { items: page.events, total: page.total, limit: query.limit, offset: query.offset };
+    return {
+      items: page.events,
+      ...(page.total !== undefined ? { total: page.total } : {}),
+      nextCursor: page.nextCursor,
+      limit: query.limit,
+      offset: query.offset,
+    };
   }
 
   /**
@@ -61,17 +71,27 @@ export class AuditController {
    * "which wallet signed the order behind this hash" is not answerable from the decision log alone.
    *
    * Holds no signatures, only a summary — an order hash, or a `from:nonce` pair.
+   *
+   * Page with `cursor` (the previous page's `nextCursor`); `offset` paging still works but is
+   * deprecated, because it skips or repeats rows when new ones arrive between requests.
    */
   @Get("operations")
   @ApiOperation({ operationId: "queryOperations", summary: "Query the artefact log" })
   @ApiOkResponse({ type: OperationPageDto })
-  @ApiErrors("VALIDATION_FAILED")
+  @ApiErrors("VALIDATION_FAILED", "INVALID_CURSOR")
   async operationsQuery(@Query() query: OperationQueryDto): Promise<OperationPageDto> {
     const page = await this.operations.query(
       { walletId: query.walletId, kind: query.kind, from: query.from, to: query.to },
       query.limit,
       query.offset,
+      query.cursor,
     );
-    return { items: page.operations, total: page.total, limit: query.limit, offset: query.offset };
+    return {
+      items: page.operations,
+      ...(page.total !== undefined ? { total: page.total } : {}),
+      nextCursor: page.nextCursor,
+      limit: query.limit,
+      offset: query.offset,
+    };
   }
 }

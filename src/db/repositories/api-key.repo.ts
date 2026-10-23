@@ -58,9 +58,36 @@ export class ApiKeyRepository {
     return row ? toApiKey(row) : undefined;
   }
 
-  async list(): Promise<ApiKey[]> {
-    const rows = await this.keys.find({ order: { createdAt: "DESC" } });
+  /** Newest first; `id` breaks ties so a page boundary is stable. */
+  async list(limit: number, offset: number): Promise<ApiKey[]> {
+    const rows = await this.keys.find({
+      order: { createdAt: "DESC", id: "DESC" },
+      take: limit,
+      skip: offset,
+    });
     return rows.map(toApiKey);
+  }
+
+  async exists(): Promise<boolean> {
+    return this.keys.exists();
+  }
+
+  /** The newest active admin key, for bootstrap to hand back; undefined when there is none. */
+  async findActiveAdmin(): Promise<ApiKey | undefined> {
+    const row = await this.keys.findOne({
+      where: { role: "admin", status: "active" },
+      order: { createdAt: "DESC", id: "DESC" },
+    });
+    return row ? toApiKey(row) : undefined;
+  }
+
+  /** Internal lookup by role and status; not paged, for callers that need one specific key. */
+  async findActiveByRole(role: ApiKeyRole): Promise<ApiKey | undefined> {
+    const row = await this.keys.findOne({
+      where: { role, status: "active" },
+      order: { createdAt: "DESC", id: "DESC" },
+    });
+    return row ? toApiKey(row) : undefined;
   }
 
   async insert(key: NewApiKey): Promise<ApiKey> {

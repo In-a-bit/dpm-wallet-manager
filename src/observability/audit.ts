@@ -58,7 +58,7 @@ export class AuditLog {
     });
   }
 
-  query(filter: AuditFilter, limit: number, offset: number): Promise<AuditPage> {
-    return this.events.query(filter, limit, offset);
+  query(filter: AuditFilter, limit: number, offset: number, cursor?: string): Promise<AuditPage> {
+    return this.events.query(filter, limit, offset, cursor);
   }
 }

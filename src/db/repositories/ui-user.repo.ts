@@ -40,8 +40,12 @@ export class UiUserRepository {
       .getOne();
   }
 
-  list(): Promise<UiUser[]> {
-    return this.users.find({ order: { createdAt: "ASC" } });
+  list(limit: number, offset: number): Promise<UiUser[]> {
+    return this.users.find({ order: { createdAt: "ASC", id: "ASC" }, take: limit, skip: offset });
+  }
+
+  count(): Promise<number> {
+    return this.users.count();
   }
 
   countActiveOwners(executor: Executor = this.db.manager): Promise<number> {

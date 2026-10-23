@@ -1,6 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Repository } from "typeorm";
 
+import { decodeCursor, encodeCursor, invalidCursor } from "../../common/dto/cursor";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { OperationEntity, type OperationKind } from "../entities";
@@ -31,7 +32,14 @@ export type OperationFilter = {
   to?: string;
 };
 
-export type OperationPage = { operations: Operation[]; total: number };
+export type OperationPage = {
+  operations: Operation[];
+  /** Absent in cursor mode, where counting the whole table is the cost being avoided. */
+  total?: number;
+  nextCursor: string | null;
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @Injectable()
 export class OperationRepository {
@@ -91,20 +99,48 @@ export class OperationRepository {
     return deletedCount(result);
   }
 
-  async query(filter: OperationFilter, limit: number, offset: number): Promise<OperationPage> {
+  /**
+   * Newest first. With a `cursor` the page is keyset-based — `(created_at, id)` strictly below
+   * the cursor — so rows arriving meanwhile cannot shift it; without one it is offset-based and
+   * carries a total. One extra row is fetched to know whether a next page exists.
+   */
+  async query(
+    filter: OperationFilter,
+    limit: number,
+    offset: number,
+    cursor?: string,
+  ): Promise<OperationPage> {
     const query = this.operations.createQueryBuilder("o");
     if (filter.walletId) query.andWhere("o.wallet_id = :walletId", { walletId: filter.walletId });
     if (filter.kind) query.andWhere("o.kind = :kind", { kind: filter.kind });
     if (filter.from) query.andWhere("o.created_at >= :from", { from: filter.from });
     if (filter.to) query.andWhere("o.created_at <= :to", { to: filter.to });
 
-    const [rows, total] = await query
+    let total: number | undefined;
+    if (cursor !== undefined) {
+      const position = decodeCursor(cursor);
+      if (!UUID.test(position.id)) throw invalidCursor();
+      query.andWhere(
+        "(o.created_at, o.id) < (CAST(:cursorAt AS timestamptz), CAST(:cursorId AS uuid))",
+        {
+          cursorAt: position.createdAt,
+          cursorId: position.id,
+        },
+      );
+    } else {
+      total = await query.getCount();
+      query.skip(offset);
+    }
+
+    const rows = await query
       .orderBy("o.created_at", "DESC")
       .addOrderBy("o.id", "DESC")
-      .take(limit)
-      .skip(offset)
-      .getManyAndCount();
-    return { operations: rows, total };
+      .take(limit + 1)
+      .getMany();
+    const operations = rows.slice(0, limit);
+    const last = operations[operations.length - 1];
+    const nextCursor = rows.length > limit && last ? encodeCursor(last.createdAt, last.id) : null;
+    return total === undefined ? { operations, nextCursor } : { operations, total, nextCursor };
   }
 }
 

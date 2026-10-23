@@ -289,3 +289,33 @@ describe("api keys on an empty install", () => {
     }
   });
 });
+
+describe("api key paging", () => {
+  let harness: Harness;
+  beforeAll(async () => {
+    harness = await startHarness();
+  });
+  afterAll(async () => {
+    await harness.close();
+  });
+
+  it("pages the list and reports the whole total", async () => {
+    // The boot already holds admin, operator and readonly keys.
+    const all = await harness.get("/v1/api-keys");
+    expect(all.body).toMatchObject({ total: 3, limit: 50, offset: 0 });
+    expect(all.body.items).toHaveLength(3);
+
+    const first = await harness.get("/v1/api-keys", { query: { limit: 2 } });
+    expect(first.body.items).toHaveLength(2);
+    expect(first.body.total).toBe(3);
+    const rest = await harness.get("/v1/api-keys", { query: { limit: 2, offset: 2 } });
+    expect(rest.body.items).toHaveLength(1);
+    expect(rest.body).toMatchObject({ total: 3, limit: 2, offset: 2 });
+  });
+
+  it("bootstrap mints only when no key exists", async () => {
+    const again = await harness.apiKeys.bootstrap("again");
+    expect(again.created).toBe(false);
+    expect((await harness.get("/v1/api-keys")).body.total).toBe(3);
+  });
+});

@@ -10,6 +10,7 @@ export const ERROR_STATUS = {
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
   VALIDATION_FAILED: 400,
+  INVALID_CURSOR: 400,
   WALLET_NOT_FOUND: 404,
   WALLET_NOT_READY: 409,
   WALLET_DISABLED: 409,
@@ -54,6 +55,8 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
   FORBIDDEN: "The caller authenticated but its role does not reach this endpoint.",
   VALIDATION_FAILED:
     "The body, query or path failed validation. `details.issues` lists each offending path.",
+  INVALID_CURSOR:
+    "The `cursor` query parameter is malformed. Pass back a `nextCursor` exactly as received.",
   WALLET_NOT_FOUND: "No wallet with that id or external id.",
   WALLET_NOT_READY:
     "The wallet row exists but dpm-wallet has not confirmed an address for it. Retry after " +

@@ -1,7 +1,7 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsIn, IsOptional } from "class-validator";
 
-import { PaginationDto } from "../../common/dto/pagination.dto";
+import { CursorPaginationDto } from "../../common/dto/pagination.dto";
 import { IsIsoTimestamp, IsUuid, Trimmed } from "../../common/validation/decorators";
 import { OPERATION_KINDS, type OperationKind } from "../../db/entities";
 import { AuditAction, AuditOutcome } from "../../observability/audit-action";
@@ -14,7 +14,7 @@ const OUTCOMES = Object.values(AuditOutcome);
  * authority, and when. `action` is constrained to the known set so a typo comes back as a 400
  * rather than an empty page that reads like "nothing happened".
  */
-export class AuditQueryDto extends PaginationDto {
+export class AuditQueryDto extends CursorPaginationDto {
   @ApiPropertyOptional({ enum: ACTIONS, example: "meta.withdraw.external" })
   @IsOptional()
   @Trimmed()
@@ -58,7 +58,7 @@ export class AuditQueryDto extends PaginationDto {
   to?: string;
 }
 
-export class OperationQueryDto extends PaginationDto {
+export class OperationQueryDto extends CursorPaginationDto {
   /** The wallet the caller named — not necessarily the one that signed. */
   @ApiPropertyOptional({ format: "uuid" })
   @IsOptional()

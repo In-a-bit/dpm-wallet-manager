@@ -30,8 +30,19 @@ export class ApiKeyService {
     @Inject(CONFIG) private readonly config: Config,
   ) {}
 
-  async list(): Promise<ApiKeyDto[]> {
-    return (await this.keys.list()).map(toView);
+  async list(limit: number, offset: number): Promise<{ items: ApiKeyDto[]; total: number }> {
+    const [rows, total] = await Promise.all([this.keys.list(limit, offset), this.keys.countAll()]);
+    return { items: rows.map(toView), total };
+  }
+
+  /** The newest active key of a role, unpaged; for the test harness and other internal callers. */
+  async findActiveByRole(role: ApiKeyRole): Promise<ApiKeyDto | undefined> {
+    const key = await this.keys.findActiveByRole(role);
+    return key ? toView(key) : undefined;
+  }
+
+  exists(): Promise<boolean> {
+    return this.keys.exists();
   }
 
   async get(id: string): Promise<ApiKeyDto> {
@@ -172,9 +183,8 @@ export class ApiKeyService {
    * provision from their own secret store rather than copying a printed value out of a log.
    */
   async bootstrap(name = "bootstrap"): Promise<{ key: MintedApiKeyDto; created: boolean }> {
-    if ((await this.keys.countAll()) > 0) {
-      const existing = await this.keys.list();
-      const admin = existing.find((key) => key.role === "admin" && key.status === "active");
+    if (await this.keys.exists()) {
+      const admin = await this.keys.findActiveAdmin();
       if (!admin) {
         throw new ManagerError(
           "LAST_ADMIN_KEY",

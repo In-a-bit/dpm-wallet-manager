@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Param, Patch, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Query,
+} from "@nestjs/common";
 import {
   ApiCreatedResponse,
   ApiOkResponse,
@@ -11,6 +21,7 @@ import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
+import { PaginationDto } from "../common/dto/pagination.dto";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import { CreateUiUserDto, UiUserDto, UiUserPageDto, UpdateUiUserDto } from "./dto/ui-user.dto";
 import { UiUsersService } from "./ui-users.service";
@@ -36,9 +47,13 @@ export class UiUsersController {
   @Roles("admin")
   @ApiOperation({ operationId: "listUiUsers", summary: "List admin UI users" })
   @ApiOkResponse({ type: UiUserPageDto })
-  async list(): Promise<UiUserPageDto> {
-    const items = await this.users.list();
-    return { items, total: items.length };
+  @ApiErrors("VALIDATION_FAILED")
+  async list(@Query() page: PaginationDto): Promise<UiUserPageDto> {
+    return {
+      ...(await this.users.list(page.limit, page.offset)),
+      limit: page.limit,
+      offset: page.offset,
+    };
   }
 
   /**

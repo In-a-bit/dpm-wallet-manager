@@ -1,4 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
+import { IsOptional, IsString } from "class-validator";
 
 import { IsPageNumber } from "../validation/decorators";
 
@@ -17,4 +18,19 @@ export class PaginationDto {
   @ApiPropertyOptional({ minimum: 0, default: 0 })
   @IsPageNumber(0, { min: 0 })
   offset: number = 0;
+}
+
+/**
+ * Pagination plus the keyset alternative to `offset`. A `cursor` is the `nextCursor` of the
+ * previous page; when it is sent `offset` is ignored and `total` is not computed.
+ */
+export class CursorPaginationDto extends PaginationDto {
+  @ApiPropertyOptional({
+    description:
+      "Resume after the page that returned this `nextCursor`. Stable while newer rows arrive, " +
+      "unlike `offset`, which is deprecated. Omits `total` from the response.",
+  })
+  @IsOptional()
+  @IsString()
+  cursor?: string;
 }

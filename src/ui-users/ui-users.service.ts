@@ -24,8 +24,9 @@ export class UiUsersService {
     private readonly audit: AuditLog,
   ) {}
 
-  async list(): Promise<UiUserDto[]> {
-    return (await this.users.list()).map(toView);
+  async list(limit: number, offset: number): Promise<{ items: UiUserDto[]; total: number }> {
+    const [rows, total] = await Promise.all([this.users.list(limit, offset), this.users.count()]);
+    return { items: rows.map(toView), total };
   }
 
   async create(input: NewUiUser, actor: Actor): Promise<UiUserDto> {

@@ -49,6 +49,12 @@ export class UiUserPageDto {
 
   @ApiProperty({ example: 2 })
   total!: number;
+
+  @ApiProperty({ example: 50 })
+  limit!: number;
+
+  @ApiProperty({ example: 0 })
+  offset!: number;
 }
 
 export class CreateUiUserDto {

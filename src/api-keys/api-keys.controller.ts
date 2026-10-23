@@ -1,4 +1,14 @@
-import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, Post } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Post,
+  Query,
+} from "@nestjs/common";
 import {
   ApiCreatedResponse,
   ApiOkResponse,
@@ -11,6 +21,7 @@ import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
+import { PaginationDto } from "../common/dto/pagination.dto";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import { ApiKeyService } from "./api-key.service";
 import { CreateApiKeyDto, RotateApiKeyDto } from "./dto/api-key.dto";
@@ -49,7 +60,7 @@ export class ApiKeysController {
   }
 
   /**
-   * List every key's metadata.
+   * List API keys' metadata, newest first.
    *
    * Role, prefix, name, status, expiry, last use and rotation lineage — everything a key
    * administration screen needs. Never returns a secret; use `POST /v1/api-keys/{id}/reveal` for
@@ -59,9 +70,13 @@ export class ApiKeysController {
   @Roles("admin")
   @ApiOperation({ operationId: "listApiKeys", summary: "List API keys" })
   @ApiOkResponse({ type: ApiKeyPageDto })
-  async list(): Promise<ApiKeyPageDto> {
-    const items = await this.keys.list();
-    return { items, total: items.length };
+  @ApiErrors("VALIDATION_FAILED")
+  async list(@Query() page: PaginationDto): Promise<ApiKeyPageDto> {
+    return {
+      ...(await this.keys.list(page.limit, page.offset)),
+      limit: page.limit,
+      offset: page.offset,
+    };
   }
 
   /**
