@@ -6,12 +6,13 @@ interface Props {
   children: ReactNode;
   confirmLabel: string;
   danger?: boolean;
+  dismissLabel?: string;
   onConfirm: () => Promise<void>;
   onClose: () => void;
 }
 
 /** Confirmation dialog whose confirm button stays disabled while the action runs. */
-export function Confirm({ title, children, confirmLabel, danger, onConfirm, onClose }: Props) {
+export function Confirm({ title, children, confirmLabel, danger, dismissLabel = "Cancel", onConfirm, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const run = async () => {
     setBusy(true);
@@ -28,7 +29,7 @@ export function Confirm({ title, children, confirmLabel, danger, onConfirm, onCl
       footer={
         <>
           <button type="button" onClick={onClose}>
-            Cancel
+            {dismissLabel}
           </button>
           <button type="button" className={danger ? "danger" : "primary"} disabled={busy} onClick={run}>
             {busy ? "Working…" : confirmLabel}

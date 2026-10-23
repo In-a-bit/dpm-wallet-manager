@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, archiveDownloadUrl, errorMessage, type Archive } from "../api";
+import { ApiError, api, archiveDownloadUrl, errorMessage, type Archive } from "../api";
 import { Confirm } from "./Confirm";
 import { Field } from "./Field";
 import { useToast } from "./Toasts";
@@ -22,14 +22,37 @@ function Counts({ counts }: { counts: Record<string, number> }) {
   );
 }
 
-/** Start the browser download; the session cookie authenticates the plain navigation. */
-function startDownload(id: string) {
+/**
+ * Fetch the file as a blob (the session cookie authenticates a GET) and save it through an object
+ * URL, so a 401 or 409 surfaces as an error instead of a raw JSON page. Archives hold only
+ * important records, so holding one in memory is acceptable.
+ */
+async function downloadArchive(id: string): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(archiveDownloadUrl(id), { credentials: "include" });
+  } catch {
+    throw new Error("Cannot reach the server. Check your connection and try again.");
+  }
+  if (!res.ok) {
+    let message = `Download failed (${res.status}).`;
+    try {
+      message = ((await res.json()) as { error?: { message?: string } }).error?.message ?? message;
+    } catch {
+      // not JSON; keep the generic message
+    }
+    throw new Error(message);
+  }
+  const disposition = res.headers.get("Content-Disposition") ?? "";
+  const name = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+  const url = URL.createObjectURL(await res.blob());
   const a = document.createElement("a");
-  a.href = archiveDownloadUrl(id);
-  a.download = "";
+  a.href = url;
+  a.download = name ? decodeURIComponent(name) : `dpm-archive-${id}.ndjson.gz`;
   document.body.appendChild(a);
   a.click();
   a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
 /**
@@ -57,6 +80,7 @@ export function ArchiveWizard({
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [code, setCode] = useState("");
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [scopeChanged, setScopeChanged] = useState(false);
 
   // The reminder loads after first render; follow it until the owner picks a date.
   const shownDate = edited ? date : toDateInput(new Date(Date.now() - reminderDays * DAY_MS));
@@ -83,9 +107,14 @@ export function ArchiveWizard({
   const doCreate = () =>
     run(async () => {
       const created = await api.createArchive(before);
-      startDownload(created.id);
       setPreview(null);
-      toast.ok(`Archive ${created.code} created. The download has started.`);
+      onChanged();
+      try {
+        await downloadArchive(created.id);
+        toast.ok(`Archive ${created.code} saved.`);
+      } catch (e) {
+        toast.bad(`Archive ${created.code} was created but the download failed: ${errorMessage(e)} Use Download again.`);
+      }
       onChanged();
     });
 
@@ -93,8 +122,23 @@ export function ArchiveWizard({
 
   const counts = open ? Object.fromEntries(Object.entries(open.scope).map(([t, v]) => [t, v.rows])) : {};
 
+  const redownload = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await downloadArchive(id);
+      toast.ok("Archive saved.");
+    } catch (e) {
+      toast.bad(errorMessage(e));
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
+
   const doDelete = async () => {
-    if (!open) return;
+    if (!open || busy) return;
+    setBusy(true);
     setDeleteError(null);
     try {
       await api.deleteArchive(open.id, code.trim());
@@ -102,20 +146,23 @@ export function ArchiveWizard({
       setCode("");
       onChanged();
     } catch (e) {
-      setDeleteError(
-        `${errorMessage(e)}${/SCOPE_CHANGED|scope/i.test(errorMessage(e)) ? " Cancel this archive and create a new one." : ""}`,
-      );
+      setDeleteError(errorMessage(e));
+      setScopeChanged(e instanceof ApiError && e.code === "ARCHIVE_SCOPE_CHANGED");
+    } finally {
+      setBusy(false);
     }
   };
 
   const doCancel = async () => {
-    if (!open) return;
+    if (!open || busy) return;
+    setBusy(true);
     try {
       await api.cancelArchive(open.id);
       toast.ok("Archive cancelled. Nothing was deleted.");
     } catch (e) {
       toast.bad(errorMessage(e));
     } finally {
+      setBusy(false);
       setConfirmCancel(false);
       onChanged();
     }
@@ -137,7 +184,7 @@ export function ArchiveWizard({
 
       {loaded && !open && (
         <>
-          <Field label="Archive records older than" hint={`Defaults to ${reminderDays} days ago. At least one day old.`}>
+          <Field label="Archive records older than" hint={`Defaults to ${reminderDays} days ago. Must be at least two days ago.`}>
             <input
               type="date"
               value={shownDate}
@@ -179,7 +226,7 @@ export function ArchiveWizard({
             <>
               <p className="muted">Waiting for the download to finish. If it did not start or broke off, download it again.</p>
               <div className="row-actions">
-                <button type="button" className="primary" onClick={() => startDownload(open.id)}>
+                <button type="button" className="primary" disabled={busy} onClick={() => redownload(open.id)}>
                   Download again
                 </button>
                 <button type="button" onClick={() => setConfirmCancel(true)}>
@@ -193,7 +240,7 @@ export function ArchiveWizard({
               <button type="button" className="danger" onClick={() => setConfirmDelete(true)}>
                 Remove archived records from the database
               </button>
-              <button type="button" onClick={() => startDownload(open.id)}>
+              <button type="button" disabled={busy} onClick={() => redownload(open.id)}>
                 Download again
               </button>
               <button type="button" onClick={() => setConfirmCancel(true)}>
@@ -219,6 +266,7 @@ export function ArchiveWizard({
           onClose={() => {
             setConfirmDelete(false);
             setDeleteError(null);
+            setScopeChanged(false);
           }}
         >
           <p>These rows will be deleted from the database:</p>
@@ -233,10 +281,23 @@ export function ArchiveWizard({
               {deleteError}
             </p>
           )}
+          {scopeChanged && (
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmDelete(false);
+                setScopeChanged(false);
+                setDeleteError(null);
+                setConfirmCancel(true);
+              }}
+            >
+              Cancel this archive
+            </button>
+          )}
         </Confirm>
       )}
       {confirmCancel && open && (
-        <Confirm title="Cancel this archive?" confirmLabel="Cancel archive" onConfirm={doCancel} onClose={() => setConfirmCancel(false)}>
+        <Confirm title="Discard this archive?" confirmLabel="Discard archive" dismissLabel="Keep it" onConfirm={doCancel} onClose={() => setConfirmCancel(false)}>
           <p>Nothing will be deleted. The archive stays in the history as cancelled and you can create a new one.</p>
         </Confirm>
       )}
