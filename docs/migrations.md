@@ -32,10 +32,18 @@ once no version an operator may roll back to still reads it.
 
 Date: 2026-10-23. Node v22.23.2. Throwaway database on the local test Postgres, dropped afterwards.
 
-1. Migrated a fresh database with the `ops-hardening` build (commit 1d012b6) plus a temporary, uncommitted
-   migration `ALTER TABLE "wallets" ADD COLUMN "skew_temp" text NULL`. Result: 5 migrations recorded, `wallets.skew_temp` present.
+1. Migrated a fresh database with the `ops-hardening` build (commit 4610f58) plus a temporary,
+   uncommitted migration `ALTER TABLE "wallets" ADD COLUMN "skew_temp" text NULL`. Result:
+   9 migrations recorded (through `OperationsArchiveSeqIndex1793210000000`), `wallets.skew_temp`
+   present, `operations.seq` nullable with default `nextval('operations_seq_seq')`, and the
+   `CONCURRENTLY`-built index `operations_archive_seq` valid and ready.
 2. Ran `node dist/db/migrate-cli.js` built from `main` (commit 389faf0) against it. Result: exit 0,
    `db.migrated` with `applied: 0`. TypeORM ignores executed migrations it has no class for.
-3. Started `node dist/main.js` built from `main` against it. Result: startup passed (`startup.ready`, then `listening`) with the dpm-wallet URL unreachable; it ran until stopped.
+3. Inserted an `operations` row through `main`'s own `OperationRepository` (which knows nothing of
+   `seq`). Result: the insert succeeded, `main` read it back, and the row got `seq = 1` from the
+   column default. Running the `ops-hardening` build's migrate-cli again afterwards applied 0.
+4. Started `node dist/main.js` built from `main` against it. Result: startup passed
+   (`startup.ready`, then `listening`, `GET /v1/health` 200) with the dpm-wallet URL unreachable;
+   it ran until stopped.
 
 So a rollback to `main` needs no restore for an additive release.
