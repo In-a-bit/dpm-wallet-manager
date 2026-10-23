@@ -18,9 +18,17 @@ import { ManagerError } from "../../errors";
 export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 /**
- * Replays the stored response when a POST is retried with the same `Idempotency-Key` and the
- * same body, and rejects the same key with a different body. Without this a client retrying
- * after a timeout would get a second, differently-salted signature for one intended action.\n *\n * The same key is forwarded upstream by the services below, so the protection holds even when the\n * retry arrives after this service has already returned but before the caller saw the response.
+ * Replays the stored response when a POST is retried with the same `Idempotency-Key` on the same
+ * route and with the same body, and rejects the same key on any other request. Without this a
+ * client retrying after a timeout would get a second, differently-salted signature for one
+ * intended action.
+ *
+ * The method and path are part of what is compared, not just the body: `/withdraw` and
+ * `/transfers` take the same body, as do two wallets' transfers, and replaying one as the other
+ * would hand back a signature nobody relayed, or report a transfer that never happened as done.
+ *
+ * The same key is forwarded upstream by the services below, so the protection holds even when the
+ * retry arrives after this service has already returned but before the caller saw the response.
  *
  * Only successful responses are stored. An exception skips the mapping below, so a retry after
  * a transient failure still reaches the handler.
@@ -30,12 +38,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
   constructor(private readonly repository: IdempotencyRepository) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
-    const key = context.switchToHttp().getRequest<Request>().header(IDEMPOTENCY_KEY_HEADER)?.trim();
+    const request = context.switchToHttp().getRequest<Request>();
+    const key = request.header(IDEMPOTENCY_KEY_HEADER)?.trim();
     if (!key) return next.handle();
 
     // Hashed from the raw body: pipes transform the handler's argument, not the request, so
     // this sees exactly what the client sent, as the Express middleware did.
-    const requestHash = hashBody(context.switchToHttp().getRequest<Request>().body);
+    const requestHash = hashRequest(request);
     const stored = await this.repository.find(key);
     if (stored) return of(replayOrConflict(stored, requestHash));
 
@@ -59,15 +68,22 @@ function replayOrConflict(stored: IdempotencyRecord, requestHash: string): unkno
   if (stored.requestHash !== requestHash) {
     throw new ManagerError(
       "IDEMPOTENCY_CONFLICT",
-      "This Idempotency-Key was used with a different request body",
+      "This Idempotency-Key was used for a different request (route, wallet or body)",
     );
   }
   return JSON.parse(stored.responseJson);
 }
 
-/** Hashes the parsed body so key ordering and whitespace cannot make one request look like two. */
-function hashBody(body: unknown): string {
-  return createHash("sha256").update(canonicalize(body), "utf8").digest("hex");
+/**
+ * Hashes the method, the path (which carries the wallet id) and the parsed body, so key ordering
+ * and whitespace cannot make one request look like two, and two requests cannot look like one.
+ * The query string is left out: no signing route reads one.
+ */
+function hashRequest(request: Request): string {
+  const path = request.originalUrl.split("?")[0] ?? "";
+  return createHash("sha256")
+    .update(`${request.method} ${path}\n${canonicalize(request.body)}`, "utf8")
+    .digest("hex");
 }
 
 function canonicalize(value: unknown): string {

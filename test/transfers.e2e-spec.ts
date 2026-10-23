@@ -178,4 +178,74 @@ describe("transfers", () => {
     const page = await harness.get(`/v1/operations?walletId=${masterId}&kind=withdraw&limit=1`);
     expect(page.body.items[0]).toMatchObject({ status: "signed", relayerTransactionId: null });
   });
+  it("reports a relayer refusal as TRANSFER_REJECTED, keeping the signed operation", async () => {
+    harness.upstream.failRelayWith = { status: 422, code: "RELAY_REJECTED" };
+    const response = await harness.post(`/v1/wallets/${masterId}/transfers`, {
+      body: { recipientWalletId: opsId, amountDecimal: "6.25" },
+      apiKey: harness.operatorKey,
+    });
+    harness.upstream.failRelayWith = undefined;
+
+    expect(response.status).toBe(422);
+    expect(response.body.error.code).toBe("TRANSFER_REJECTED");
+    expect(response.body.error.details.upstream).toBe("RELAY_REJECTED");
+    const page = await harness.get(`/v1/operations?walletId=${masterId}&kind=withdraw&limit=1`);
+    expect(page.body.items[0]).toMatchObject({ status: "signed", relayerTransactionId: null });
+  });
+
+  describe("idempotency", () => {
+    it("replays a retried transfer without relaying it again", async () => {
+      const send = () =>
+        harness.post(`/v1/wallets/${masterId}/transfers`, {
+          body: { recipientWalletId: opsId, amountDecimal: "3" },
+          apiKey: harness.operatorKey,
+          idempotencyKey: "transfer-replay-1",
+        });
+      const first = await send();
+      const second = await send();
+
+      expect(first.status).toBe(200);
+      expect(second.status).toBe(200);
+      expect(second.body).toEqual(first.body);
+      expect(relays()).toHaveLength(1);
+    });
+
+    it("refuses a key first used on /withdraw when it comes back on /transfers", async () => {
+      const body = { recipientWalletId: opsId, amountDecimal: "4" };
+      const withdraw = await harness.post(`/v1/wallets/${masterId}/withdraw`, {
+        body,
+        apiKey: harness.operatorKey,
+        idempotencyKey: "cross-route-1",
+      });
+      expect(withdraw.status).toBe(200);
+
+      const transfer = await harness.post(`/v1/wallets/${masterId}/transfers`, {
+        body,
+        apiKey: harness.operatorKey,
+        idempotencyKey: "cross-route-1",
+      });
+      expect(transfer.status).toBe(409);
+      expect(transfer.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+      expect(relays()).toHaveLength(0);
+    });
+
+    it("refuses a key used for one wallet's transfer when it comes back for another", async () => {
+      const body = { recipientWalletId: opsId, amountDecimal: "5" };
+      const first = await harness.post(`/v1/wallets/${masterId}/transfers`, {
+        body,
+        apiKey: harness.operatorKey,
+        idempotencyKey: "cross-wallet-1",
+      });
+      expect(first.status).toBe(200);
+
+      const second = await harness.post(`/v1/wallets/${opsId}/transfers`, {
+        body,
+        apiKey: harness.operatorKey,
+        idempotencyKey: "cross-wallet-1",
+      });
+      expect(second.status).toBe(409);
+      expect(second.body.error.code).toBe("IDEMPOTENCY_CONFLICT");
+      expect(relays()).toHaveLength(1);
+    });
+  });
 });

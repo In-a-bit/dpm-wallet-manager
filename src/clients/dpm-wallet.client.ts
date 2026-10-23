@@ -43,6 +43,9 @@ const CODE_MAP: Record<string, ErrorCode> = {
   BALANCES_UNAVAILABLE: "BALANCES_UNAVAILABLE",
   // Only ever answered for an id this service relayed, so to our caller the transfer is unknown.
   RELAY_TRANSACTION_NOT_FOUND: "TRANSFER_NOT_FOUND",
+  // The relayer looked at the transfer and said no; resending it unchanged gets the same answer,
+  // so it must not fall through to UPSTREAM_UNAVAILABLE's "safe to retry".
+  RELAY_REJECTED: "TRANSFER_REJECTED",
 };
 
 /** Upstream codes the caller is expected to handle rather than treat as a failure. */

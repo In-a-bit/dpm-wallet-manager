@@ -22,6 +22,7 @@ export const ERROR_STATUS = {
   MASTER_ALLOWANCE_FORBIDDEN: 403,
   MASTER_WALLET_CANNOT_TRADE: 403,
   TRANSFER_NOT_FOUND: 404,
+  TRANSFER_REJECTED: 422,
   API_KEY_NOT_FOUND: 404,
   API_KEY_REVOKED: 409,
   LAST_ADMIN_KEY: 409,
@@ -77,6 +78,10 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
   TRANSFER_NOT_FOUND:
     "No transfer with that relayer transaction id was relayed through this service, or the " +
     "relayer no longer knows it.",
+  TRANSFER_REJECTED:
+    "The relayer refused the signed transfer (for example a bad nonce, signature or balance). " +
+    "This is a refusal, not an outage: retrying the same request unchanged will be refused " +
+    "again. `details.upstream` is RELAY_REJECTED and the message carries the relayer's reason.",
   API_KEY_NOT_FOUND: "No API key with that id.",
   API_KEY_REVOKED: "That key has been revoked and cannot be rotated.",
   LAST_ADMIN_KEY:
@@ -91,7 +96,9 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
     "A request authenticated by the admin UI session cookie must carry " +
     "`X-Requested-With: dpmm-admin` to change anything.",
   RATE_LIMITED: "Too many requests for this resource in the current window.",
-  IDEMPOTENCY_CONFLICT: "This Idempotency-Key was already used with a different request body.",
+  IDEMPOTENCY_CONFLICT:
+    "This Idempotency-Key was already used for a different request: another route, another " +
+    "wallet, or a different body.",
   UPSTREAM_UNAVAILABLE:
     "dpm-wallet could not be reached, or answered with a server error. Safe to retry.",
   UPSTREAM_REJECTED:
