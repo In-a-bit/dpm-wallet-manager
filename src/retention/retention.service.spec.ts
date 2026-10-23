@@ -215,10 +215,76 @@ describe("RetentionService", () => {
     expect(Date.parse(cutoff)).toBe(now.getTime() - 7 * DAY);
   });
 
+  it("keeps the partial count when a target fails mid-way", async () => {
+    const stderr = jest.spyOn(process.stderr, "write").mockImplementation(() => true);
+    purgeRoutineAudit
+      .mockResolvedValueOnce({ deleted: RETENTION_BATCH })
+      .mockRejectedValueOnce(new Error("upstream down"));
+    const counts = await service.runOnce(now);
+    expect(counts.dpm_wallet_audit_events).toBe(RETENTION_BATCH);
+    stderr.mockRestore();
+  });
+
+  it("clamps routineDaysOverride to 1..configured routine days", async () => {
+    await service.runOnce(now); // default 90
+    service.routineDaysOverride = () => 0;
+    await service.runOnce(now);
+    expect(Date.parse((purgeRoutineAudit.mock.calls.at(-1) as [string])[0])).toBe(
+      now.getTime() - 1 * DAY,
+    );
+    service.routineDaysOverride = () => -5;
+    await service.runOnce(now);
+    expect(Date.parse((purgeRoutineAudit.mock.calls.at(-1) as [string])[0])).toBe(
+      now.getTime() - 1 * DAY,
+    );
+    service.routineDaysOverride = () => 500;
+    await service.runOnce(now);
+    expect(Date.parse((purgeRoutineAudit.mock.calls.at(-1) as [string])[0])).toBe(
+      now.getTime() - 90 * DAY,
+    );
+  });
+
+  it("stops after the batch in flight on destroy, quietly", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const spy = jest.spyOn(operations, "purgeRoutine").mockImplementation(async () => {
+      await gate;
+      return RETENTION_BATCH;
+    });
+    const stderr = jest.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const run = service.runOnce(now);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(spy).toHaveBeenCalledTimes(1);
+    service.onModuleDestroy();
+    release();
+    const counts = await run;
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(counts.operations).toBe(RETENTION_BATCH);
+    expect(purgeRoutineAudit).not.toHaveBeenCalled();
+    expect(stderr.mock.calls.some(([line]) => String(line).includes("retention.failed"))).toBe(
+      false,
+    );
+    stderr.mockRestore();
+  });
+
   it("does nothing when disabled, and its timers do nothing", async () => {
     await seedOp("merge", 100);
     await settingsService.update({ enabled: false }, undefined);
     expect(await service.runOnce(now)).toEqual({});
+    expect(await count("operations")).toBe(1);
+    expect(purgeRoutineAudit).not.toHaveBeenCalled();
+
+    // The timers fire but delete nothing.
+    jest.useFakeTimers({ doNotFake: ["nextTick", "setImmediate"] });
+    try {
+      service.onModuleInit();
+      await jest.advanceTimersByTimeAsync(60_000);
+      jest.useRealTimers();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    } finally {
+      jest.useRealTimers();
+      service.onModuleDestroy();
+    }
     expect(await count("operations")).toBe(1);
     expect(purgeRoutineAudit).not.toHaveBeenCalled();
   });
@@ -260,6 +326,9 @@ describe("RetentionService", () => {
       const stderr = jest.spyOn(process.stderr, "write").mockImplementation(() => true);
       service.onModuleInit();
       await jest.advanceTimersByTimeAsync(60_000);
+      expect(stderr.mock.calls.some(([line]) => String(line).includes('"retention.failed"'))).toBe(
+        true,
+      );
       stderr.mockRestore();
       service.onModuleDestroy();
     });

@@ -5,6 +5,7 @@ import { AuditRepository } from "../db/repositories/audit.repo";
 import { IdempotencyRepository } from "../db/repositories/idempotency.repo";
 import { OperationRepository } from "../db/repositories/operation.repo";
 import { UiSessionRepository } from "../db/repositories/ui-session.repo";
+import { RETENTION_MIN_DAYS } from "../config";
 import { logError, logInfo } from "../observability/log";
 import { RetentionSettingsService } from "../settings/retention-settings.service";
 
@@ -33,6 +34,8 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
   private firstRun: NodeJS.Timeout | undefined;
   private hourly: NodeJS.Timeout | undefined;
   private running = false;
+  /** Set on shutdown: a run in flight finishes its current batch and exits quietly. */
+  private stopped = false;
 
   constructor(
     private readonly settings: RetentionSettingsService,
@@ -54,6 +57,7 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy(): void {
+    this.stopped = true;
     clearTimeout(this.firstRun);
     clearInterval(this.hourly);
     this.firstRun = undefined;
@@ -81,7 +85,12 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
     const effective = await this.settings.effective();
     if (!effective.enabled) return {};
 
-    const routineDays = this.routineDaysOverride?.() ?? effective.routineDays;
+    // Clamped: an override at or below zero would otherwise delete every routine row.
+    const override = this.routineDaysOverride?.();
+    const routineDays =
+      override === undefined || !Number.isFinite(override)
+        ? effective.routineDays
+        : Math.min(Math.max(Math.ceil(override), RETENTION_MIN_DAYS), effective.routineDays);
     const cutoff = new Date(now.getTime() - routineDays * DAY_MS).toISOString();
     // Routed orders keep their longer window, but never a shorter one than routine.
     const routedCutoff = new Date(
@@ -93,25 +102,38 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
       [
         "operations",
         () =>
-          this.batched(() => this.operations.purgeRoutine(cutoff, routedCutoff, RETENTION_BATCH)),
+          this.batched(deleted, "operations", () =>
+            this.operations.purgeRoutine(cutoff, routedCutoff, RETENTION_BATCH),
+          ),
       ],
-      ["audit_events", () => this.batched(() => this.audit.purgeRoutine(cutoff, RETENTION_BATCH))],
+      [
+        "audit_events",
+        () =>
+          this.batched(deleted, "audit_events", () =>
+            this.audit.purgeRoutine(cutoff, RETENTION_BATCH),
+          ),
+      ],
       ["idempotency_keys", () => this.idempotency.purgeExpired(now)],
       ["ui_sessions", () => this.sessions.purgeExpired(now.toISOString())],
       [
         "dpm_wallet_audit_events",
         () =>
           this.batched(
+            deleted,
+            "dpm_wallet_audit_events",
             async () => (await this.upstream.purgeRoutineAudit(cutoff, RETENTION_BATCH)).deleted,
           ),
       ],
     ];
     for (const [table, work] of targets) {
+      if (this.stopped) break;
       try {
+        // Batched targets add to `deleted` as they go, so a mid-way failure keeps what was done.
         deleted[table] = await work();
       } catch (err) {
-        deleted[table] = 0;
-        logError("retention.failed", { table, err });
+        deleted[table] ??= 0;
+        // A failure caused by shutting down (the pool closing) is not worth a log line.
+        if (!this.stopped) logError("retention.failed", { table, err });
       }
     }
     logInfo("retention.run", deleted);
@@ -119,13 +141,17 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Repeats `deleteBatch` until a batch comes back short, up to the per-run batch cap. */
-  private async batched(deleteBatch: () => Promise<number>): Promise<number> {
-    let total = 0;
-    for (let i = 0; i < RETENTION_MAX_BATCHES; i++) {
+  private async batched(
+    deleted: Record<string, number>,
+    table: string,
+    deleteBatch: () => Promise<number>,
+  ): Promise<number> {
+    deleted[table] = 0;
+    for (let i = 0; i < RETENTION_MAX_BATCHES && !this.stopped; i++) {
       const n = await deleteBatch();
-      total += n;
+      deleted[table] += n;
       if (n < RETENTION_BATCH) break;
     }
-    return total;
+    return deleted[table];
   }
 }
