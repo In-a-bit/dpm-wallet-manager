@@ -6,6 +6,7 @@ import { AuditRepository } from "../db/repositories/audit.repo";
 import { IdempotencyRepository } from "../db/repositories/idempotency.repo";
 import { OperationRepository } from "../db/repositories/operation.repo";
 import { PlatformSettingsRepository } from "../db/repositories/platform-settings.repo";
+import { StorageSampleRepository } from "../db/repositories/storage-sample.repo";
 import { UiSessionRepository } from "../db/repositories/ui-session.repo";
 import { AuditLog } from "../observability/audit";
 import { RetentionSettingsService } from "../settings/retention-settings.service";
@@ -54,9 +55,17 @@ describe("RetentionService", () => {
       `TRUNCATE operations, audit_events, idempotency_keys, ui_sessions, platform_settings RESTART IDENTITY`,
     );
     purgeRoutineAudit = jest.fn().mockResolvedValue({ deleted: 0 });
-    service = new RetentionService(settingsService, operations, audit, idempotency, sessions, {
-      purgeRoutineAudit,
-    } as unknown as DpmWalletClient);
+    service = new RetentionService(
+      settingsService,
+      operations,
+      audit,
+      idempotency,
+      sessions,
+      {
+        purgeRoutineAudit,
+      } as unknown as DpmWalletClient,
+      new StorageSampleRepository(fixture.db),
+    );
   });
 
   async function seedOp(kind: OperationKind, days: number, routed = false): Promise<void> {
@@ -135,6 +144,7 @@ describe("RetentionService", () => {
       audit_events: 1,
       idempotency_keys: 1,
       ui_sessions: 1,
+      storage_samples: 0,
       dpm_wallet_audit_events: RETENTION_BATCH + 7,
     });
     expect(purgeRoutineAudit).toHaveBeenCalledTimes(2);
@@ -154,6 +164,7 @@ describe("RetentionService", () => {
       audit_events: 0,
       idempotency_keys: 0,
       ui_sessions: 0,
+      storage_samples: 0,
       dpm_wallet_audit_events: 0,
     });
   });

@@ -18,6 +18,7 @@ import { PlatformModule } from "./platform/platform.module";
 import { PolicyModule } from "./policy/policy.module";
 import { RetentionModule } from "./retention/retention.module";
 import { SettingsModule } from "./settings/settings.module";
+import { StorageModule } from "./storage/storage.module";
 import { StartupService } from "./startup/startup.service";
 import { UiUsersModule } from "./ui-users/ui-users.module";
 import { WalletsModule } from "./wallets/wallets.module";
@@ -44,6 +45,7 @@ import { WalletsModule } from "./wallets/wallets.module";
     HealthModule,
     RetentionModule,
     SettingsModule,
+    StorageModule,
   ],
   providers: [
     StartupService,

@@ -4,6 +4,7 @@ import { DpmWalletClient } from "../clients/dpm-wallet.client";
 import { AuditRepository } from "../db/repositories/audit.repo";
 import { IdempotencyRepository } from "../db/repositories/idempotency.repo";
 import { OperationRepository } from "../db/repositories/operation.repo";
+import { StorageSampleRepository } from "../db/repositories/storage-sample.repo";
 import { UiSessionRepository } from "../db/repositories/ui-session.repo";
 import { RETENTION_MIN_DAYS } from "../config";
 import { logError, logInfo } from "../observability/log";
@@ -14,6 +15,8 @@ export const RETENTION_MAX_BATCHES = 100;
 const FIRST_RUN_MS = 60_000;
 const INTERVAL_MS = 60 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
+/** Storage samples are only read for a 7-day slope and a recent chart. */
+const STORAGE_SAMPLE_DAYS = 30;
 
 /**
  * Background trimming of routine records, in this service and in dpm-wallet.
@@ -44,6 +47,7 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
     private readonly idempotency: IdempotencyRepository,
     private readonly sessions: UiSessionRepository,
     private readonly upstream: DpmWalletClient,
+    private readonly storageSamples: StorageSampleRepository,
   ) {}
 
   onModuleInit(): void {
@@ -115,6 +119,13 @@ export class RetentionService implements OnModuleInit, OnModuleDestroy {
       ],
       ["idempotency_keys", () => this.idempotency.purgeExpired(now)],
       ["ui_sessions", () => this.sessions.purgeExpired(now.toISOString())],
+      [
+        "storage_samples",
+        () =>
+          this.storageSamples.trimOlderThan(
+            new Date(now.getTime() - STORAGE_SAMPLE_DAYS * DAY_MS).toISOString(),
+          ),
+      ],
       [
         "dpm_wallet_audit_events",
         () =>

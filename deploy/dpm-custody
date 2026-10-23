@@ -152,6 +152,22 @@ marker_hint() {
   say ""
 }
 
+# storage_line prints one line about the disk, from the manager's readiness answer:
+#   Storage: <level> · <used>% used · ~<days> days to full
+# Parts that are unknown are left out. When the manager does not answer, or has no storage sample
+# yet, it prints nothing: status must never fail because of this.
+storage_line() {
+  local out level used days line
+  out="$(compose exec -T dpm-wallet-manager node -e 'fetch("http://127.0.0.1:3000/v1/health/ready").then(r=>r.json()).then(b=>{const s=b.storage;if(s)console.log([s.level,s.usedPercent,s.daysToFull].map(v=>v==null?"":v).join("|"))}).catch(()=>{})' 2>/dev/null)" || return 0
+  out="$(printf '%s\n' "$out" | tail -n 1)"
+  IFS='|' read -r level used days <<<"$out" || true
+  case "$level" in ok | warning | critical) ;; *) return 0 ;; esac
+  line="Storage: $level"
+  case "$used" in '' | *[!0-9.]*) ;; *) line="$line · ${used}% used" ;; esac
+  case "$days" in '' | *[!0-9.]*) ;; *) line="$line · ~${days} days to full" ;; esac
+  say "$line"
+}
+
 # stop_unchanged MESSAGE... ends an upgrade before anything in the install was changed.
 stop_unchanged() {
   local line
@@ -744,7 +760,7 @@ main() {
   case "${1:-help}" in
     start) compose up -d ;;
     stop) compose stop ;;
-    status) compose ps; marker_hint ;;
+    status) compose ps; marker_hint; storage_line || true ;;
     # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still
     # checked); SETUP_INSTALL_SECONDS is how long the installer took, for the checklist.
     setup)

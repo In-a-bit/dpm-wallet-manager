@@ -5,6 +5,7 @@ export { IdempotencyKeyEntity } from "./idempotency-key.entity";
 export { OPERATION_KINDS, OperationEntity } from "./operation.entity";
 export type { OperationKind } from "./operation.entity";
 export { PlatformSettingEntity } from "./platform-setting.entity";
+export { StorageSampleEntity } from "./storage-sample.entity";
 export { UiSessionEntity } from "./ui-session.entity";
 export {
   UI_ROLE_TO_API_ROLE,

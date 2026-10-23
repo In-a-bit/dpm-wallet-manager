@@ -5,10 +5,13 @@ import type { Response } from "express";
 import { Public } from "../common/decorators/public.decorator";
 import type { Db } from "../db/client";
 import { DB } from "../tokens";
-import { HealthResponseDto } from "./dto/health.dto";
+import { StorageSampleRepository } from "../db/repositories/storage-sample.repo";
+import { HealthResponseDto, ReadyResponseDto } from "./dto/health.dto";
 
 /** A probe must answer inside the healthcheck timeout even when the database hangs. */
 const READY_TIMEOUT_MS = 3000;
+/** The storage field is a courtesy: it never holds the probe up. */
+const STORAGE_READ_TIMEOUT_MS = 1000;
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -26,7 +29,10 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 @ApiTags("health")
 @Controller("health")
 export class HealthController {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DB) private readonly db: Db,
+    private readonly samples: StorageSampleRepository,
+  ) {}
 
   /**
    * Liveness.
@@ -55,14 +61,32 @@ export class HealthController {
     description:
       "Runs a trivial database query. Answers 200 with status ok, or 503 with status unavailable (a bare status body, not the error envelope) when the database does not answer.",
   })
-  @ApiOkResponse({ type: HealthResponseDto })
-  async ready(@Res({ passthrough: true }) res: Response): Promise<HealthResponseDto> {
+  @ApiOkResponse({ type: ReadyResponseDto })
+  async ready(@Res({ passthrough: true }) res: Response): Promise<ReadyResponseDto> {
     try {
       await withTimeout(this.db.query("SELECT 1"), READY_TIMEOUT_MS);
-      return { status: "ok" };
     } catch {
       res.status(503);
       return { status: "unavailable" };
+    }
+    return { status: "ok", ...(await this.storage()) };
+  }
+
+  /** The latest sample's level, for `dpm-custody status`. A failed or slow read just omits it. */
+  private async storage(): Promise<{ storage?: ReadyResponseDto["storage"] }> {
+    try {
+      const sample = await withTimeout(this.samples.latest(), STORAGE_READ_TIMEOUT_MS);
+      if (!sample) return {};
+      return {
+        storage: {
+          level: sample.level,
+          usedPercent:
+            sample.diskUsedPercent === null ? null : Math.round(sample.diskUsedPercent * 10) / 10,
+          daysToFull: sample.daysToFull === null ? null : Math.round(sample.daysToFull),
+        },
+      };
+    } catch {
+      return {};
     }
   }
 }

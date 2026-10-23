@@ -7,6 +7,7 @@ import { AuditRepository } from "./db/repositories/audit.repo";
 import { IdempotencyRepository } from "./db/repositories/idempotency.repo";
 import { OperationRepository } from "./db/repositories/operation.repo";
 import { PlatformSettingsRepository } from "./db/repositories/platform-settings.repo";
+import { StorageSampleRepository } from "./db/repositories/storage-sample.repo";
 import { UiSessionRepository } from "./db/repositories/ui-session.repo";
 import { UiUserRepository } from "./db/repositories/ui-user.repo";
 import { WalletRepository } from "./db/repositories/wallet.repo";
@@ -18,6 +19,7 @@ const REPOSITORIES = [
   IdempotencyRepository,
   OperationRepository,
   PlatformSettingsRepository,
+  StorageSampleRepository,
   UiSessionRepository,
   UiUserRepository,
   WalletRepository,

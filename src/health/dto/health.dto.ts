@@ -1,4 +1,4 @@
-import { ApiProperty } from "@nestjs/swagger";
+import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 
 /**
  * Deliberately shallow: this answers "is the process up", nothing more. Anything a caller would
@@ -8,4 +8,19 @@ import { ApiProperty } from "@nestjs/swagger";
 export class HealthResponseDto {
   @ApiProperty({ example: "ok" })
   status!: string;
+}
+
+export class HealthStorageDto {
+  @ApiProperty({ enum: ["ok", "warning", "critical"], example: "ok" })
+  level!: string;
+  @ApiProperty({ type: Number, nullable: true, example: 61.5 })
+  usedPercent!: number | null;
+  @ApiProperty({ type: Number, nullable: true, example: 90 })
+  daysToFull!: number | null;
+}
+
+export class ReadyResponseDto extends HealthResponseDto {
+  /** From the latest storage sample; absent when there is none yet. Never affects the status. */
+  @ApiPropertyOptional({ type: HealthStorageDto })
+  storage?: HealthStorageDto;
 }

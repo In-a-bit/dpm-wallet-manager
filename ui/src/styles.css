@@ -128,6 +128,12 @@ pre.json { margin: 8px 0 0; padding: 10px; border: 1px solid var(--line); border
 .notice { padding: 8px 12px; border-radius: 8px; background: var(--accent-soft); }
 .warning { padding: 10px 12px; border-radius: 8px; background: var(--warn-soft); }
 .banner-bad { padding: 10px 14px; border-radius: 8px; background: var(--bad-soft); color: var(--bad); margin: 0 0 16px; }
+.storage-banner { margin: 0 0 12px; }
+.storage-banner.critical { background: var(--bad-soft); color: var(--bad); padding: 10px 14px; border-radius: 8px; }
+.gauge { height: 14px; border-radius: 7px; background: var(--line); overflow: hidden; margin: 6px 0 4px; }
+.gauge > span { display: block; height: 100%; background: var(--ok); }
+.gauge.warning > span { background: var(--warn); }
+.gauge.critical > span { background: var(--bad); }
 .secret { display: flex; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
 .secret code { flex: 1; overflow-wrap: anywhere; user-select: all; }
 

@@ -1,4 +1,5 @@
-import { useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { api, type StorageStatus } from "../api";
 import { href, navigate, usePath } from "../router";
 import { ROLE_LABEL, useSession } from "../session";
 
@@ -35,6 +36,54 @@ export function Link({ to, children, className }: { to: string; children: ReactN
 
 function isActive(item: string, path: string): boolean {
   return item === "/" ? path === "/" : path === item || path.startsWith(item + "/");
+}
+
+const BANNER_POLL_MS = 5 * 60_000;
+
+/**
+ * Disk pressure and archive reminders, on every page. Fetched on mount, on each navigation and
+ * every 5 minutes; a failed fetch just shows nothing (the banner is advice, not a gate).
+ */
+function StorageBanner({ path }: { path: string }) {
+  const [status, setStatus] = useState<StorageStatus | null>(null);
+  useEffect(() => {
+    let live = true;
+    const fetchStatus = () =>
+      api
+        .getStorage()
+        .then((s) => live && setStatus(s))
+        .catch(() => undefined);
+    void fetchStatus();
+    const timer = setInterval(fetchStatus, BANNER_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [path]);
+
+  if (!status) return null;
+  const left = status.daysToFull === null ? "" : `, about ${Math.round(status.daysToFull)} days to full`;
+  const used = status.disk ? `${Math.round(status.disk.usedPercent)}% used${left}` : "";
+  return (
+    <>
+      {status.level !== "ok" && (
+        <div className={`storage-banner ${status.level === "critical" ? "critical" : "warning"}`} role="alert">
+          <strong>{status.level === "critical" ? "Disk space is critically low" : "Disk space is running low"}</strong>
+          {used && ` (${used})`}. Enlarge the disk or Docker volume, <Link to="/storage">archive old records</Link>, or free
+          Docker space (<code>docker system df</code>).
+          {status.tightened &&
+            ` Routine records are now kept for ${status.tightened.routineDays} days instead of the configured time.`}{" "}
+          <Link to="/storage">Open Storage</Link>
+        </div>
+      )}
+      {status.archiveSuggested && (
+        <div className="storage-banner notice">
+          Some important records are older than the archive reminder. <Link to="/storage">Consider archiving them</Link> to keep the
+          database small.
+        </div>
+      )}
+    </>
+  );
 }
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -78,7 +127,10 @@ export function Layout({ children }: { children: ReactNode }) {
             Sign out
           </button>
         </header>
-        <main className="content">{children}</main>
+        <main className="content">
+          <StorageBanner path={path} />
+          {children}
+        </main>
       </div>
     </div>
   );

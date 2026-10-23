@@ -111,6 +111,8 @@ services:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
     volumes:
       - config:/config:ro
+      # Read-only, and used only to ask the disk how full it is (statfs); no file is read.
+      - pg-data:/storage/pg:ro
     depends_on:
       postgres:
         condition: service_healthy

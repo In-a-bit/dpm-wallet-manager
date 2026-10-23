@@ -164,6 +164,21 @@ export interface StorageSettings {
 }
 export type StoragePatch = Partial<{ [K in Exclude<keyof StorageSettings, "sources" | "alertWebhookConfigured">]: StorageSettings[K] | null }>;
 
+export type StorageLevel = "ok" | "warning" | "critical";
+
+export interface StorageStatus {
+  at: string;
+  disk: { totalBytes: number; freeBytes: number; usedPercent: number } | null;
+  databases: { wallet: number | null; manager: number };
+  tables: { db: string; name: string; bytes: number; estRows: number }[];
+  growthBytesPerDay: number | null;
+  daysToFull: number | null;
+  level: StorageLevel;
+  tightened: { routineDays: number; since: string } | null;
+  oldestImportantAt: string | null;
+  archiveSuggested: boolean;
+}
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -294,6 +309,8 @@ export const api = {
   updateRetentionSettings: (body: RetentionPatch) => request<RetentionSettings>("PUT", "/v1/settings/retention", body),
   getStorageSettings: () => get<StorageSettings>("/v1/settings/storage"),
   updateStorageSettings: (body: StoragePatch) => request<StorageSettings>("PUT", "/v1/settings/storage", body),
+
+  getStorage: () => get<StorageStatus>("/v1/storage"),
 
   // API keys.
   listKeys: (q: Query) => get<Page<ApiKey>>("/v1/api-keys", q),

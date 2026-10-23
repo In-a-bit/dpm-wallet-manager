@@ -78,6 +78,7 @@ describe("openapi", () => {
     "GET /v1/settings/retention",
     "PUT /v1/settings/retention",
     "GET /v1/settings/storage",
+    "GET /v1/storage",
     "PUT /v1/settings/storage",
   ];
 

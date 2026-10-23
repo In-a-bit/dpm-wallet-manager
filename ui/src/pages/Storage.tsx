@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RetentionSettingsForm } from "../components/RetentionSettings";
+import { StorageOverview } from "../components/StorageOverview";
 import { StorageSettingsForm } from "../components/StorageSettings";
 
 type Tab = "overview" | "archives" | "settings";
@@ -24,7 +25,7 @@ export function StoragePage() {
         ))}
       </div>
       <div className="panel" role="tabpanel">
-        {tab === "overview" && <p className="muted">Coming in this release</p>}
+        {tab === "overview" && <StorageOverview />}
         {tab === "archives" && <p className="muted">Coming in this release</p>}
         {tab === "settings" && (
           <>

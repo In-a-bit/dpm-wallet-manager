@@ -64,6 +64,10 @@ case "$args" in
     echo "at-up compose=$(head -n 1 compose.yml) marker=$([ -e upgrade.inprogress ] && echo yes || echo no) prev=$([ -e .env.prev ] && ls -l compose.yml.prev .env.prev dpm-custody.prev | cut -c1-10 | sort -u | tr '\n' ' ')" >>"$EVENTS"
     if [ -n "${ADD_ENV_LINE:-}" ] && [ "$(grep -c ' up -d' "$EVENTS")" = 1 ]; then echo "$ADD_ENV_LINE" >>.env; fi
     ;;
+  *"exec -T dpm-wallet-manager node"*)
+    [ -n "${STORAGE_FAIL:-}" ] && { echo "no such service" >&2; exit 1; }
+    printf '%s\n' "${STORAGE_OUT-warning|81.2|13}"
+    ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
   *"exec -T "*" tar "*) echo "tarbytes" ;;
@@ -226,6 +230,7 @@ out="$(run "$d" upgrade --yes)"; rc=$?
 check "18 marker: upgrade refused, points to rollback and upgrade.log" '[ $rc -ne 0 ] && echo "$out" | grep -q "dpm-custody rollback" && echo "$out" | grep -q "upgrade.log" && ! has "$d.events" " pull"'
 out="$(run "$d" status)"; rc=$?
 check "18 marker: status shows the hint" 'echo "$out" | grep -q "did not finish" && echo "$out" | grep -q "dpm-custody rollback"'
+check "18 marker: status still prints the storage line" 'echo "$out" | grep -qxF "Storage: warning · 81.2% used · ~13 days to full"'
 out="$(run "$d" rollback)"; rc=$?
 check "18 marker: rollback clears it" '[ $rc -eq 0 ] && [ ! -e "$d/upgrade.inprogress" ]'
 
@@ -302,6 +307,18 @@ d="$T/c16"; make_install "$d" 1.1.0 0.1.0 1.1.0
 out="$(REL_URL="file://$T/rel-pre" run "$d" upgrade --yes)"; rc=$?
 check "16 1.1.0 -> 1.2.0-broken allowed, recorded verbatim" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTODY_VERSION=1.2.0-broken" "$d/.env"'
 
+# 20. status: the storage line leaves out unknown parts, and a failing call never fails status
+d="$T/c20"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(STORAGE_OUT='critical|93|' run "$d" status)"; rc=$?
+check "20 storage: days left out when unknown" '[ $rc -eq 0 ] && echo "$out" | grep -qxF "Storage: critical · 93% used"'
+out="$(STORAGE_OUT='ok||' run "$d" status)"; rc=$?
+check "20 storage: only the level when nothing else is known" '[ $rc -eq 0 ] && echo "$out" | grep -qxF "Storage: ok"'
+out="$(STORAGE_FAIL=1 run "$d" status)"; rc=$?
+check "20 storage: a failing call prints nothing and status succeeds" '[ $rc -eq 0 ] && ! echo "$out" | grep -q "Storage:"'
+out="$(STORAGE_OUT='' run "$d" status)"; rc=$?
+check "20 storage: no sample yet prints nothing" '[ $rc -eq 0 ] && ! echo "$out" | grep -q "Storage:"'
+
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 
 [ $fails -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
+

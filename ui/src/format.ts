@@ -32,3 +32,16 @@ export function formatUsdc(micro: string | null | undefined): string {
   const cents = ((n % 1_000_000n) / 10_000n).toString().padStart(2, "0");
   return `${whole}.${cents} USDC`;
 }
+
+/** Bytes as "12.3 GB" (decimal units, like the disk reports them). */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = Math.abs(bytes);
+  let i = 0;
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000;
+    i++;
+  }
+  return `${bytes < 0 ? "-" : ""}${i === 0 ? value : value.toFixed(value < 10 ? 2 : 1)} ${units[i]}`;
+}
