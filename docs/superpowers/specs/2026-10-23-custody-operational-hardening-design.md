@@ -34,8 +34,8 @@ This work makes each of those safe by default, without the operator having to kn
 - Zero-downtime upgrades. A short outage while containers restart is acceptable.
 - Archiving routine rows that retention trims. Deleted means deleted. Only important records
   are archived, and only when the operator chooses to.
-- Restoring an archive back into the database. Archived records are viewed from the file, in
-  the browser (section 7).
+- Restoring an archive back into the database, and viewing archives in the dashboard (dropped by
+  the user on 2026-10-23). The README shows how to read an archive file.
 - `VACUUM FULL` or any other table rewrite that blocks signing.
 - Changing anything on the platform (prediction-go) or in the mocks.
 
@@ -362,28 +362,6 @@ Flow, on a new admin page **Storage** (viewers see it; owners act):
    `deleting` → `done` with the deleted counts; a failure leaves `deleting` and the button resumes.
 4. **History.** The page lists every archive: when, by whom, cutoff, rows, SHA-256, status. The
    `archives` table is never trimmed.
-
-5. **View archived records.** A tab "Archived records" on the Storage page opens an archive
-   file the operator picks from their own computer. The file is read in the browser; nothing is
-   uploaded and nothing goes back into the database, so archived records stay where the operator
-   keeps them.
-   - **Integrity first:** the page computes the file's SHA-256 (Web Crypto, streamed) and matches
-     it against the archive history. It shows "verified: archive of <date> by <user>, N rows", or
-     a clear warning when the hash matches no archive or the file is damaged. An unverified file
-     can still be browsed, under the warning.
-   - **Search and filter:** table (manager operations, manager audit, dpm-wallet audit), date
-     range, action or kind, outcome, wallet id, actor (key id or username), and free text over the
-     whole row. Filters combine.
-   - **How it scales:** a Web Worker decompresses the file with `DecompressionStream` and streams
-     it line by line for each search, keeping only the first 500 matches plus a total match
-     count, with a progress bar and a cancel button. Nothing holds the whole file in memory, so a
-     multi-GB archive works, just more slowly.
-   - **Results:** a table with the same columns as the live Operations and Audit lists. A row
-     opens its full JSON. "Export matches (CSV)" streams every match, not just the first 500, to
-     a download.
-   - Available to every signed-in role, like the live Audit page.
-   - The same viewer accepts several files at once and searches them together, so a year spread
-     over several archives can be searched in one go.
 
 Rules:
 - Every step writes an audit event (`archive.create`, `archive.download`, `archive.delete`) with

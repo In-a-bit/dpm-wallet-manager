@@ -97,9 +97,7 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
    delete. The test inserts an important row older than the cutoff after `POST /v1/archives` and
    before delete, and the row survives (Task 14).
 6. **A broken-off archive download.** The archive stays `pending` and delete is refused (Task 14).
-7. **An archive file that was edited, or belongs to another install.** The viewer shows it
-   unverified, and still lets the operator browse it under the warning (Task 15).
-8. **An install created before this work, with no `DPM_CUSTODY_VERSION`.** `upgrade` must
+7. **An install created before this work, with no `DPM_CUSTODY_VERSION`.** `upgrade` must
    proceed once, say the version is unknown, and record the target (Task 10).
 
 ---
@@ -667,63 +665,28 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
 - [ ] **Step 3:** lint, typecheck and test all PASS. Commit
   `archive: export important records to a verified file and remove them on confirmation`.
 
-### Task 15: Archive UI and archived-records viewer
+### Task 15: Archive UI
 
 **Files:**
 - Modify: `M/ui/src/pages/Storage.tsx` (Archives tab)
-- Create: `M/ui/src/components/ArchiveWizard.tsx`, `M/ui/src/components/ArchiveHistory.tsx`,
-  `M/ui/src/components/ArchiveViewer.tsx`
-- Create: `M/ui/src/archive/worker.ts`, `M/ui/src/archive/filter.ts` (+ tests if the UI has a test
-  runner; otherwise `filter.ts` is pure and tested with a node script in `M/ui/scripts/`)
+- Create: `M/ui/src/components/ArchiveWizard.tsx`, `M/ui/src/components/ArchiveHistory.tsx`
 
 **Interfaces:**
 - Consumes: Task 14's endpoints.
-- Produces:
-  - `matches(line: {table: string; row: Record<string, unknown>}, f: ArchiveFilter): boolean`,
-    where `ArchiveFilter = {tables?: string[]; from?: string; to?: string; actionOrKind?: string;
-    outcome?: string; walletId?: string; actor?: string; text?: string}`.
-  - The worker protocol:
-    - in: `{type:"search", files: File[], filter, maxResults: 500}`, `{type:"export", files,
-      filter}` and `{type:"cancel"}`;
-    - out: `progress {bytesRead, totalBytes}`, `result {items, totalMatches, done}`,
-      `csvChunk`, `error`.
 
-- [ ] **Step 1: `filter.ts` tests:**
-  - each field alone and in combination;
-  - the date range is inclusive of `from` and exclusive of `to`;
-  - `text` is a case-insensitive search over the JSON string of the row;
-  - `actor` matches `actor_key_id`, `api_key_id`, `actor_username` or `ui_user_id`;
-  - `actionOrKind` matches `action` or `kind`.
-- [ ] **Step 2: Archive wizard** (owners only; others see history only):
+- [ ] **Step 1: archive wizard** (owners only; everyone else sees the history only):
   - a date picker defaulting to `archive.reminder_days` ago;
-  - Preview shows the counts per table, then "Create and download", which starts the browser
+  - "Preview" shows the row count per table, then "Create and download" starts the browser
     download from `/v1/archives/:id/download`;
   - the history row turns `downloaded` (poll `GET /v1/archives` every 3 s while `pending`);
   - "Remove archived records from the database" opens a `Confirm` that repeats the counts, says
-    space is reused rather than returned, and asks for the 6-character code;
-  - progress until `done`.
-  - The note "Keep the file somewhere safe, off this machine" is visible throughout.
-- [ ] **Step 3: viewer:**
-  - pick one or more `.ndjson.gz` files;
-  - the worker streams `DecompressionStream("gzip")` and splits lines;
-  - per file, SHA-256 is computed over the streamed compressed bytes with a small inline
-    incremental SHA-256 in `M/ui/src/archive/sha256.ts`. Web Crypto has no incremental digest,
-    and no new dependency is added. It is tested against `crypto.subtle.digest` on 0 B, 1 B, 64 B
-    and 1 MB buffers.
-  - match against `GET /v1/archives` by `sha256`, showing verified, unknown or damaged (a gunzip
-    or JSON error, with the line number) (Review Focus 7);
-  - filters as in `ArchiveFilter`;
-  - a results table using the Operations/Audit column layout, with row click opening the full
-    JSON in a `Modal`;
-  - "Export matches (CSV)" streams through the worker to a Blob download;
-  - progress bar and cancel.
-- [ ] **Step 4: manual check with `npm --prefix ui run dev`:**
-  - open a file produced by the Task 14 e2e test (save one to the scratchpad from the test);
-  - search by wallet id and by text;
-  - export CSV;
-  - flip one byte and see "damaged" or "unknown".
-- [ ] **Step 5:** build and lint PASS. Commit
-  `admin ui: archive wizard and archived-records viewer`.
+    the space is reused rather than returned to the disk, and asks for the 6-character code;
+  - progress is shown until `done`;
+  - the note "Keep the file somewhere safe, off this machine" is visible throughout.
+- [ ] **Step 2: archive history:** when, by whom, cutoff, rows, SHA-256 (with a copy button) and
+  status, paged.
+- [ ] **Step 3:** `npm --prefix ui run build` passes. The browser check is in Task 16.
+- [ ] **Step 4:** commit `admin ui: archive wizard and history`.
 
 ### Task 16: Local verification on the installs
 
@@ -743,8 +706,8 @@ install).
   - set the warning percent below the current use and check the banner, the `status` line and a
     webhook to a local `nc -l` listener;
   - put it back;
-  - archive with a cutoff of 1 day ago: download, open the file in the viewer (verified), search
-    it, confirm the delete, and check the rows are gone and history shows `done`.
+  - archive with a cutoff of 1 day ago: download, check the file with `gunzip -c | head`,
+    confirm the delete, and check the rows are gone and history shows `done`.
 
   The on-chain transfer needs explicit user approval when run.
 - [ ] **Step 3:** with the user's go-ahead, recreate the segregated install on the new images:
