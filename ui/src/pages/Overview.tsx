@@ -1,16 +1,19 @@
 import { api, type Wallet } from "../api";
+import { BalanceFigure, RefreshBalances, useBalances, type Balances } from "../components/Balance";
 import { Address } from "../components/Copy";
 import { Link } from "../components/Layout";
 import { Badge, Dot, LoadState, StatusBadge } from "../components/Status";
+import { TreasuryTransfer } from "../components/TreasuryTransfer";
 import { formatTime } from "../format";
 import { useLoad } from "../hooks";
+import { useSession } from "../session";
 
 const MODE_TEXT = {
   segregated: "Each user holds their own funds: trades are paid from the user's own wallet.",
   shared: "The company's operations wallet pays for users' trades; user wallets receive what they buy.",
 };
 
-function WalletCard({ title, wallet, missing }: { title: string; wallet: Wallet | null; missing: string }) {
+function WalletCard({ title, wallet, missing, balances }: { title: string; wallet: Wallet | null; missing: string; balances: Balances }) {
   return (
     <section className="panel card">
       <h2>{title}</h2>
@@ -23,6 +26,10 @@ function WalletCard({ title, wallet, missing }: { title: string; wallet: Wallet 
           <dt>Status</dt>
           <dd>
             <StatusBadge value={wallet.status} />
+          </dd>
+          <dt>Balance</dt>
+          <dd>
+            <BalanceFigure balances={balances} walletId={wallet.id} showBlock /> <RefreshBalances balances={balances} />
           </dd>
           <dt>EOA</dt>
           <dd>
@@ -46,6 +53,9 @@ function WalletCard({ title, wallet, missing }: { title: string; wallet: Wallet 
 
 export function OverviewPage() {
   const { data, error, loading, reload } = useLoad(() => api.platform(), "platform");
+  const { session } = useSession();
+  const treasuryIds = [data?.masterWallet?.id, data?.operationsWallet?.id].filter((id): id is string => !!id);
+  const balances = useBalances(treasuryIds);
 
   return (
     <>
@@ -88,10 +98,11 @@ export function OverviewPage() {
             </ul>
             {!data.upstream.vault && <p className="muted small-text">Vault status unknown (upstream did not report it).</p>}
           </section>
-          <WalletCard title="Master wallet" wallet={data.masterWallet} missing="Missing: no master wallet has been created." />
+          <WalletCard title="Master wallet" wallet={data.masterWallet} missing="Missing: no master wallet has been created." balances={balances} />
           <WalletCard
             title="Operations wallet"
             wallet={data.operationsWallet}
+            balances={balances}
             missing={
               data.mode === "segregated"
                 ? "Missing: it funds users' wallets in segregated mode."
@@ -99,6 +110,14 @@ export function OverviewPage() {
             }
           />
         </div>
+      )}
+      {data && session.actorRole !== "readonly" && (
+        <TreasuryTransfer
+          master={data.masterWallet}
+          operations={data.operationsWallet}
+          isAdmin={session.actorRole === "admin"}
+          onSettled={balances.refresh}
+        />
       )}
     </>
   );

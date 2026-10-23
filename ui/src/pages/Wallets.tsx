@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, type WalletKind, type WalletStatus } from "../api";
+import { BalanceFigure, RefreshBalances, useBalances } from "../components/Balance";
 import { Address } from "../components/Copy";
 import { Field } from "../components/Field";
 import { Pagination } from "../components/Pagination";
@@ -20,6 +21,8 @@ export function WalletsPage() {
   const query = { kind, status, q, limit: PAGE, offset };
   const { data, error, loading, reload } = useLoad(() => api.listWallets(query), JSON.stringify(query));
 
+  const balances = useBalances(data?.items.map((w) => w.id) ?? []);
+
   const open = (id: string) => navigate(`/wallets/${encodeURIComponent(id)}`);
   // Every filter change starts again at page one.
   const reset = <T,>(set: (v: T) => void) => (v: T) => {
@@ -31,6 +34,7 @@ export function WalletsPage() {
     <>
       <div className="page-head">
         <h1>Wallets</h1>
+        <RefreshBalances balances={balances} />
       </div>
       <div className="filters panel">
         <Field label="Kind">
@@ -66,6 +70,7 @@ export function WalletsPage() {
               <th>Label / external id</th>
               <th>EOA</th>
               <th>Proxy</th>
+              <th>Balance</th>
               <th>Status</th>
               <th>DPM</th>
               <th>Created</th>
@@ -94,6 +99,9 @@ export function WalletsPage() {
                 </td>
                 <td>
                   <Address value={w.proxyAddress} />
+                </td>
+                <td className="nowrap">
+                  <BalanceFigure balances={balances} walletId={w.id} />
                 </td>
                 <td>
                   <StatusBadge value={w.status} />

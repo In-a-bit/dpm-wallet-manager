@@ -23,3 +23,12 @@ export function localInputToIso(v: string): string | undefined {
   const d = new Date(v);
   return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
 }
+
+/** Micro-USDC integer string to "1,234.50 USDC" using string/bigint math only (no floats). */
+export function formatUsdc(micro: string | null | undefined): string {
+  if (micro === null || micro === undefined || !/^\d+$/.test(micro)) return "—";
+  const n = BigInt(micro);
+  const whole = (n / 1_000_000n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const cents = ((n % 1_000_000n) / 10_000n).toString().padStart(2, "0");
+  return `${whole}.${cents} USDC`;
+}

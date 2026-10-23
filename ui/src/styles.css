@@ -171,3 +171,6 @@ pre.json { margin: 8px 0 0; padding: 10px; border: 1px solid var(--line); border
   .kv dt { margin-top: 8px; font-size: .85rem; }
   .filters { grid-template-columns: 1fr 1fr; }
 }
+
+.transfer-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.transfer-form .field { min-width: 180px; }

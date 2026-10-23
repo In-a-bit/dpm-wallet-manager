@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { BalanceFigure, RefreshBalances, useBalances } from "../components/Balance";
 import { AuditList } from "../components/AuditList";
 import { Address, CopyButton } from "../components/Copy";
 import { Link } from "../components/Layout";
@@ -12,6 +13,7 @@ type Tab = "operations" | "audit";
 
 export function WalletDetailPage({ id }: { id: string }) {
   const { data: w, error, loading, reload } = useLoad(() => api.getWallet(id), id);
+  const balances = useBalances([id]);
   const [tab, setTab] = useState<Tab>("operations");
 
   return (
@@ -41,6 +43,10 @@ export function WalletDetailPage({ id }: { id: string }) {
             <dt>Status</dt>
             <dd>
               <StatusBadge value={w.status} />
+            </dd>
+            <dt>Balance</dt>
+            <dd>
+              <BalanceFigure balances={balances} walletId={id} showBlock /> <RefreshBalances balances={balances} />
             </dd>
             <dt>EOA address</dt>
             <dd>

@@ -51,6 +51,33 @@ export interface PlatformDto {
   upstream: { reachable: boolean; vault?: { initialized: boolean; ready: boolean } };
 }
 
+export interface WalletBalance {
+  walletId: string;
+  proxyAddress: string | null;
+  /** Micro-USDC as an integer string; null while the wallet is still provisioning. */
+  balanceMicro: string | null;
+  blockNumber: number | null;
+}
+
+export interface TransferBody {
+  amountDecimal: string;
+  recipient?: string;
+  recipientWalletId?: string;
+}
+
+export interface TransferResult {
+  operationId: string;
+  relayerTransactionId: string;
+  state: string | null;
+  external: boolean;
+}
+
+export interface TransferStatus {
+  relayerTransactionId: string;
+  state: string | null;
+  transactionHash: string | null;
+}
+
 export const OPERATION_KINDS = ["order", "cancel", "allowance", "redeem", "split", "merge", "withdraw"] as const;
 export type OperationKind = (typeof OPERATION_KINDS)[number];
 
@@ -163,13 +190,20 @@ interface ErrorBody {
   error?: { code?: string; message?: string; details?: Record<string, unknown> };
 }
 
-async function request<T>(method: string, path: string, body?: unknown, query?: Query, quiet401 = false): Promise<T> {
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  query?: Query,
+  quiet401 = false,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
   let res: Response;
   try {
     res = await fetch(buildUrl(path, query), {
       method,
       credentials: "same-origin",
-      headers: { "X-Requested-With": "dpmm-admin", "Content-Type": "application/json" },
+      headers: { "X-Requested-With": "dpmm-admin", "Content-Type": "application/json", ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -216,6 +250,14 @@ export const api = {
 
   listWallets: (q: Query) => get<Page<Wallet>>("/v1/wallets", q),
   getWallet: (id: string) => get<Wallet>(`/v1/wallets/${encodeURIComponent(id)}`),
+
+  walletBalances: (walletIds: string[]) => post<WalletBalance[]>("/v1/wallets/balances", { walletIds }),
+  createTransfer: (walletId: string, body: TransferBody, idempotencyKey: string) =>
+    request<TransferResult>("POST", `/v1/wallets/${encodeURIComponent(walletId)}/transfers`, body, undefined, false, {
+      "Idempotency-Key": idempotencyKey,
+    }),
+  transferStatus: (relayerTransactionId: string) =>
+    get<TransferStatus>(`/v1/transfers/${encodeURIComponent(relayerTransactionId)}`),
 
   listOperations: (q: Query) => get<Page<Operation>>("/v1/operations", q),
   listAudit: (q: Query) => get<Page<AuditEvent>>("/v1/audit", q),
