@@ -71,6 +71,26 @@ export class OperationRepository {
     return row ?? undefined;
   }
 
+  /**
+   * Deletes one batch of routine rows and returns how many went. Routine kinds are everything but
+   * `withdraw`; an `order` whose signer differs from the named wallet (a routed order) is held to
+   * the longer `routedCutoff`. The caller loops until a batch comes back short.
+   */
+  async purgeRoutine(cutoff: string, routedCutoff: string, batch: number): Promise<number> {
+    const result: unknown = await this.operations.query(
+      `DELETE FROM operations WHERE id IN (
+         SELECT id FROM operations
+         WHERE (kind IN ('cancel', 'allowance', 'redeem', 'split', 'merge') AND created_at < $1)
+            OR (kind = 'order' AND signer_wallet_id = wallet_id AND created_at < $1)
+            OR (kind = 'order' AND signer_wallet_id <> wallet_id AND created_at < $2)
+         ORDER BY created_at, id
+         LIMIT $3
+       ) RETURNING id`,
+      [cutoff, routedCutoff, batch],
+    );
+    return deletedCount(result);
+  }
+
   async query(filter: OperationFilter, limit: number, offset: number): Promise<OperationPage> {
     const query = this.operations.createQueryBuilder("o");
     if (filter.walletId) query.andWhere("o.wallet_id = :walletId", { walletId: filter.walletId });
@@ -86,4 +106,9 @@ export class OperationRepository {
       .getManyAndCount();
     return { operations: rows, total };
   }
+}
+
+/** node-postgres via TypeORM answers a raw `DELETE … RETURNING` as `[rows, affectedCount]`. */
+function deletedCount(result: unknown): number {
+  return (result as [unknown[], number])[1];
 }

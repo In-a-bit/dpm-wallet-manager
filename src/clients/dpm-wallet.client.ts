@@ -8,7 +8,12 @@ import type {
   UpstreamAddress,
   UpstreamAddressPage,
   UpstreamAttestation,
+  UpstreamAuditExportPage,
+  UpstreamAuditExportQuery,
+  UpstreamAuditScope,
   UpstreamCollateralBalance,
+  UpstreamDeleted,
+  UpstreamDeleteArchivedRequest,
   UpstreamHealth,
   UpstreamMetaTxKind,
   UpstreamMetaTxRequest,
@@ -162,6 +167,35 @@ export class DpmWalletClient {
       "GET",
       `/v1/relay/${encodeURIComponent(id)}?from=${encodeURIComponent(from)}`,
     );
+  }
+
+  /**
+   * Deletes one batch of dpm-wallet's routine success audit rows older than `before`. dpm-wallet
+   * never picks its own cutoff; the caller loops until a batch comes back short.
+   */
+  purgeRoutineAudit(before: string, batch: number): Promise<UpstreamDeleted> {
+    return this.request("POST", "/v1/maintenance/purge-routine-audit", { body: { before, batch } });
+  }
+
+  /** The highest audit id older than `before` and how many rows that scope holds. */
+  auditScope(before: string): Promise<UpstreamAuditScope> {
+    return this.request("GET", `/v1/maintenance/audit-scope?before=${encodeURIComponent(before)}`);
+  }
+
+  /** One page of the audit rows an archive covers, in id order. */
+  auditExport(query: UpstreamAuditExportQuery): Promise<UpstreamAuditExportPage> {
+    const params = [
+      `before=${encodeURIComponent(query.before)}`,
+      `maxId=${query.maxId}`,
+      ...(query.cursor === undefined ? [] : [`cursor=${encodeURIComponent(query.cursor)}`]),
+      ...(query.limit === undefined ? [] : [`limit=${query.limit}`]),
+    ];
+    return this.request("GET", `/v1/maintenance/audit-export?${params.join("&")}`);
+  }
+
+  /** Deletes one batch of rows an operator archived: those at or below `maxId` and before `before`. */
+  deleteArchivedAudit(request: UpstreamDeleteArchivedRequest): Promise<UpstreamDeleted> {
+    return this.request("POST", "/v1/maintenance/delete-archived-audit", { body: request });
   }
 
   private async request<T>(

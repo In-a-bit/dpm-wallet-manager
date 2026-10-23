@@ -110,6 +110,8 @@ export async function startHarness(
       ...(ownedDatabase ? { DATABASE_URL: ownedDatabase.url } : {}),
       DPM_WALLET_BASE_URL: upstreamBaseUrl,
       DPM_WALLET_API_KEY: FAKE_UPSTREAM_API_KEY,
+      // The retention timer's first run is 60 s out; booted apps in tests never trim on their own.
+      RETENTION_ENABLED: "false",
       // Specs own key setup via the harness. Only the boot-adoption e2e opts in by setting
       // BOOTSTRAP_ADMIN_KEY (and then StartupService must be allowed to run).
       ...(overrides.DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY

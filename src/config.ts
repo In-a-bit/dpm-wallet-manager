@@ -53,7 +53,24 @@ export type Config = {
    * `http://localhost`, where a Secure cookie would never be sent back; turn it on behind HTTPS.
    */
   uiCookieSecure: boolean;
+  /**
+   * Retention defaults from the environment. A value set on the dashboard (stored in
+   * `platform_settings`) wins; these apply wherever the dashboard has said nothing.
+   */
+  retentionDefaults: RetentionDefaults;
 };
+
+export type RetentionDefaults = {
+  /** `false` stops the scheduled trimming; the boot purge of idempotency keys still runs. */
+  enabled: boolean;
+  /** Routine operation rows and routine success audit rows older than this are deleted. */
+  routineDays: number;
+  /** Manager `order` rows whose signer differs from the named wallet. */
+  routedOrderDays: number;
+};
+
+export const RETENTION_MIN_DAYS = 1;
+export const RETENTION_MAX_DAYS = 3650;
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
@@ -78,7 +95,34 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     walletRefPrefix: optional(env.WALLET_REF_PREFIX) ?? "mgr:",
     corsOrigins: parseList(env.CORS_ORIGINS),
     uiCookieSecure: optional(env.UI_COOKIE_SECURE) === "true",
+    retentionDefaults: parseRetentionDefaults(env),
   };
+}
+
+function parseRetentionDefaults(env: NodeJS.ProcessEnv): RetentionDefaults {
+  const routineDays = parseDays("OPERATIONS_RETENTION_DAYS", env.OPERATIONS_RETENTION_DAYS, 90);
+  const routedOrderDays = parseDays(
+    "ROUTED_ORDER_RETENTION_DAYS",
+    env.ROUTED_ORDER_RETENTION_DAYS,
+    365,
+  );
+  if (routedOrderDays < routineDays) {
+    throw new Error("ROUTED_ORDER_RETENTION_DAYS must not be below OPERATIONS_RETENTION_DAYS");
+  }
+  const enabled = parseEnum("RETENTION_ENABLED", env.RETENTION_ENABLED, ["true", "false"], "true");
+  return { enabled: enabled === "true", routineDays, routedOrderDays };
+}
+
+/** A whole number of days within the retention bounds; empty counts as unset. */
+function parseDays(name: string, raw: string | undefined, fallback: number): number {
+  const text = optional(raw);
+  const value = text === undefined ? fallback : Number(text);
+  if (!Number.isInteger(value) || value < RETENTION_MIN_DAYS || value > RETENTION_MAX_DAYS) {
+    throw new Error(
+      `${name} must be a whole number of days from ${RETENTION_MIN_DAYS} to ${RETENTION_MAX_DAYS}`,
+    );
+  }
+  return value;
 }
 
 function optional(value: string | undefined): string | undefined {

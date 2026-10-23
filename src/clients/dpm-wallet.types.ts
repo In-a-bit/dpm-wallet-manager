@@ -133,3 +133,25 @@ export type UpstreamHealth = {
   status: string;
   vault?: { mode: string; initialized: boolean; ready: boolean };
 };
+
+/** One dpm-wallet audit row as the maintenance export returns it. */
+export type UpstreamAuditEvent = {
+  id: number;
+  [field: string]: unknown;
+};
+
+export type UpstreamAuditScope = { maxId: number; rows: number };
+
+export type UpstreamAuditExportQuery = {
+  before: string;
+  maxId: number;
+  /** The last id of the previous page, as a string. */
+  cursor?: string;
+  limit?: number;
+};
+
+export type UpstreamAuditExportPage = { items: UpstreamAuditEvent[]; nextCursor: string | null };
+
+export type UpstreamDeleteArchivedRequest = { before: string; maxId: number; batch: number };
+
+export type UpstreamDeleted = { deleted: number };

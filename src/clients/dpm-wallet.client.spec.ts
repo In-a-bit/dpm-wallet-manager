@@ -102,4 +102,60 @@ describe("DpmWalletClient", () => {
       FAKE_UPSTREAM_API_KEY,
     );
   });
+
+  describe("maintenance endpoints", () => {
+    it("purgeRoutineAudit posts before and batch", async () => {
+      const result = await client.purgeRoutineAudit("2026-01-01T00:00:00.000Z", 5000);
+      expect(result).toEqual({ deleted: 0 });
+      const last = upstream.requests.at(-1);
+      expect(last?.method).toBe("POST");
+      expect(last?.path).toBe("/v1/maintenance/purge-routine-audit");
+      expect(last?.body).toEqual({ before: "2026-01-01T00:00:00.000Z", batch: 5000 });
+    });
+
+    it("auditScope sends before as a query parameter", async () => {
+      expect(await client.auditScope("2026-01-01T00:00:00.000Z")).toEqual({ maxId: 0, rows: 0 });
+      expect(upstream.requests.at(-1)?.path).toBe(
+        "/v1/maintenance/audit-scope?before=2026-01-01T00%3A00%3A00.000Z",
+      );
+    });
+
+    it("auditExport sends the cursor and limit only when given", async () => {
+      await client.auditExport({ before: "2026-01-01T00:00:00.000Z", maxId: 9 });
+      expect(upstream.requests.at(-1)?.path).toBe(
+        "/v1/maintenance/audit-export?before=2026-01-01T00%3A00%3A00.000Z&maxId=9",
+      );
+      const page = await client.auditExport({
+        before: "2026-01-01T00:00:00.000Z",
+        maxId: 9,
+        cursor: "5",
+        limit: 500,
+      });
+      expect(page).toEqual({ items: [], nextCursor: null });
+      expect(upstream.requests.at(-1)?.path).toContain("&cursor=5&limit=500");
+    });
+
+    it("deleteArchivedAudit posts before, maxId and batch", async () => {
+      expect(
+        await client.deleteArchivedAudit({
+          before: "2026-01-01T00:00:00.000Z",
+          maxId: 9,
+          batch: 100,
+        }),
+      ).toEqual({ deleted: 0 });
+      expect(upstream.requests.at(-1)?.body).toEqual({
+        before: "2026-01-01T00:00:00.000Z",
+        maxId: 9,
+        batch: 100,
+      });
+    });
+
+    it("maps an upstream refusal to UPSTREAM_REJECTED", async () => {
+      upstream.failNextWith(400, "VALIDATION_FAILED", "too recent");
+      await expect(client.purgeRoutineAudit(new Date().toISOString(), 10)).rejects.toMatchObject({
+        code: "UPSTREAM_REJECTED",
+        upstreamCode: "VALIDATION_FAILED",
+      });
+    });
+  });
 });

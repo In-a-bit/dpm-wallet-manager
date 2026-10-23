@@ -51,6 +51,25 @@ export class AuditRepository {
     });
   }
 
+  /**
+   * Deletes one batch of routine success events older than `cutoff` and returns how many went.
+   * Denials, failures and every other action are never touched.
+   */
+  async purgeRoutine(cutoff: string, batch: number): Promise<number> {
+    const result: unknown = await this.events.query(
+      `DELETE FROM audit_events WHERE id IN (
+         SELECT id FROM audit_events
+         WHERE outcome = 'success' AND created_at < $1
+           AND action IN ('sign.order', 'sign.cancel', 'meta.allowance', 'meta.redeem',
+                          'meta.split', 'meta.merge')
+         ORDER BY created_at, id
+         LIMIT $2
+       ) RETURNING id`,
+      [cutoff, batch],
+    );
+    return deletedCount(result);
+  }
+
   async query(filter: AuditFilter, limit: number, offset: number): Promise<AuditPage> {
     const query = this.events.createQueryBuilder("e");
     if (filter.action) query.andWhere("e.action = :action", { action: filter.action });
@@ -100,4 +119,9 @@ function parseDetail(detail: string | null): Record<string, unknown> | null {
   } catch {
     return { raw: detail };
   }
+}
+
+/** node-postgres via TypeORM answers a raw `DELETE … RETURNING` as `[rows, affectedCount]`. */
+function deletedCount(result: unknown): number {
+  return (result as [unknown[], number])[1];
 }

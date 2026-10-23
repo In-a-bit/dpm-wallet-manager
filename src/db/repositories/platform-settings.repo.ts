@@ -69,6 +69,14 @@ export class PlatformSettingsRepository {
       .execute();
   }
 
+  /** Removes an ordinary setting, so its reader falls back to the default. Absent is a no-op. */
+  async delete(key: string, executor?: Executor): Promise<void> {
+    if (WRITE_ONCE_KEYS.has(key)) {
+      throw new Error(`platform setting "${key}" is write-once and cannot be deleted`);
+    }
+    await this.repo(executor).delete({ key });
+  }
+
   /** When the value was first written — the burn timestamp for a write-once key. */
   async writtenAt(key: string): Promise<string | undefined> {
     const row = await this.settings.findOneBy({ key });

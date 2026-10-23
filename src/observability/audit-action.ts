@@ -19,6 +19,8 @@ export const AuditAction = {
   UserCreate: "user.create",
   UserUpdate: "user.update",
 
+  SettingsRetentionUpdate: "settings.retention_update",
+
   PlatformModeBurned: "platform.mode_burned",
   PlatformMasterWalletCreate: "platform.master_wallet_create",
   PlatformOperationsWalletCreate: "platform.operations_wallet_create",

@@ -205,6 +205,20 @@ export class FakeDpmWallet {
       };
     }
 
+    // Maintenance endpoints answer empty scopes: enough to exercise the client's request shape.
+    if (route === "/v1/maintenance/purge-routine-audit" && method === "POST") {
+      return { status: 200, body: { deleted: 0 } };
+    }
+    if (route === "/v1/maintenance/audit-scope" && method === "GET") {
+      return { status: 200, body: { maxId: 0, rows: 0 } };
+    }
+    if (route === "/v1/maintenance/audit-export" && method === "GET") {
+      return { status: 200, body: { items: [], nextCursor: null } };
+    }
+    if (route === "/v1/maintenance/delete-archived-audit" && method === "POST") {
+      return { status: 200, body: { deleted: 0 } };
+    }
+
     if (route === "/v1/addresses" && method === "POST") {
       const ref = readString(body, "ref");
       if (this.addresses.has(ref)) {
