@@ -20,6 +20,7 @@ export const AuditAction = {
   UserUpdate: "user.update",
 
   SettingsRetentionUpdate: "settings.retention_update",
+  SettingsStorageUpdate: "settings.storage_update",
 
   PlatformModeBurned: "platform.mode_burned",
   PlatformMasterWalletCreate: "platform.master_wallet_create",

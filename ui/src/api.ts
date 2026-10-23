@@ -139,6 +139,28 @@ export interface MintedApiKey extends ApiKey {
   key: string;
 }
 
+export type SettingSource = "default" | "environment" | "dashboard";
+
+export interface RetentionSettings {
+  enabled: boolean;
+  routineDays: number;
+  routedOrderDays: number;
+  archiveReminderDays: number;
+  sources: Record<"enabled" | "routineDays" | "routedOrderDays" | "archiveReminderDays", SettingSource>;
+  fixed: { idempotencyHours: number; logs: string };
+}
+export type RetentionPatch = Partial<{ [K in "enabled" | "routineDays" | "routedOrderDays" | "archiveReminderDays"]: RetentionSettings[K] | null }>;
+
+export interface StorageSettings {
+  warningPercent: number;
+  warningDays: number;
+  criticalPercent: number;
+  criticalDays: number;
+  alertWebhookUrl: string | null;
+  sources: Record<"warningPercent" | "warningDays" | "criticalPercent" | "criticalDays" | "alertWebhookUrl", SettingSource>;
+}
+export type StoragePatch = Partial<{ [K in Exclude<keyof StorageSettings, "sources">]: StorageSettings[K] | null }>;
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -263,6 +285,12 @@ export const api = {
 
   listOperations: (q: Query) => get<CursorPage<Operation>>("/v1/operations", q),
   listAudit: (q: Query) => get<CursorPage<AuditEvent>>("/v1/audit", q),
+
+  // Settings.
+  getRetentionSettings: () => get<RetentionSettings>("/v1/settings/retention"),
+  updateRetentionSettings: (body: RetentionPatch) => request<RetentionSettings>("PUT", "/v1/settings/retention", body),
+  getStorageSettings: () => get<StorageSettings>("/v1/settings/storage"),
+  updateStorageSettings: (body: StoragePatch) => request<StorageSettings>("PUT", "/v1/settings/storage", body),
 
   // API keys.
   listKeys: (q: Query) => get<Page<ApiKey>>("/v1/api-keys", q),

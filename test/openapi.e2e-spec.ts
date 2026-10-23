@@ -75,6 +75,10 @@ describe("openapi", () => {
     "GET /v1/ui-users",
     "POST /v1/ui-users",
     "PATCH /v1/ui-users/{id}",
+    "GET /v1/settings/retention",
+    "PUT /v1/settings/retention",
+    "GET /v1/settings/storage",
+    "PUT /v1/settings/storage",
   ];
 
   /**
@@ -208,7 +212,7 @@ describe("openapi", () => {
           !PUBLIC_ROUTES.includes(route) &&
           // A read despite the verb: no `@Roles`, so no 403.
           route !== "POST /v1/wallets/balances" &&
-          (/^(POST|PATCH|DELETE)/.test(route) ||
+          (/^(POST|PUT|PATCH|DELETE)/.test(route) ||
             route === "GET /v1/api-keys" ||
             route.startsWith("GET /v1/api-keys/{") ||
             route === "GET /v1/ui-users"),

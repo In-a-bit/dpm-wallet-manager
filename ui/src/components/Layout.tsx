@@ -13,6 +13,7 @@ const NAV: NavItem[] = [
   { path: "/wallets", label: "Wallets" },
   { path: "/operations", label: "Operations" },
   { path: "/audit", label: "Audit log" },
+  { path: "/storage", label: "Storage" },
   { path: "/api-keys", label: "API keys", ownerOnly: true },
   { path: "/users", label: "Users", ownerOnly: true },
   { path: "/account", label: "My account" },

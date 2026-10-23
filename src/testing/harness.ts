@@ -58,6 +58,7 @@ export type Harness = {
   readonlyKey: string;
   get: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   post: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
+  put: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   patch: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   del: <T = any>(path: string, options?: RequestOptions) => Promise<HttpResult<T>>;
   /**
@@ -180,7 +181,7 @@ export async function startHarness(
     };
 
     const send = async <T>(
-      method: "get" | "post" | "patch" | "delete",
+      method: "get" | "post" | "put" | "patch" | "delete",
       path: string,
       requestOptions: RequestOptions = {},
     ): Promise<HttpResult<T>> => {
@@ -219,6 +220,7 @@ export async function startHarness(
       readonlyKey,
       get: (path, requestOptions) => send("get", path, requestOptions),
       post: (path, requestOptions) => send("post", path, requestOptions),
+      put: (path, requestOptions) => send("put", path, requestOptions),
       patch: (path, requestOptions) => send("patch", path, requestOptions),
       del: (path, requestOptions) => send("delete", path, requestOptions),
       // Never `app.close()` on its own from a spec: the stand-in HTTP server would stay listening

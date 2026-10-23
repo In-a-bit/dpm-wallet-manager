@@ -8,6 +8,7 @@ import { AuditPage } from "./pages/Audit";
 import { LoginPage } from "./pages/Login";
 import { OperationsPage } from "./pages/Operations";
 import { OverviewPage } from "./pages/Overview";
+import { StoragePage } from "./pages/Storage";
 import { UsersPage } from "./pages/Users";
 import { WalletDetailPage } from "./pages/WalletDetail";
 import { WalletsPage } from "./pages/Wallets";
@@ -72,6 +73,7 @@ function Routes() {
   if (wallet) return <WalletDetailPage id={wallet.id} />;
   if (path === "/operations") return <OperationsPage />;
   if (path === "/audit") return <AuditPage />;
+  if (path === "/storage") return <StoragePage />;
   if (path === "/api-keys" && isOwner) return <ApiKeysPage />;
   if (path === "/users" && isOwner) return <UsersPage />;
   if (path === "/account") return <AccountPage />;

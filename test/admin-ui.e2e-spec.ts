@@ -320,6 +320,8 @@ function send(harness: Harness, method: string, path: string, apiKey: string) {
       return harness.get(path, { apiKey });
     case "POST":
       return harness.post(path, options);
+    case "PUT":
+      return harness.put(path, options);
     case "PATCH":
       return harness.patch(path, options);
     default:
