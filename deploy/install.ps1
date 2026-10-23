@@ -13,7 +13,10 @@ $Dir = if ($env:DPM_CUSTODY_DIR) { $env:DPM_CUSTODY_DIR } else { Join-Path $HOME
 $Release = if ($env:DPM_CUSTODY_RELEASE) { $env:DPM_CUSTODY_RELEASE } else { "latest" }
 $Releases = "https://github.com/In-a-bit/dpm-wallet-manager/releases"
 
+function Remove-Stage { if ($script:Stage) { Remove-Item $script:Stage -Recurse -Force -ErrorAction SilentlyContinue } }
+
 function Fail($message) {
+  Remove-Stage
   Write-Host ""
   Write-Host "  X $message" -ForegroundColor Red
   Write-Host ""
@@ -34,6 +37,14 @@ function Test-Docker {
 # half-written in the install folder.
 $Stage = Join-Path ([System.IO.Path]::GetTempPath()) ("dpm-custody-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+# Any other error (a failed download, say) also removes the temporary folder.
+trap { Remove-Stage; break }
+
+# Downloads $url to $out; file:// is a plain copy (Invoke-WebRequest has no file scheme in PowerShell 7).
+function Get-Remote($url, $out) {
+  if ($url -like "file://*") { Copy-Item ([uri]$url).LocalPath $out -ErrorAction Stop; return }
+  Invoke-WebRequest -UseBasicParsing $url -OutFile $out -ErrorAction Stop
+}
 
 function Get-ReleasesBase {
   if ($env:DPM_CUSTODY_RELEASES_URL) { return $env:DPM_CUSTODY_RELEASES_URL.TrimEnd("/") }
@@ -43,17 +54,33 @@ function Get-ReleasesBase {
 
 function Get-InstallFile($name) {
   if ($env:DPM_CUSTODY_SOURCE) { Copy-Item (Join-Path $env:DPM_CUSTODY_SOURCE $name) (Join-Path $Stage $name); return }
-  Invoke-WebRequest -UseBasicParsing "$(Get-ReleasesBase)/$name" -OutFile (Join-Path $Stage $name)
+  Get-Remote "$(Get-ReleasesBase)/$name" (Join-Path $Stage $name)
 }
 
 # Checks the staged files against the release's SHA256SUMS. A release without one (older
 # releases) is accepted with a warning; a mismatch aborts before anything is installed.
 function Test-InstallFiles($names) {
   $sums = Join-Path $Stage "SHA256SUMS"
-  try {
-    if ($env:DPM_CUSTODY_SOURCE) { Copy-Item (Join-Path $env:DPM_CUSTODY_SOURCE "SHA256SUMS") $sums -ErrorAction Stop }
-    else { Invoke-WebRequest -UseBasicParsing "$(Get-ReleasesBase)/SHA256SUMS" -OutFile $sums -ErrorAction Stop }
-  } catch { Remove-Item $sums -ErrorAction SilentlyContinue }
+  # Only a real "not found" means the release has no SHA256SUMS; any other failure aborts.
+  if ($env:DPM_CUSTODY_SOURCE) {
+    $src = Join-Path $env:DPM_CUSTODY_SOURCE "SHA256SUMS"
+    if (Test-Path $src) {
+      try { Copy-Item $src $sums -ErrorAction Stop } catch { Fail "Could not read SHA256SUMS from $env:DPM_CUSTODY_SOURCE." }
+    }
+  } else {
+    $url = "$(Get-ReleasesBase)/SHA256SUMS"
+    if ($url -like "file://*" -and -not (Test-Path ([uri]$url).LocalPath)) {
+      # missing file: no SHA256SUMS
+    } else {
+      try { Get-Remote $url $sums }
+      catch {
+        $status = $null
+        if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        if ($status -eq 404) { Remove-Item $sums -ErrorAction SilentlyContinue }
+        else { Fail "Could not download SHA256SUMS ($url). Nothing was installed." }
+      }
+    }
+  }
   if (-not (Test-Path $sums)) {
     Write-Host "  ! This release has no SHA256SUMS; the downloads could not be checked." -ForegroundColor Yellow
     return

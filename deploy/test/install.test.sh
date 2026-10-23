@@ -10,6 +10,13 @@ ok() { echo "ok   - $1"; }
 bad() { echo "FAIL - $1"; fails=$((fails + 1)); }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 
+# sha256 FILE... prints sha256sum-format lines with whichever tool exists (like install.sh).
+sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+# set_version FILE VERSION rewrites RELEASE_VERSION portably (no sed -i).
+set_version() { sed "s/^RELEASE_VERSION=.*/RELEASE_VERSION=$2/" "$1" >"$1.tmp" && mv "$1.tmp" "$1"; }
+SUMFILES="install.sh install.ps1 compose.yml versions.env dpm-custody"
+resum() { (cd "$rel" && sha256 $SUMFILES >SHA256SUMS); }
+
 mkdir -p "$T/bin"
 cat >"$T/bin/docker" <<'S'
 #!/bin/sh
@@ -25,9 +32,9 @@ export PATH="$T/bin:$PATH" DOCKER_LOG="$T/docker.log"
 rel="$T/rel"
 mkdir -p "$rel"
 for f in install.sh install.ps1 compose.yml versions.env dpm-custody; do cp "$HERE/$f" "$rel/$f"; done
-sed -i 's/^RELEASE_VERSION=.*/RELEASE_VERSION=9.9.9/' "$rel/versions.env"
+set_version "$rel/versions.env" 9.9.9
 echo "echo custody-v2" >>"$rel/dpm-custody"
-(cd "$rel" && sha256sum install.sh install.ps1 compose.yml versions.env dpm-custody >SHA256SUMS)
+resum
 
 run() { # dir, extra env...
   local d="$1"; shift
@@ -37,8 +44,8 @@ run() { # dir, extra env...
 
 # 1. wrong checksum aborts before anything is written
 cp "$rel/SHA256SUMS" "$T/good.sums"
-sed 's/^[0-9a-f]/0/' "$T/good.sums" >"$rel/SHA256SUMS"
-sed -i '0,/^0/s//1/' "$rel/SHA256SUMS"
+# corrupt the digest of a downloaded file (dpm-custody)
+awk '/ dpm-custody$/{ $0 = "0" substr($0, 2) } {print}' "$T/good.sums" >"$rel/SHA256SUMS"
 d1="$T/i1"
 out="$(run "$d1" 2>&1)"; rc=$?
 check "wrong SHA256SUMS exits non-zero" '[ $rc -ne 0 ]'
@@ -63,12 +70,12 @@ check "no SHA256SUMS warns" 'echo "$out" | grep -q "no SHA256SUMS"'
 check "empty RELEASE_VERSION -> unknown" 'grep -qx "DPM_CUSTODY_VERSION=unknown" "$d3/.env"'
 
 # 4. existing-install re-run: only dpm-custody replaced, .env byte-identical
-cp "$T/good.sums" "$rel/SHA256SUMS"; sed -i 's/^RELEASE_VERSION=.*/RELEASE_VERSION=9.9.9/' "$rel/versions.env"
-(cd "$rel" && sha256sum install.sh install.ps1 compose.yml versions.env dpm-custody >SHA256SUMS)
+cp "$T/good.sums" "$rel/SHA256SUMS"; set_version "$rel/versions.env" 9.9.9
+resum
 echo "# local edit" >>"$d1/compose.yml"
 cp "$d1/.env" "$T/env.before"; cp "$d1/compose.yml" "$T/compose.before"; cp "$d1/versions.env" "$T/ver.before"
 echo "echo custody-v3" >>"$rel/dpm-custody"
-(cd "$rel" && sha256sum install.sh install.ps1 compose.yml versions.env dpm-custody >SHA256SUMS)
+resum
 out="$(run "$d1" 2>&1)"; rc=$?
 check "re-run exits 0" '[ $rc -eq 0 ]'
 check "re-run keeps .env byte-identical" 'cmp -s "$d1/.env" "$T/env.before"'
@@ -83,7 +90,38 @@ echo "tampered" >>"$rel/dpm-custody"
 out="$(run "$d1" 2>&1)"; rc=$?
 check "re-run with mismatch aborts, dpm-custody untouched" '[ $rc -ne 0 ] && cmp -s "$d1/dpm-custody" "$T/cust.before"'
 
-# 6. compose validates (needs a real docker; skipped when absent)
+# 6. SHA256SUMS fetch failures. Only "not found" skips verification; anything else aborts.
+resum
+d6="$T/i6"; mkdir -p "$T/sums-dir-rel"; for f in $SUMFILES; do cp "$rel/$f" "$T/sums-dir-rel/$f"; done
+mkdir "$T/sums-dir-rel/SHA256SUMS"   # present but unreadable as a file
+out="$(run "$d6" DPM_CUSTODY_RELEASES_URL="file://$T/sums-dir-rel" 2>&1)"; rc=$?
+check "unreadable SHA256SUMS aborts, nothing written" '[ $rc -ne 0 ] && [ ! -e "$d6/.env" ] && [ -z "$(ls -A "$d6" 2>/dev/null)" ]'
+# http shim: curl that serves $rel and answers SHA256SUMS with $SUMS_CODE
+mkdir -p "$T/curlbin"
+cat >"$T/curlbin/curl" <<'S'
+#!/bin/sh
+out=""; url=""; wcode=0
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; -w) wcode=1; shift ;; -*) ;; *) url="$1" ;; esac
+  shift
+done
+name="${url##*/}"
+code=200
+[ "$name" = SHA256SUMS ] && code="$SUMS_CODE"
+[ "$code" = 200 ] && cp "$REL/$name" "$out"
+[ "$code" != 200 ] && : >"$out"
+[ "$wcode" = 1 ] && printf '%s' "$code"
+exit 0
+S
+chmod +x "$T/curlbin/curl"
+d7="$T/i7"
+out="$(PATH="$T/curlbin:$PATH" REL="$rel" SUMS_CODE=404 run "$d7" DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
+check "HTTP 404 SHA256SUMS: warns and proceeds" '[ $rc -eq 0 ] && [ -f "$d7/.env" ] && echo "$out" | grep -q "no SHA256SUMS"'
+d8="$T/i8"
+out="$(PATH="$T/curlbin:$PATH" REL="$rel" SUMS_CODE=500 run "$d8" DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
+check "HTTP 500 SHA256SUMS: aborts, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not download SHA256SUMS" && [ -z "$(ls -A "$d8" 2>/dev/null)" ]'
+
+# 7. compose validates (needs a real docker; skipped when absent)
 if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/docker ]; then
   if PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
     docker compose -f "$HERE/compose.yml" config >/dev/null 2>"$T/cfg.err"; then ok "compose config validates"

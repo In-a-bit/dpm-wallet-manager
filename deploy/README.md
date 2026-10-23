@@ -114,7 +114,7 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
 
 Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody` and
 a `SHA256SUMS` file. The installer checks every file it downloads against `SHA256SUMS` and stops
-without writing anything if one differs; a release without `SHA256SUMS` installs with a warning.
+without writing anything if one differs; a release without `SHA256SUMS` (the download answers "not found") installs with a warning, while any other failure to fetch it stops the install. `SHA256SUMS` protects against corrupt or mixed downloads, not against a compromised release.
 `versions.env` pins both images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`,
 which the installer writes to `.env` as `DPM_CUSTODY_VERSION`.
 

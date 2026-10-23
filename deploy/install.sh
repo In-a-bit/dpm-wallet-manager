@@ -82,12 +82,35 @@ sha_check() {
 # verify_files NAME... checks the staged files against the release's SHA256SUMS. A release
 # without one (older releases) is accepted with a warning; a mismatch aborts.
 verify_files() {
+  # Only a real "not found" means the release has no SHA256SUMS; any other failure aborts.
+  rm -f "$STAGE/SHA256SUMS"
   if [ -n "${DPM_CUSTODY_SOURCE:-}" ]; then
-    [ -f "$DPM_CUSTODY_SOURCE/SHA256SUMS" ] && cp "$DPM_CUSTODY_SOURCE/SHA256SUMS" "$STAGE/SHA256SUMS" || true
+    if [ -e "$DPM_CUSTODY_SOURCE/SHA256SUMS" ]; then
+      cp "$DPM_CUSTODY_SOURCE/SHA256SUMS" "$STAGE/SHA256SUMS" || fail "Could not read SHA256SUMS from $DPM_CUSTODY_SOURCE."
+    fi
   else
-    curl -fsSL "$(releases_base)/SHA256SUMS" -o "$STAGE/SHA256SUMS" 2>/dev/null || rm -f "$STAGE/SHA256SUMS"
+    sums_url="$(releases_base)/SHA256SUMS"
+    case "$sums_url" in
+      file://*)
+        if [ -e "${sums_url#file://}" ]; then
+          curl -sS "$sums_url" -o "$STAGE/SHA256SUMS" || fail "Could not download SHA256SUMS ($sums_url). Nothing was installed."
+        fi
+        ;;
+      *)
+        code="$(curl -sSL -o "$STAGE/SHA256SUMS" -w '%{http_code}' "$sums_url")" ||
+          fail "Could not download SHA256SUMS ($sums_url). Check the internet connection. Nothing was installed."
+        case "$code" in
+          200) ;;
+          404) rm -f "$STAGE/SHA256SUMS" ;;
+          *) fail "Could not download SHA256SUMS ($sums_url): HTTP $code. Nothing was installed." ;;
+        esac
+        ;;
+    esac
   fi
-  if [ ! -s "$STAGE/SHA256SUMS" ]; then
+  if [ -e "$STAGE/SHA256SUMS" ] && [ ! -s "$STAGE/SHA256SUMS" ]; then
+    fail "SHA256SUMS was downloaded but is empty or unreadable. Nothing was installed."
+  fi
+  if [ ! -e "$STAGE/SHA256SUMS" ]; then
     say "  ! This release has no SHA256SUMS; the downloads could not be checked."
     return 0
   fi
