@@ -1,5 +1,7 @@
 export { API_KEY_ROLES, API_KEY_STATUSES, ApiKeyEntity } from "./api-key.entity";
 export type { ApiKeyRole, ApiKeyStatus } from "./api-key.entity";
+export { ARCHIVE_STATUSES, ArchiveEntity } from "./archive.entity";
+export type { ArchiveScope, ArchiveStatus } from "./archive.entity";
 export { AuditEventEntity } from "./audit-event.entity";
 export { IdempotencyKeyEntity } from "./idempotency-key.entity";
 export { OPERATION_KINDS, OperationEntity } from "./operation.entity";

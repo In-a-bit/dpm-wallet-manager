@@ -3,6 +3,7 @@ import { Global, Inject, Module, type OnApplicationShutdown } from "@nestjs/comm
 import type { Config } from "./config";
 import { closeDatabase, openDatabase, type Db } from "./db/client";
 import { ApiKeyRepository } from "./db/repositories/api-key.repo";
+import { ArchiveRepository } from "./db/repositories/archive.repo";
 import { AuditRepository } from "./db/repositories/audit.repo";
 import { IdempotencyRepository } from "./db/repositories/idempotency.repo";
 import { OperationRepository } from "./db/repositories/operation.repo";
@@ -15,6 +16,7 @@ import { CONFIG, DB, TRANSACTION, type Transaction } from "./tokens";
 
 const REPOSITORIES = [
   ApiKeyRepository,
+  ArchiveRepository,
   AuditRepository,
   IdempotencyRepository,
   OperationRepository,

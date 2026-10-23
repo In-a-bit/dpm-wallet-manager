@@ -11,6 +11,9 @@ import type {
 
 export const FAKE_UPSTREAM_API_KEY = "upstream-test-key";
 
+/** One dpm-wallet audit row, as `GET /v1/maintenance/audit-export` returns it. */
+export type FakeAuditRow = { id: number; createdAt: string; action: string; outcome: string };
+
 export type RecordedRequest = {
   method: string;
   path: string;
@@ -81,6 +84,16 @@ export class FakeDpmWallet {
   /** The last body `/v1/meta-tx/*` answered with, so a relay can be compared against it. */
   lastSigned: Record<string, unknown> | undefined;
 
+  /**
+   * dpm-wallet's important audit rows (the ones only an archive removes), as its maintenance
+   * endpoints see them. dpm-wallet owns the important/routine predicate; this fake holds only the
+   * rows that already pass it.
+   */
+  readonly importantAudit: FakeAuditRow[] = [];
+
+  /** When set, `GET /v1/maintenance/audit-export` waits for it before answering. */
+  holdExport: Promise<void> | undefined;
+
   /** Relayed transaction ids, against the `from` they were submitted with. */
   private readonly relayed = new Map<string, string>();
 
@@ -138,6 +151,8 @@ export class FakeDpmWallet {
     this.failRelayWith = undefined;
     this.lastSigned = undefined;
     this.relayed.clear();
+    this.importantAudit.length = 0;
+    this.holdExport = undefined;
   }
 
   /** Sets what `POST /v1/balances` reports for an address. */
@@ -181,6 +196,8 @@ export class FakeDpmWallet {
       return send(response, 200, this.idempotent.get(idempotencyKey));
     }
 
+    if (route === "/v1/maintenance/audit-export" && this.holdExport) await this.holdExport;
+
     const result = this.route(request.method ?? "GET", route, body, path);
     if (!result) {
       return send(response, 404, { error: { code: "NOT_FOUND", message: `no route ${route}` } });
@@ -205,18 +222,52 @@ export class FakeDpmWallet {
       };
     }
 
-    // Maintenance endpoints answer empty scopes: enough to exercise the client's request shape.
-    if (route === "/v1/maintenance/purge-routine-audit" && method === "POST") {
-      return { status: 200, body: { deleted: 0 } };
-    }
-    if (route === "/v1/maintenance/audit-scope" && method === "GET") {
-      return { status: 200, body: { maxId: 0, rows: 0 } };
-    }
-    if (route === "/v1/maintenance/audit-export" && method === "GET") {
-      return { status: 200, body: { items: [], nextCursor: null } };
-    }
-    if (route === "/v1/maintenance/delete-archived-audit" && method === "POST") {
-      return { status: 200, body: { deleted: 0 } };
+    // Maintenance endpoints, with dpm-wallet's semantics over `importantAudit`.
+    if (route.startsWith("/v1/maintenance/")) {
+      const query = new URLSearchParams(path.split("?")[1] ?? "");
+      const before = method === "GET" ? (query.get("before") ?? "") : readString(body, "before");
+      // dpm-wallet's guard: a cutoff newer than 24 h ago is refused.
+      if (!(Date.parse(before) <= Date.now() - 24 * 60 * 60_000)) {
+        return {
+          status: 400,
+          body: { error: { code: "VALIDATION_FAILED", message: "before must be 24 h old" } },
+        };
+      }
+      const older = this.importantAudit
+        .filter((row) => Date.parse(row.createdAt) < Date.parse(before))
+        .sort((a, b) => a.id - b.id);
+      if (route === "/v1/maintenance/purge-routine-audit" && method === "POST") {
+        return { status: 200, body: { deleted: 0 } };
+      }
+      if (route === "/v1/maintenance/audit-scope" && method === "GET") {
+        return {
+          status: 200,
+          body: { maxId: Math.max(0, ...older.map((row) => row.id)), rows: older.length },
+        };
+      }
+      if (route === "/v1/maintenance/audit-export" && method === "GET") {
+        const maxId = Number(query.get("maxId"));
+        const after = Number(query.get("cursor") ?? 0);
+        const limit = Number(query.get("limit") ?? 1000);
+        const items = older.filter((row) => row.id <= maxId && row.id > after).slice(0, limit);
+        const last = items.at(-1);
+        const nextCursor = last && items.length === limit ? String(last.id) : null;
+        return { status: 200, body: { items, nextCursor } };
+      }
+      if (route === "/v1/maintenance/delete-archived-audit" && method === "POST") {
+        const maxId = Number(body?.maxId);
+        const batch = Number(body?.batch);
+        const doomed = new Set(
+          older
+            .filter((row) => row.id <= maxId)
+            .slice(0, batch)
+            .map((row) => row.id),
+        );
+        for (let i = this.importantAudit.length - 1; i >= 0; i--) {
+          if (doomed.has(this.importantAudit[i]?.id ?? -1)) this.importantAudit.splice(i, 1);
+        }
+        return { status: 200, body: { deleted: doomed.size } };
+      }
     }
 
     if (route === "/v1/addresses" && method === "POST") {

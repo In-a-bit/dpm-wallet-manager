@@ -11,6 +11,30 @@ import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { AuditEventEntity } from "../entities";
 
+/** Success rows of these actions are routine: retention trims them on a schedule. */
+export const ROUTINE_AUDIT_ACTIONS = [
+  "sign.order",
+  "sign.cancel",
+  "meta.allowance",
+  "meta.redeem",
+  "meta.split",
+  "meta.merge",
+] as const;
+
+/** SQL over `audit_events` (unaliased) selecting the routine rows retention may delete. */
+export const ROUTINE_AUDIT_SQL = `(outcome = 'success' AND action IN (${ROUTINE_AUDIT_ACTIONS.map(
+  (action) => `'${action}'`,
+).join(", ")}))`;
+
+/**
+ * SQL selecting the important rows only an archive removes: everything not routine, except the
+ * archive's own `archive.*` trail, which is never archived or deleted.
+ */
+export const IMPORTANT_AUDIT_SQL = `(NOT ${ROUTINE_AUDIT_SQL} AND action NOT LIKE 'archive.%')`;
+
+/** An archive's fixed scope over this table: important rows before `before`, ids up to `maxId`. */
+export type ArchiveBound = { before: string; maxId: number };
+
 export type AuditEvent = {
   id: number;
   actorKeyId: string | null;
@@ -70,13 +94,53 @@ export class AuditRepository {
     const result: unknown = await this.events.query(
       `DELETE FROM audit_events WHERE id IN (
          SELECT id FROM audit_events
-         WHERE outcome = 'success' AND created_at < $1
-           AND action IN ('sign.order', 'sign.cancel', 'meta.allowance', 'meta.redeem',
-                          'meta.split', 'meta.merge')
+         WHERE ${ROUTINE_AUDIT_SQL} AND created_at < $1
          ORDER BY created_at, id
          LIMIT $2
        ) RETURNING id`,
       [cutoff, batch],
+    );
+    return deletedCount(result);
+  }
+
+  /** The highest id and the row count of the important rows older than `before`, right now. */
+  async importantScope(before: string): Promise<{ maxId: number; rows: number }> {
+    const rows: { maxId: number | null; rows: number }[] = await this.events.query(
+      `SELECT MAX(id) AS "maxId", COUNT(*)::int AS rows FROM audit_events
+       WHERE ${IMPORTANT_AUDIT_SQL} AND created_at < $1`,
+      [before],
+    );
+    return { maxId: rows[0]?.maxId ?? 0, rows: rows[0]?.rows ?? 0 };
+  }
+
+  /** One page of an archive's rows, in id order, after `afterId`. */
+  async importantPage(bound: ArchiveBound, afterId: number, limit: number): Promise<AuditEvent[]> {
+    const rows = await this.events
+      .createQueryBuilder("e")
+      // Unqualified columns are unambiguous with one table in the query.
+      .where(IMPORTANT_AUDIT_SQL)
+      .andWhere("e.created_at < :before", { before: bound.before })
+      .andWhere("e.id <= :maxId", { maxId: bound.maxId })
+      .andWhere("e.id > :afterId", { afterId })
+      .orderBy("e.id", "ASC")
+      .take(limit)
+      .getMany();
+    return rows.map(toEvent);
+  }
+
+  /**
+   * Deletes one batch of an archive's rows (lowest ids first) and returns how many went. The rows
+   * are exactly those `importantPage` exported: nothing newer than `maxId` is ever touched.
+   */
+  async deleteArchived(bound: ArchiveBound, batch: number): Promise<number> {
+    const result: unknown = await this.events.query(
+      `DELETE FROM audit_events WHERE id IN (
+         SELECT id FROM audit_events
+         WHERE ${IMPORTANT_AUDIT_SQL} AND created_at < $1 AND id <= $2
+         ORDER BY id
+         LIMIT $3
+       ) RETURNING id`,
+      [bound.before, bound.maxId, batch],
     );
     return deletedCount(result);
   }

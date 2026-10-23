@@ -80,6 +80,11 @@ describe("openapi", () => {
     "GET /v1/settings/storage",
     "GET /v1/storage",
     "PUT /v1/settings/storage",
+    "GET /v1/archives",
+    "POST /v1/archives",
+    "GET /v1/archives/preview",
+    "GET /v1/archives/{id}/download",
+    "POST /v1/archives/{id}/delete",
   ];
 
   /**
@@ -362,8 +367,11 @@ describe("openapi", () => {
   });
 });
 
-/** The JSON schema out of a response or request-body object, whatever its wrapping. */
+/**
+ * The schema out of a response or request-body object, whatever its wrapping: the JSON one, or
+ * for a route that serves a file (the archive download), the schema of the one type it produces.
+ */
 function jsonSchema(container: unknown): unknown {
   const content = (container as { content?: Record<string, { schema?: unknown }> })?.content;
-  return content?.["application/json"]?.schema;
+  return content?.["application/json"]?.schema ?? Object.values(content ?? {})[0]?.schema;
 }

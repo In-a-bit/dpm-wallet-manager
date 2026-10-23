@@ -36,6 +36,10 @@ export const ERROR_STATUS = {
   UPSTREAM_UNAVAILABLE: 502,
   UPSTREAM_REJECTED: 502,
   BALANCES_UNAVAILABLE: 503,
+  ARCHIVE_IN_PROGRESS: 409,
+  ARCHIVE_NOT_READY: 409,
+  ARCHIVE_CODE_MISMATCH: 400,
+  ARCHIVE_NOT_FOUND: 404,
   INTERNAL_ERROR: 500,
 } as const;
 
@@ -109,6 +113,16 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
   BALANCES_UNAVAILABLE:
     "dpm-wallet has no data-api configured, so it cannot report balances. Not retryable until " +
     "the install is given one.",
+  ARCHIVE_IN_PROGRESS:
+    "Another archive is still pending, downloaded or deleting. Finish it (download, then " +
+    "confirm the delete) before creating a new one.",
+  ARCHIVE_NOT_READY:
+    "The archive is not in a state that allows this: it must be downloaded completely before " +
+    "its rows can be deleted, and it cannot be downloaded once its rows are being deleted.",
+  ARCHIVE_CODE_MISMATCH:
+    "The code does not match the 6-character code in the archive's file name. Nothing was " +
+    "deleted.",
+  ARCHIVE_NOT_FOUND: "No archive with that id.",
   INTERNAL_ERROR: "An unexpected failure. The message is withheld.",
 };
 

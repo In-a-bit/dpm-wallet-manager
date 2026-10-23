@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE } from "@nestjs/core";
 
 import { ApiKeysModule } from "./api-keys/api-keys.module";
+import { ArchiveModule } from "./archive/archive.module";
 import { AuditModule } from "./audit/audit.module";
 import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
 import { ApiKeyGuard } from "./common/guards/api-key.guard";
@@ -46,6 +47,7 @@ import { WalletsModule } from "./wallets/wallets.module";
     RetentionModule,
     SettingsModule,
     StorageModule,
+    ArchiveModule,
   ],
   providers: [
     StartupService,

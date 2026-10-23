@@ -1,6 +1,7 @@
 import { Inject, Injectable, type OnApplicationBootstrap } from "@nestjs/common";
 
 import { ApiKeyService } from "../api-keys/api-key.service";
+import { ArchiveService } from "../archive/archive.service";
 import type { Config } from "../config";
 import type { Db } from "../db/client";
 import { IdempotencyRepository } from "../db/repositories/idempotency.repo";
@@ -28,6 +29,7 @@ export class StartupService implements OnApplicationBootstrap {
     private readonly platform: PlatformService,
     private readonly apiKeys: ApiKeyService,
     private readonly uiSessions: SessionService,
+    private readonly archives: ArchiveService,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -52,6 +54,9 @@ export class StartupService implements OnApplicationBootstrap {
       purgedUiSessions: purgedSessions,
       reconciledWallets: reconciled,
     });
+    // In the background, not awaited: an archive delete a restart interrupted carries on from
+    // where it stopped, without holding up the boot.
+    this.archives.resume();
   }
 
   /**

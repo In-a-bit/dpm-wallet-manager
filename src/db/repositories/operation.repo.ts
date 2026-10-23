@@ -11,6 +11,26 @@ import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { OperationEntity, type OperationKind } from "../entities";
 
+/** Kinds retention trims on a schedule. `withdraw` is the one kind it never touches. */
+export const ROUTINE_OPERATION_KINDS = [
+  "order",
+  "cancel",
+  "allowance",
+  "redeem",
+  "split",
+  "merge",
+] as const satisfies readonly OperationKind[];
+
+/** SQL over `operations` (unaliased) selecting the important rows only an archive removes. */
+export const IMPORTANT_OPERATION_SQL = `(kind = 'withdraw')`;
+
+/**
+ * An archive's fixed scope over this table. Ids here are uuids, so the bound is `seq`: a
+ * `bigserial` every row gets on insert, which a row written after the scope was fixed always
+ * exceeds, whatever `created_at` it carries.
+ */
+export type OperationArchiveBound = { before: string; maxSeq: number };
+
 export type Operation = {
   id: string;
   walletId: string;
@@ -113,13 +133,66 @@ export class OperationRepository {
     const result: unknown = await this.operations.query(
       `DELETE FROM operations WHERE id IN (
          SELECT id FROM operations
-         WHERE (kind IN ('cancel', 'allowance', 'redeem', 'split', 'merge') AND created_at < $1)
+         WHERE (kind IN (${ROUTINE_OPERATION_KINDS.filter((kind) => kind !== "order")
+           .map((kind) => `'${kind}'`)
+           .join(", ")}) AND created_at < $1)
             OR (kind = 'order' AND signer_wallet_id = wallet_id AND created_at < $1)
             OR (kind = 'order' AND signer_wallet_id <> wallet_id AND created_at < $2)
          ORDER BY created_at, id
          LIMIT $3
        ) RETURNING id`,
       [cutoff, routedCutoff, batch],
+    );
+    return deletedCount(result);
+  }
+
+  /** The highest `seq` and the row count of the important rows older than `before`, right now. */
+  async importantScope(before: string): Promise<{ maxSeq: number; rows: number }> {
+    const rows: { maxSeq: string | null; rows: number }[] = await this.operations.query(
+      `SELECT MAX(seq)::text AS "maxSeq", COUNT(*)::int AS rows FROM operations
+       WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1`,
+      [before],
+    );
+    return { maxSeq: Number(rows[0]?.maxSeq ?? 0), rows: rows[0]?.rows ?? 0 };
+  }
+
+  /** One page of an archive's rows in `seq` order after `afterSeq`, each with its `seq`. */
+  async importantPage(
+    bound: OperationArchiveBound,
+    afterSeq: number,
+    limit: number,
+  ): Promise<{ seq: number; operation: Operation }[]> {
+    const rows: (Omit<Operation, "createdAt"> & { createdAt: Date; seq: string })[] =
+      await this.operations.query(
+        `SELECT id, wallet_id AS "walletId", signer_wallet_id AS "signerWalletId", kind, mode,
+                request_hash AS "requestHash", result_summary AS "resultSummary", status,
+                relayer_transaction_id AS "relayerTransactionId", api_key_id AS "apiKeyId",
+                ui_user_id AS "uiUserId", created_at AS "createdAt", seq::text AS seq
+         FROM operations
+         WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1 AND seq <= $2 AND seq > $3
+         ORDER BY seq
+         LIMIT $4`,
+        [bound.before, bound.maxSeq, afterSeq, limit],
+      );
+    return rows.map(({ seq, createdAt, ...rest }) => ({
+      seq: Number(seq),
+      operation: { ...rest, createdAt: createdAt.toISOString() },
+    }));
+  }
+
+  /**
+   * Deletes one batch of an archive's rows (lowest `seq` first) and returns how many went: exactly
+   * the rows `importantPage` exported, never one written after the scope was fixed.
+   */
+  async deleteArchived(bound: OperationArchiveBound, batch: number): Promise<number> {
+    const result: unknown = await this.operations.query(
+      `DELETE FROM operations WHERE id IN (
+         SELECT id FROM operations
+         WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1 AND seq <= $2
+         ORDER BY seq
+         LIMIT $3
+       ) RETURNING id`,
+      [bound.before, bound.maxSeq, batch],
     );
     return deletedCount(result);
   }

@@ -4,6 +4,8 @@ import type { Repository } from "typeorm";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { StorageSampleEntity } from "../entities";
+import { IMPORTANT_AUDIT_SQL } from "./audit.repo";
+import { IMPORTANT_OPERATION_SQL } from "./operation.repo";
 
 export type TableStat = { db: "manager"; name: string; bytes: number; estRows: number };
 
@@ -99,16 +101,16 @@ export class StorageSampleRepository {
 
   /**
    * The oldest record only an archive may remove: a withdraw, or an audit event that is not a
-   * routine success. Both lookups walk an index in time order and stop at the first match.
+   * routine success. The `archive.*` trail is excluded: it is never removed, so counting it would
+   * keep suggesting an archive forever. Both lookups walk an index in time order and stop at the first match.
    */
   async oldestImportantAt(): Promise<string | null> {
     const ops: { at: Date | null }[] = await this.samples.query(
-      `SELECT created_at AS at FROM operations WHERE kind = 'withdraw' ORDER BY created_at LIMIT 1`,
+      `SELECT created_at AS at FROM operations WHERE ${IMPORTANT_OPERATION_SQL}
+       ORDER BY created_at LIMIT 1`,
     );
     const audit: { at: Date | null }[] = await this.samples.query(
-      `SELECT created_at AS at FROM audit_events
-       WHERE NOT (outcome = 'success' AND action IN ('sign.order', 'sign.cancel', 'meta.allowance',
-                                                     'meta.redeem', 'meta.split', 'meta.merge'))
+      `SELECT created_at AS at FROM audit_events WHERE ${IMPORTANT_AUDIT_SQL}
        ORDER BY created_at LIMIT 1`,
     );
     const times = [ops[0]?.at, audit[0]?.at]

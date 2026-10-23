@@ -22,6 +22,11 @@ export const AuditAction = {
   SettingsRetentionUpdate: "settings.retention_update",
   SettingsStorageUpdate: "settings.storage_update",
 
+  /** Never archived or deleted themselves: the record of what was removed has to outlive it. */
+  ArchiveCreate: "archive.create",
+  ArchiveDownload: "archive.download",
+  ArchiveDelete: "archive.delete",
+
   PlatformModeBurned: "platform.mode_burned",
   PlatformMasterWalletCreate: "platform.master_wallet_create",
   PlatformOperationsWalletCreate: "platform.operations_wallet_create",

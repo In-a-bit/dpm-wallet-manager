@@ -43,6 +43,7 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       .addTag("audit", "The decision log and the artefact log")
       .addTag("session", "Admin UI sign-in, sign-out and password")
       .addTag("ui-users", "Admin UI accounts and their roles")
+      .addTag("archives", "Important records exported to a file, then removed on confirmation")
       .addTag("health", "Liveness")
       .build(),
   );
