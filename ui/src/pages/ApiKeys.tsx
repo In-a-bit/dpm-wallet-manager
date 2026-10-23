@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, errorMessage, type ApiKey, type ApiRole, type MintedApiKey } from "../api";
 import { Confirm } from "../components/Confirm";
 import { Field } from "../components/Field";
 import { Modal } from "../components/Modal";
+import { Pagination } from "../components/Pagination";
 import { SecretModal } from "../components/SecretModal";
 import { Badge, LoadState, StatusBadge } from "../components/Status";
 import { useToast } from "../components/Toasts";
@@ -21,6 +22,8 @@ const GRACE_OPTIONS: { label: string; seconds: number }[] = [
   { label: "After 1 day", seconds: 86400 },
   { label: "After 7 days", seconds: 604800 },
 ];
+
+const PAGE = 50;
 
 type Dialog =
   | { kind: "create" }
@@ -139,7 +142,12 @@ function RotateModal({ apiKey, onClose, onRotated }: { apiKey: ApiKey; onClose: 
 
 export function ApiKeysPage() {
   const toast = useToast();
-  const { data, error, loading, reload } = useLoad(() => api.listKeys(), "keys");
+  const [offset, setOffset] = useState(0);
+  const { data, error, loading, reload } = useLoad(() => api.listKeys({ limit: PAGE, offset }), `keys:${offset}`);
+  // Deleting the last row of a later page leaves it empty; step back rather than show nothing.
+  useEffect(() => {
+    if (!loading && data && data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - PAGE));
+  }, [data, loading, offset]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const close = () => setDialog(null);
 
@@ -218,8 +226,9 @@ export function ApiKeysPage() {
             })}
           </tbody>
         </table>
-        <LoadState loading={loading && !data} error={error} empty={data?.items.length === 0} onRetry={reload} />
+        <LoadState loading={loading && !data} error={error} empty={data?.items.length === 0 && offset === 0} onRetry={reload} />
       </div>
+      {data && <Pagination total={data.total} limit={PAGE} offset={offset} onChange={setOffset} />}
 
       {dialog?.kind === "create" && <CreateKeyModal onClose={close} onCreated={(m) => showSecret("Your new API key", m)} />}
       {dialog?.kind === "secret" && <SecretModal title={dialog.title} minted={dialog.minted} onClose={close} />}

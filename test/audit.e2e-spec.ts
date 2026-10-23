@@ -240,6 +240,19 @@ describe("cursor paging", () => {
       expect(ids(second.body)).toEqual(ids(original.body).slice(50, 100));
     });
 
+    it("cursor=first is the newest page in cursor mode, with no total", async () => {
+      const first = await page({ limit: 50, cursor: "first" });
+      expect(first.status).toBe(200);
+      expect("total" in first.body).toBe(false);
+      expect(first.body.items).toHaveLength(50);
+      expect(typeof first.body.nextCursor).toBe("string");
+
+      const plain = await page({ limit: 100 });
+      const second = await page({ limit: 50, cursor: first.body.nextCursor });
+      expect("total" in second.body).toBe(false);
+      expect([...ids(first.body), ...ids(second.body)]).toEqual(ids(plain.body));
+    });
+
     it("keeps the offset mode, with its total", async () => {
       const response = await page({ limit: 10, offset: 5 });
       expect(response.body).toMatchObject({ limit: 10, offset: 5 });

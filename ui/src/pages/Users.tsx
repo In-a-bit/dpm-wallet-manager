@@ -1,8 +1,9 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError, errorMessage, type UiRole, type UiUserDto } from "../api";
 import { Confirm } from "../components/Confirm";
 import { Field } from "../components/Field";
 import { Modal } from "../components/Modal";
+import { Pagination } from "../components/Pagination";
 import { Badge, LoadState, StatusBadge } from "../components/Status";
 import { useToast } from "../components/Toasts";
 import { formatTime } from "../format";
@@ -17,6 +18,8 @@ const ROLE_INFO: Record<UiRole, string> = {
   operator: "Day-to-day operations; cannot manage keys or users.",
   viewer: "Read-only.",
 };
+
+const PAGE = 50;
 
 type Dialog = { kind: "create" } | { kind: "password"; user: UiUserDto } | { kind: "disable"; user: UiUserDto };
 
@@ -143,7 +146,12 @@ function SetPasswordModal({ user, onClose, onDone }: { user: UiUserDto; onClose:
 export function UsersPage() {
   const toast = useToast();
   const me = useSession().session.user;
-  const { data, error, loading, reload } = useLoad(() => api.listUsers(), "users");
+  const [offset, setOffset] = useState(0);
+  const { data, error, loading, reload } = useLoad(() => api.listUsers({ limit: PAGE, offset }), `users:${offset}`);
+  // Deleting the last row of a later page leaves it empty; step back rather than show nothing.
+  useEffect(() => {
+    if (!loading && data && data.items.length === 0 && offset > 0) setOffset(Math.max(0, offset - PAGE));
+  }, [data, loading, offset]);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
@@ -254,8 +262,9 @@ export function UsersPage() {
             ))}
           </tbody>
         </table>
-        <LoadState loading={loading && !data} error={error} empty={data?.items.length === 0} onRetry={reload} />
+        <LoadState loading={loading && !data} error={error} empty={data?.items.length === 0 && offset === 0} onRetry={reload} />
       </div>
+      {data && <Pagination total={data.total} limit={PAGE} offset={offset} onChange={setOffset} />}
 
       {dialog?.kind === "create" && (
         <CreateUserModal

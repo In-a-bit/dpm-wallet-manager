@@ -146,9 +146,11 @@ export interface Page<T> {
   offset: number;
 }
 
-export interface ListResult<T> {
+/** Keyset page: no total (counting the biggest tables is the cost avoided), just where to go next. */
+export interface CursorPage<T> {
   items: T[];
-  total: number;
+  nextCursor: string | null;
+  limit: number;
 }
 
 /** Query values; empty strings and undefined are dropped so filters left blank send nothing. */
@@ -241,7 +243,7 @@ export const api = {
     request<{ changed: true }>("POST", "/v1/session/password", { currentPassword, newPassword }, undefined, true),
 
   // UI users.
-  listUsers: () => get<ListResult<UiUserDto>>("/v1/ui-users"),
+  listUsers: (q: Query) => get<Page<UiUserDto>>("/v1/ui-users", q),
   createUser: (body: { username: string; password: string; role: UiRole }) => post<UiUserDto>("/v1/ui-users", body),
   updateUser: (id: string, body: { role?: UiRole; status?: UserStatus; password?: string }) =>
     request<UiUserDto>("PATCH", `/v1/ui-users/${encodeURIComponent(id)}`, body),
@@ -259,11 +261,11 @@ export const api = {
   transferStatus: (relayerTransactionId: string) =>
     get<TransferStatus>(`/v1/transfers/${encodeURIComponent(relayerTransactionId)}`),
 
-  listOperations: (q: Query) => get<Page<Operation>>("/v1/operations", q),
-  listAudit: (q: Query) => get<Page<AuditEvent>>("/v1/audit", q),
+  listOperations: (q: Query) => get<CursorPage<Operation>>("/v1/operations", q),
+  listAudit: (q: Query) => get<CursorPage<AuditEvent>>("/v1/audit", q),
 
   // API keys.
-  listKeys: () => get<ListResult<ApiKey>>("/v1/api-keys"),
+  listKeys: (q: Query) => get<Page<ApiKey>>("/v1/api-keys", q),
   createKey: (body: { role: ApiRole; name: string; expiresAt?: string }) => post<MintedApiKey>("/v1/api-keys", body),
   revealKey: (id: string) => post<MintedApiKey>(`/v1/api-keys/${encodeURIComponent(id)}/reveal`),
   rotateKey: (id: string, graceSeconds: number) =>

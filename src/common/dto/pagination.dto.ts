@@ -28,7 +28,8 @@ export class CursorPaginationDto extends PaginationDto {
   @ApiPropertyOptional({
     description:
       "Resume after the page that returned this `nextCursor`. Stable while newer rows arrive, " +
-      "unlike `offset`, which is deprecated. Omits `total` from the response.",
+      "unlike `offset`, which is deprecated. Omits `total` from the response. " +
+      "The literal `first` asks for the newest page in cursor mode (no `total`).",
   })
   @IsOptional()
   @IsString()

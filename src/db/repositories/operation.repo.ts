@@ -1,7 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Repository } from "typeorm";
 
-import { decodeCursor, encodeCursor, invalidCursor } from "../../common/dto/cursor";
+import {
+  decodeCursor,
+  encodeCursor,
+  FIRST_PAGE_CURSOR,
+  invalidCursor,
+} from "../../common/dto/cursor";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { OperationEntity, type OperationKind } from "../entities";
@@ -117,7 +122,9 @@ export class OperationRepository {
     if (filter.to) query.andWhere("o.created_at <= :to", { to: filter.to });
 
     let total: number | undefined;
-    if (cursor !== undefined) {
+    if (cursor === FIRST_PAGE_CURSOR) {
+      // Cursor mode from the top: no keyset bound, no count.
+    } else if (cursor !== undefined) {
       const position = decodeCursor(cursor);
       if (!UUID.test(position.id)) throw invalidCursor();
       query.andWhere(

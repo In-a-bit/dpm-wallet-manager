@@ -3,6 +3,12 @@ import { ManagerError } from "../../errors";
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
+ * The literal `cursor=first`: the first page, but in cursor mode — no total is counted. Without it
+ * there is no way to start cursor paging, because an absent cursor means offset mode and a COUNT.
+ */
+export const FIRST_PAGE_CURSOR = "first";
+
+/**
  * An opaque position in a newest-first listing: the last row's timestamp and id. Base64url JSON,
  * so a client can only hand it back. The id is a string because audit ids are integers and
  * operation ids are uuids.

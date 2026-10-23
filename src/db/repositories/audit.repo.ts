@@ -1,7 +1,12 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { Repository } from "typeorm";
 
-import { decodeCursor, encodeCursor, invalidCursor } from "../../common/dto/cursor";
+import {
+  decodeCursor,
+  encodeCursor,
+  FIRST_PAGE_CURSOR,
+  invalidCursor,
+} from "../../common/dto/cursor";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { AuditEventEntity } from "../entities";
@@ -97,7 +102,9 @@ export class AuditRepository {
     if (filter.to) query.andWhere("e.created_at <= :to", { to: filter.to });
 
     let total: number | undefined;
-    if (cursor !== undefined) {
+    if (cursor === FIRST_PAGE_CURSOR) {
+      // Cursor mode from the top: no keyset bound, no count.
+    } else if (cursor !== undefined) {
       const position = decodeCursor(cursor);
       // The id column is a 32-bit serial; anything else would be a database error, not a 400.
       if (!/^\d{1,10}$/.test(position.id) || Number(position.id) > 2_147_483_647) {

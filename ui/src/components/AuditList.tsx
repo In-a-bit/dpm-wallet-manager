@@ -3,10 +3,11 @@ import { api, type AuditEvent, type Query } from "../api";
 import { formatTime, shortId } from "../format";
 import { useLoad } from "../hooks";
 import { Link } from "./Layout";
-import { Pagination } from "./Pagination";
+import { CursorPager } from "./CursorPager";
 import { LoadState, StatusBadge } from "./Status";
 
 const PAGE = 50;
+const FIRST_PAGE = "first";
 
 function Actor({ ev }: { ev: AuditEvent }) {
   if (ev.actorUsername || ev.actorUserId)
@@ -26,11 +27,13 @@ function Actor({ ev }: { ev: AuditEvent }) {
   return <span className="muted">—</span>;
 }
 
-/** Paginated audit table with expandable JSON detail. Remount (via key) when filters change. */
+/** Paginated audit table with expandable JSON detail. Remount (via key) when filters change: that resets the cursor stack to the first page. */
 export function AuditList({ filters, showWallet = true }: { filters: Query; showWallet?: boolean }) {
-  const [offset, setOffset] = useState(0);
+  // Cursors of the pages visited, newest first; the last one is the page on screen. The server
+  // takes the literal "first" for the top page, which keeps even that request free of a COUNT.
+  const [cursors, setCursors] = useState<string[]>([FIRST_PAGE]);
   const [open, setOpen] = useState<number | null>(null);
-  const query = { ...filters, limit: PAGE, offset };
+  const query = { ...filters, limit: PAGE, cursor: cursors[cursors.length - 1] };
   const { data, error, loading, reload } = useLoad(() => api.listAudit(query), JSON.stringify(query));
   const cols = showWallet ? 7 : 6;
 
@@ -113,7 +116,14 @@ export function AuditList({ filters, showWallet = true }: { filters: Query; show
         </table>
       </div>
       <LoadState loading={loading && !data} error={error} empty={data?.items.length === 0} onRetry={reload} />
-      {data && <Pagination total={data.total} limit={PAGE} offset={offset} onChange={setOffset} />}
+      {data && (
+        <CursorPager
+          hasNewer={cursors.length > 1}
+          hasOlder={data.nextCursor !== null}
+          onNewer={() => setCursors((c) => c.slice(0, -1))}
+          onOlder={() => data.nextCursor && setCursors((c) => [...c, data.nextCursor as string])}
+        />
+      )}
     </>
   );
 }
