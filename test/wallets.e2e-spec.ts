@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { RECONCILE_PAGE_SIZE, WalletsService } from "../src/wallets/wallets.service";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 /**
@@ -121,6 +122,22 @@ describe("wallets", () => {
       );
       expect(conflicts.length).toBeGreaterThan(0);
     });
+
+    it("reconcileAll walks more stuck wallets than one page holds", async () => {
+      const service = harness.app.get(WalletsService);
+      const before = await harness.db.query(
+        "SELECT count(*)::int AS n FROM wallets WHERE status = 'provisioning'",
+      );
+      for (let i = 0; i < RECONCILE_PAGE_SIZE + 1; i += 1) {
+        const created = await create({ externalId: `bulk-stuck-${i}` });
+        await harness.db.query("UPDATE wallets SET status = 'provisioning' WHERE id = $1", [
+          created.body.id,
+        ]);
+      }
+      const repaired = await service.reconcileAll();
+      expect(repaired).toBe((before[0]?.n ?? 0) + RECONCILE_PAGE_SIZE + 1);
+      expect(await harness.wallets.listProvisioning(1)).toEqual([]);
+    }, 120_000);
 
     it("finishes stuck wallets at boot", async () => {
       const created = await create({ externalId: "stuck-at-boot" });

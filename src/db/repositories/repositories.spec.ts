@@ -136,6 +136,23 @@ describe("repositories", () => {
       const ids = (await wallets.listProvisioning()).map((wallet) => wallet.id);
       expect(ids).toContain(stuck.id);
     });
+
+    it("pages stuck rows by id, limit rows at a time", async () => {
+      const seeded = [];
+      for (let i = 0; i < 3; i += 1) seeded.push(await wallets.insertProvisioning(newWallet()));
+      const seen: string[] = [];
+      let after: string | undefined;
+      for (;;) {
+        const page = await wallets.listProvisioning(2, after);
+        expect(page.length).toBeLessThanOrEqual(2);
+        if (page.length === 0) break;
+        seen.push(...page.map((wallet) => wallet.id));
+        after = page[page.length - 1]?.id;
+      }
+      expect(seen).toEqual([...seen].sort());
+      expect(new Set(seen).size).toBe(seen.length);
+      for (const wallet of seeded) expect(seen).toContain(wallet.id);
+    });
   });
 
   describe("api keys", () => {

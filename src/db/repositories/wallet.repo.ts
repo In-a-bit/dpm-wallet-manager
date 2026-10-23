@@ -109,9 +109,17 @@ export class WalletRepository {
     return { wallets: rows.map(toWallet), total };
   }
 
-  /** Rows stuck mid-provisioning, for the boot sweep and the reconcile endpoint. */
-  async listProvisioning(): Promise<Wallet[]> {
-    const rows = await this.wallets.findBy({ status: "provisioning" });
+  /**
+   * Rows stuck mid-provisioning, for the boot sweep and the reconcile endpoint: at most `limit`,
+   * ordered by id and strictly after `afterId`. Keyset rather than offset, because a row that
+   * fails to provision stays `provisioning` and must not shift the next page.
+   */
+  async listProvisioning(limit = 200, afterId?: string): Promise<Wallet[]> {
+    const query = this.wallets
+      .createQueryBuilder("w")
+      .where("w.status = :status", { status: "provisioning" });
+    if (afterId) query.andWhere("w.id > :afterId", { afterId });
+    const rows = await query.orderBy("w.id", "ASC").take(limit).getMany();
     return rows.map(toWallet);
   }
 

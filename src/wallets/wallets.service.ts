@@ -37,6 +37,9 @@ const UNIQUE_VIOLATION = "23505";
  */
 const PLATFORM_KINDS: ReadonlySet<WalletKind> = new Set(["master", "operations"]);
 
+/** Stuck wallets are reconciled this many at a time, so a boot never loads them all at once. */
+export const RECONCILE_PAGE_SIZE = 200;
+
 @Injectable()
 export class WalletsService {
   constructor(
@@ -112,19 +115,23 @@ export class WalletsService {
 
   /** Run at boot: a container that died mid-provision finishes the job before serving traffic. */
   async reconcileAll(): Promise<number> {
-    const stuck = await this.wallets.listProvisioning();
     let repaired = 0;
-    for (const wallet of stuck) {
-      try {
-        await this.provision(wallet);
-        repaired += 1;
-      } catch (err) {
-        // A boot must not fail because the upstream is briefly down: the wallet stays
-        // `provisioning`, every signing route refuses it, and the endpoint can retry later.
-        logWarn("wallet.reconcile_failed", { walletId: wallet.id, err });
+    let afterId: string | undefined;
+    for (;;) {
+      const stuck = await this.wallets.listProvisioning(RECONCILE_PAGE_SIZE, afterId);
+      for (const wallet of stuck) {
+        try {
+          await this.provision(wallet);
+          repaired += 1;
+        } catch (err) {
+          // A boot must not fail because the upstream is briefly down: the wallet stays
+          // `provisioning`, every signing route refuses it, and the endpoint can retry later.
+          logWarn("wallet.reconcile_failed", { walletId: wallet.id, err });
+        }
       }
+      if (stuck.length < RECONCILE_PAGE_SIZE) return repaired;
+      afterId = stuck[stuck.length - 1]?.id;
     }
-    return repaired;
   }
 
   async get(id: string): Promise<Wallet> {
