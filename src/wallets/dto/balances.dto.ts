@@ -15,7 +15,10 @@ export class WalletBalanceDto {
   @ApiProperty({ format: "uuid" })
   walletId!: string;
 
-  /** The address the funds sit at; null while the wallet is still provisioning. */
+  /**
+   * The address the funds sit at; null while the wallet is still provisioning or not yet
+   * registered with the DPM platform, as no balance can be read for it then.
+   */
   @ApiProperty({
     type: String,
     nullable: true,
@@ -23,7 +26,7 @@ export class WalletBalanceDto {
   })
   proxyAddress!: string | null;
 
-  /** Collateral in micro-USDC (6 decimals), as a decimal string; null without a proxy address. */
+  /** Collateral in micro-USDC (6 decimals), as a decimal string; null when proxyAddress is. */
   @ApiProperty({ type: String, nullable: true, example: "1500000" })
   balanceMicro!: string | null;
 

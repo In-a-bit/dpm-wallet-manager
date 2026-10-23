@@ -260,6 +260,20 @@ export class FakeDpmWallet {
         };
       }
       const addresses = Array.isArray(body?.addresses) ? (body.addresses as string[]) : [];
+      // data-api refuses the whole batch when any address has no platform `users` row, and
+      // dpm-wallet passes that refusal on as an upstream failure.
+      const unknown = addresses.find((address) => !this.isRegistered(address));
+      if (unknown) {
+        return {
+          status: 502,
+          body: {
+            error: {
+              code: "RELAYER_REQUEST_FAILED",
+              message: `data-api /balances/batch-get failed with 403: ${unknown} is not readable`,
+            },
+          },
+        };
+      }
       return { status: 200, body: addresses.map((address) => this.balanceFor(address)) };
     }
 
@@ -403,6 +417,16 @@ export class FakeDpmWallet {
         orderHash: keccak256(toHex(`hash:${request.ref}:${request.tokenId}:${request.side}`)),
       },
     };
+  }
+
+  /** Whether data-api would know this address: one this fake holds and has marked registered. */
+  private isRegistered(address: string): boolean {
+    const wanted = address.toLowerCase();
+    return [...this.addresses.values()].some(
+      (held) =>
+        held.dpmRegistered &&
+        (held.address.toLowerCase() === wanted || held.proxyAddress.toLowerCase() === wanted),
+    );
   }
 
   private balanceFor(address: string): UpstreamCollateralBalance {

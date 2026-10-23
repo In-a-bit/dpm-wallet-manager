@@ -251,9 +251,18 @@ describe("wallets", () => {
     const balances = (walletIds: unknown, apiKey?: string) =>
       harness.post("/v1/wallets/balances", { body: { walletIds }, ...(apiKey ? { apiKey } : {}) });
 
+    /** data-api only answers for wallets the platform has registered, so balances need one. */
+    const registered = async () => {
+      const wallet = (await create()).body;
+      await harness.post(`/v1/wallets/${wallet.id}/dpm-registered`, {
+        body: { registered: true },
+      });
+      return wallet;
+    };
+
     it("reports each wallet's proxy balance in request order", async () => {
-      const a = (await create()).body;
-      const b = (await create()).body;
+      const a = await registered();
+      const b = await registered();
       harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "1500000", blockNumber: 77 });
       harness.upstream.setBalance(b.proxyAddress, { balanceRaw: "42" });
 
@@ -268,8 +277,8 @@ describe("wallets", () => {
     });
 
     it("reports a null block for an un-synced wallet and scales other decimals", async () => {
-      const a = (await create()).body;
-      const b = (await create()).body;
+      const a = await registered();
+      const b = await registered();
       harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "5", blockNumber: 0 });
       harness.upstream.setBalance(b.proxyAddress, { balanceRaw: "1234567890", decimals: 9 });
       const response = await balances([a.id, b.id]);
@@ -278,7 +287,7 @@ describe("wallets", () => {
     });
 
     it("returns nulls for a wallet without a proxy address and skips it upstream", async () => {
-      const a = (await create()).body;
+      const a = await registered();
       const id = randomUUID();
       await harness.wallets.insertProvisioning({
         id,
@@ -308,6 +317,28 @@ describe("wallets", () => {
       expect(harness.upstream.requests.some((r) => r.path === "/v1/balances")).toBe(false);
     });
 
+    it("returns nulls for a wallet the platform has not registered and skips it upstream", async () => {
+      const a = await registered();
+      const unregistered = (await create()).body;
+      harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "9", blockNumber: 5 });
+      harness.upstream.requests.length = 0;
+
+      const response = await balances([unregistered.id, a.id]);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual([
+        { walletId: unregistered.id, proxyAddress: null, balanceMicro: null, blockNumber: null },
+        { walletId: a.id, proxyAddress: a.proxyAddress, balanceMicro: "9", blockNumber: 5 },
+      ]);
+      const call = harness.upstream.requests.find((r) => r.path === "/v1/balances");
+      expect(call?.body).toEqual({ addresses: [a.proxyAddress] });
+
+      harness.upstream.requests.length = 0;
+      expect((await balances([unregistered.id])).body).toEqual([
+        { walletId: unregistered.id, proxyAddress: null, balanceMicro: null, blockNumber: null },
+      ]);
+      expect(harness.upstream.requests.some((r) => r.path === "/v1/balances")).toBe(false);
+    });
+
     it("answers 404 for an unknown wallet", async () => {
       const response = await balances(["6f1f4a3e-2b1c-4d5e-8f90-123456789abc"]);
       expect(response.status).toBe(404);
@@ -315,7 +346,7 @@ describe("wallets", () => {
     });
 
     it("maps an upstream BALANCES_UNAVAILABLE to 503 with the same code", async () => {
-      const a = (await create()).body;
+      const a = await registered();
       harness.upstream.balancesUnavailable = true;
       const response = await balances([a.id]);
       expect(response.status).toBe(503);

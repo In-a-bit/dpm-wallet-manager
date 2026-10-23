@@ -135,19 +135,21 @@ export class WalletsService {
    * Collateral balance of each wallet's proxy address, in the order the ids were given.
    *
    * Every id is resolved before dpm-wallet is called, so an unknown id fails the whole request
-   * with a 404. A wallet with no proxy address yet (still provisioning) is not an error: it is
-   * left out of the upstream call and comes back with null fields in its own position, so one
-   * such row cannot blank a page of balances. With none to look up, dpm-wallet is not called.
+   * with a 404. A wallet with no proxy address yet (still provisioning), or one the DPM platform
+   * has not registered, is not an error: it is left out of the upstream call and comes back with
+   * null fields in its own position, so one such row cannot blank a page of balances. The second
+   * case matters as much as the first: data-api refuses the whole batch with a 403 when any
+   * address has no platform user behind it. With none to look up, dpm-wallet is not called.
    */
   async balances(ids: string[]): Promise<WalletBalance[]> {
     const wallets = await Promise.all(ids.map((id) => this.require(id)));
-    const addresses = wallets.flatMap((wallet) =>
-      wallet.proxyAddress ? [wallet.proxyAddress] : [],
-    );
+    const readable = (wallet: Wallet): wallet is Wallet & { proxyAddress: string } =>
+      !!wallet.proxyAddress && wallet.dpmRegistered;
+    const addresses = wallets.flatMap((wallet) => (readable(wallet) ? [wallet.proxyAddress] : []));
     const upstream = addresses.length > 0 ? await this.upstream.balances(addresses) : [];
     let next = 0;
     return wallets.map((wallet) => {
-      if (!wallet.proxyAddress) {
+      if (!readable(wallet)) {
         return { walletId: wallet.id, proxyAddress: null, balanceMicro: null, blockNumber: null };
       }
       const item = upstream[next++];
