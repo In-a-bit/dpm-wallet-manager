@@ -179,6 +179,25 @@ export interface StorageStatus {
   archiveSuggested: boolean;
 }
 
+export type ArchiveStatus = "pending" | "downloaded" | "deleting" | "done" | "cancelled";
+
+export interface Archive {
+  id: string;
+  code: string;
+  scope: Record<string, { maxId: number; rows: number }>;
+  before: string;
+  status: ArchiveStatus;
+  sha256: string | null;
+  byteSize: number | null;
+  rowCount: number | null;
+  deleted: Record<string, number> | null;
+  createdByUserId: string | null;
+  createdByKeyId: string | null;
+  createdAt: string;
+  downloadedAt: string | null;
+  deletedAt: string | null;
+}
+
 export interface Page<T> {
   items: T[];
   total: number;
@@ -312,6 +331,15 @@ export const api = {
 
   getStorage: () => get<StorageStatus>("/v1/storage"),
 
+  // Archives.
+  previewArchive: (before: string) => get<{ tables: Record<string, number> }>("/v1/archives/preview", { before }),
+  listArchives: (q: Query) => get<Page<Archive>>("/v1/archives", q),
+  createArchive: (before: string) =>
+    post<{ id: string; code: string; scope: Archive["scope"] }>("/v1/archives", { before }),
+  deleteArchive: (id: string, code: string) =>
+    post<{ status: "deleting" }>(`/v1/archives/${encodeURIComponent(id)}/delete`, { code }),
+  cancelArchive: (id: string) => post<{ status: "cancelled" }>(`/v1/archives/${encodeURIComponent(id)}/cancel`),
+
   // API keys.
   listKeys: (q: Query) => get<Page<ApiKey>>("/v1/api-keys", q),
   createKey: (body: { role: ApiRole; name: string; expiresAt?: string }) => post<MintedApiKey>("/v1/api-keys", body),
@@ -320,6 +348,9 @@ export const api = {
     post<{ created: MintedApiKey; rotated: ApiKey }>(`/v1/api-keys/${encodeURIComponent(id)}/rotate`, { graceSeconds }),
   revokeKey: (id: string) => request<ApiKey>("DELETE", `/v1/api-keys/${encodeURIComponent(id)}`),
 };
+
+/** URL the browser navigates to for a download; the session cookie authenticates it. */
+export const archiveDownloadUrl = (id: string) => `/v1/archives/${encodeURIComponent(id)}/download`;
 
 /** The message to show for any thrown value. */
 export function errorMessage(e: unknown): string {
