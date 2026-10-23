@@ -25,4 +25,18 @@ describe("HealthController readiness", () => {
     expect(status).toHaveBeenCalledWith(503);
     expect(body).toEqual({ status: "unavailable" });
   });
+
+  it("answers 503 when the query hangs past the timeout", async () => {
+    jest.useFakeTimers();
+    try {
+      const query = jest.fn().mockReturnValue(new Promise(() => undefined));
+      const { res, status } = fakeRes();
+      const pending = new HealthController({ query } as unknown as Db).ready(res);
+      await jest.advanceTimersByTimeAsync(3000);
+      expect(await pending).toEqual({ status: "unavailable" });
+      expect(status).toHaveBeenCalledWith(503);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
