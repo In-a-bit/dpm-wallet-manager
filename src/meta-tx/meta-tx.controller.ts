@@ -173,7 +173,9 @@ export class MetaTxController {
   }
 }
 
-function toArgs(body: Partial<MetaTxRedeemDto & MetaTxSplitDto & MetaTxWithdrawDto>): MetaTxArgs {
+export function toArgs(
+  body: Partial<MetaTxRedeemDto & MetaTxSplitDto & MetaTxWithdrawDto>,
+): MetaTxArgs {
   return {
     ...(body.conditionId === undefined ? {} : { conditionId: body.conditionId }),
     ...(body.amountDecimal === undefined ? {} : { amountDecimal: body.amountDecimal }),

@@ -101,6 +101,10 @@ export class OperationDto {
   @ApiProperty({ example: "signed" })
   status!: string;
 
+  /** relayer-api's id, when this service relayed the withdrawal itself. */
+  @ApiPropertyOptional({ type: String, nullable: true, example: "0b7e1c2a-…" })
+  relayerTransactionId!: string | null;
+
   @ApiPropertyOptional({ type: String, format: "uuid", nullable: true })
   apiKeyId!: string | null;
 

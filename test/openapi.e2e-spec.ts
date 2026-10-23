@@ -63,6 +63,8 @@ describe("openapi", () => {
     "POST /v1/wallets/{id}/split",
     "POST /v1/wallets/{id}/merge",
     "POST /v1/wallets/{id}/withdraw",
+    "POST /v1/wallets/{id}/transfers",
+    "GET /v1/transfers/{relayerTransactionId}",
     "GET /v1/audit",
     "GET /v1/operations",
     "POST /v1/session/login",
@@ -228,9 +230,9 @@ describe("openapi", () => {
 
     it("advertise the idempotency header on every signing route", () => {
       const signing = operations().filter(([route]) =>
-        /(orders\/(sign|cancel)|allowance|redeem|split|merge|withdraw)$/.test(route),
+        /(orders\/(sign|cancel)|allowance|redeem|split|merge|withdraw|transfers)$/.test(route),
       );
-      expect(signing).toHaveLength(7);
+      expect(signing).toHaveLength(8);
       for (const [route, op] of signing) {
         const header = (
           (op.parameters ?? []) as { in: string; name: string; description?: string }[]

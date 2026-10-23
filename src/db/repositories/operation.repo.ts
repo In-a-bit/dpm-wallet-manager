@@ -14,12 +14,15 @@ export type Operation = {
   requestHash: string;
   resultSummary: string | null;
   status: string;
+  relayerTransactionId: string | null;
   apiKeyId: string | null;
   uiUserId: string | null;
   createdAt: string;
 };
 
-export type NewOperation = Omit<Operation, "createdAt"> & { createdAt: string };
+export type NewOperation = Omit<Operation, "createdAt" | "relayerTransactionId"> & {
+  createdAt: string;
+};
 
 export type OperationFilter = {
   walletId?: string;
@@ -51,6 +54,15 @@ export class OperationRepository {
       where: { kind: "order", resultSummary: orderHash },
       order: { createdAt: "DESC" },
     });
+    return row ?? undefined;
+  }
+
+  async setRelayerTransactionId(id: string, relayerTransactionId: string): Promise<void> {
+    await this.operations.update({ id }, { relayerTransactionId });
+  }
+
+  async findByRelayerTransactionId(relayerTransactionId: string): Promise<Operation | undefined> {
+    const row = await this.operations.findOneBy({ relayerTransactionId });
     return row ?? undefined;
   }
 

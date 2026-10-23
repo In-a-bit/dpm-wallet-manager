@@ -100,6 +100,20 @@ export type UpstreamMetaTxRequest = {
   recipient?: string;
 };
 
+/**
+ * relayer-api's transaction object, as dpm-wallet passes it through from `POST /v1/relay` and
+ * `GET /v1/relay/:id`. The relayer has emitted both spellings of the id and hash, so both are
+ * read; anything else it adds is carried but not relied on.
+ */
+export type UpstreamRelayTransaction = {
+  transactionID?: string;
+  transaction_id?: string;
+  transactionHash?: string;
+  transaction_hash?: string;
+  state?: string;
+  [key: string]: unknown;
+};
+
 /** One entry of `POST /v1/balances`, in request order. `blockNumber` is absent until synced. */
 export type UpstreamCollateralBalance = {
   user: string;

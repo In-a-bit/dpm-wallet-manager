@@ -38,6 +38,7 @@ export function buildOpenApiDocument(app: INestApplication): OpenAPIObject {
       .addTag("wallets", "The wallet directory and its lifecycle")
       .addTag("orders", "Signed orders and cancels, routed by custody mode")
       .addTag("meta-tx", "Proxy meta-transactions, gated by the funds policy")
+      .addTag("transfers", "Withdrawals signed and relayed by this service")
       .addTag("api-keys", "Credential administration")
       .addTag("audit", "The decision log and the artefact log")
       .addTag("session", "Admin UI sign-in, sign-out and password")

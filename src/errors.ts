@@ -21,6 +21,7 @@ export const ERROR_STATUS = {
   EXTERNAL_TRANSFER_FORBIDDEN: 403,
   MASTER_ALLOWANCE_FORBIDDEN: 403,
   MASTER_WALLET_CANNOT_TRADE: 403,
+  TRANSFER_NOT_FOUND: 404,
   API_KEY_NOT_FOUND: 404,
   API_KEY_REVOKED: 409,
   LAST_ADMIN_KEY: 409,
@@ -73,6 +74,9 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
     "exchange or the proxy.",
   MASTER_WALLET_CANNOT_TRADE:
     "The master wallet holds funds for withdrawal only and does not trade.",
+  TRANSFER_NOT_FOUND:
+    "No transfer with that relayer transaction id was relayed through this service, or the " +
+    "relayer no longer knows it.",
   API_KEY_NOT_FOUND: "No API key with that id.",
   API_KEY_REVOKED: "That key has been revoked and cannot be rotated.",
   LAST_ADMIN_KEY:

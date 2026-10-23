@@ -56,6 +56,11 @@ export class OperationEntity {
   @Column("text")
   status!: string;
 
+  /** relayer-api's id, for a withdrawal this service relayed itself rather than handed back. */
+  @Index("operations_relayer_transaction_id")
+  @Column("text", { name: "relayer_transaction_id", nullable: true })
+  relayerTransactionId!: string | null;
+
   @Column("uuid", { name: "api_key_id", nullable: true })
   apiKeyId!: string | null;
 

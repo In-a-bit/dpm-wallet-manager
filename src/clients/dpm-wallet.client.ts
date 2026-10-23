@@ -12,6 +12,7 @@ import type {
   UpstreamHealth,
   UpstreamMetaTxKind,
   UpstreamMetaTxRequest,
+  UpstreamRelayTransaction,
   UpstreamSignedCancel,
   UpstreamSignedOrder,
   UpstreamSignOrderRequest,
@@ -40,6 +41,8 @@ const CODE_MAP: Record<string, ErrorCode> = {
   IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT",
   VAULT_NOT_INITIALIZED: "UPSTREAM_UNAVAILABLE",
   BALANCES_UNAVAILABLE: "BALANCES_UNAVAILABLE",
+  // Only ever answered for an id this service relayed, so to our caller the transfer is unknown.
+  RELAY_TRANSACTION_NOT_FOUND: "TRANSFER_NOT_FOUND",
 };
 
 /** Upstream codes the caller is expected to handle rather than treat as a failure. */
@@ -140,6 +143,22 @@ export class DpmWalletClient {
     options: UpstreamCallOptions = {},
   ): Promise<UpstreamSubmitTransactionRequest> {
     return this.request("POST", `/v1/meta-tx/${kind}`, { body: request, ...options });
+  }
+
+  /**
+   * Submits a signed meta-transaction to relayer-api through dpm-wallet, which answers 201. A
+   * relayer refusal comes back as dpm-wallet's 502 `RELAYER_REQUEST_FAILED`, left to the fallback.
+   */
+  relay(request: UpstreamSubmitTransactionRequest): Promise<UpstreamRelayTransaction> {
+    return this.request("POST", "/v1/relay", { body: request });
+  }
+
+  /** The relayer's view of a transaction; `from` is the EOA that signed it. */
+  relayStatus(id: string, from: string): Promise<UpstreamRelayTransaction> {
+    return this.request(
+      "GET",
+      `/v1/relay/${encodeURIComponent(id)}?from=${encodeURIComponent(from)}`,
+    );
   }
 
   private async request<T>(

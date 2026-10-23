@@ -62,7 +62,30 @@ export class FakeDpmWallet {
   /** Configured balances, keyed by lower-cased address. An unlisted address reads as empty. */
   private readonly balanceByAddress = new Map<string, Partial<UpstreamCollateralBalance>>();
 
+  /** The id `POST /v1/relay` answers with; generated per relay when unset. */
+  relayTransactionId: string | undefined;
+
+  /** The state `POST /v1/relay` answers with. */
+  relayState = "STATE_NEW";
+
+  /** Set true to answer with the relayer's snake_case spelling (`transaction_id`). */
+  relaySnakeCase = false;
+
+  /** What `GET /v1/relay/:id` reports for a transaction this fake relayed. */
+  relayStatusState = "STATE_MINED";
+  relayStatusHash: string | null = null;
+
+  /** When set, `POST /v1/relay` fails with this envelope; route-scoped, as signing comes first. */
+  failRelayWith: { status: number; code: string } | undefined;
+
+  /** The last body `/v1/meta-tx/*` answered with, so a relay can be compared against it. */
+  lastSigned: Record<string, unknown> | undefined;
+
+  /** Relayed transaction ids, against the `from` they were submitted with. */
+  private readonly relayed = new Map<string, string>();
+
   private nextIndex = 0;
+  private nextRelay = 0;
 
   /**
    * Port 0 by default, so parallel jest workers cannot collide on one, and loopback-only so a
@@ -107,6 +130,14 @@ export class FakeDpmWallet {
     this.failRegistrationWith = undefined;
     this.balancesUnavailable = false;
     this.balanceByAddress.clear();
+    this.relayTransactionId = undefined;
+    this.relayState = "STATE_NEW";
+    this.relaySnakeCase = false;
+    this.relayStatusState = "STATE_MINED";
+    this.relayStatusHash = null;
+    this.failRelayWith = undefined;
+    this.lastSigned = undefined;
+    this.relayed.clear();
   }
 
   /** Sets what `POST /v1/balances` reports for an address. */
@@ -150,7 +181,7 @@ export class FakeDpmWallet {
       return send(response, 200, this.idempotent.get(idempotencyKey));
     }
 
-    const result = this.route(request.method ?? "GET", route, body);
+    const result = this.route(request.method ?? "GET", route, body, path);
     if (!result) {
       return send(response, 404, { error: { code: "NOT_FOUND", message: `no route ${route}` } });
     }
@@ -162,6 +193,7 @@ export class FakeDpmWallet {
     method: string,
     route: string,
     body: Record<string, unknown> | undefined,
+    path = route,
   ): { status: number; body: unknown } | undefined {
     if (route === "/v1/health") {
       return {
@@ -231,6 +263,53 @@ export class FakeDpmWallet {
       return { status: 200, body: addresses.map((address) => this.balanceFor(address)) };
     }
 
+    // dpm-wallet answers a relay with 201, which the client has to accept like any 2xx.
+    if (route === "/v1/relay" && method === "POST") {
+      if (this.failRelayWith) {
+        const { status, code } = this.failRelayWith;
+        return { status, body: { error: { code, message: "the relayer said no" } } };
+      }
+      const from = readString(body, "from");
+      const held = [...this.addresses.values()].some(
+        (address) => address.address.toLowerCase() === from.toLowerCase(),
+      );
+      if (!held) {
+        return {
+          status: 404,
+          body: { error: { code: "ADDRESS_NOT_FOUND", message: `no key for ${from}` } },
+        };
+      }
+      const id = this.relayTransactionId ?? `relay-tx-${++this.nextRelay}`;
+      this.relayed.set(id, from);
+      return {
+        status: 201,
+        body: this.relaySnakeCase
+          ? { transaction_id: id, state: this.relayState }
+          : { transactionID: id, state: this.relayState },
+      };
+    }
+
+    const relayMatch = /^\/v1\/relay\/([^/]+)$/.exec(route);
+    if (relayMatch && method === "GET") {
+      const id = decodeURIComponent(relayMatch[1] ?? "");
+      const from = new URLSearchParams(path.split("?")[1] ?? "").get("from") ?? "";
+      if (this.relayed.get(id)?.toLowerCase() !== from.toLowerCase()) {
+        return {
+          status: 404,
+          body: { error: { code: "RELAY_TRANSACTION_NOT_FOUND", message: `no transaction ${id}` } },
+        };
+      }
+      return {
+        status: 200,
+        body: {
+          transactionID: id,
+          state: this.relayStatusState,
+          from,
+          ...(this.relayStatusHash === null ? {} : { transactionHash: this.relayStatusHash }),
+        },
+      };
+    }
+
     if (route === "/v1/sign/order" && method === "POST") {
       return this.signOrder(body as unknown as UpstreamSignOrderRequest);
     }
@@ -272,20 +351,18 @@ export class FakeDpmWallet {
           },
         };
       }
-      return {
-        status: 200,
-        body: {
-          from: existing.address,
-          to: "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052",
-          proxyWallet: existing.proxyAddress,
-          data: signatureFor(`data:${metaMatch[1]}:${ref}`),
-          nonce: "0",
-          signature: signatureFor(`meta:${metaMatch[1]}:${ref}`),
-          signatureParams: { gasPrice: "0", gasLimit: "300000", relayerFee: "0" },
-          type: "PROXY",
-          metadata: metaMatch[1],
-        },
+      this.lastSigned = {
+        from: existing.address,
+        to: "0xaB45c5A4B0c941a2F231C04C3f49182e1A254052",
+        proxyWallet: existing.proxyAddress,
+        data: signatureFor(`data:${metaMatch[1]}:${ref}`),
+        nonce: "0",
+        signature: signatureFor(`meta:${metaMatch[1]}:${ref}`),
+        signatureParams: { gasPrice: "0", gasLimit: "300000", relayerFee: "0" },
+        type: "PROXY",
+        metadata: metaMatch[1],
       };
+      return { status: 200, body: this.lastSigned };
     }
 
     return undefined;
