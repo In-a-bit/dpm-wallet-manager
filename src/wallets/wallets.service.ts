@@ -135,25 +135,30 @@ export class WalletsService {
    * Collateral balance of each wallet's proxy address, in the order the ids were given.
    *
    * Every id is resolved before dpm-wallet is called, so an unknown id fails the whole request
-   * with a 404 rather than returning a partial answer.
+   * with a 404. A wallet with no proxy address yet (still provisioning) is not an error: it is
+   * left out of the upstream call and comes back with null fields in its own position, so one
+   * such row cannot blank a page of balances. With none to look up, dpm-wallet is not called.
    */
   async balances(ids: string[]): Promise<WalletBalance[]> {
     const wallets = await Promise.all(ids.map((id) => this.require(id)));
-    const addresses = wallets.map((wallet) => {
-      if (!wallet.proxyAddress) throw walletNotReady(wallet.id);
-      return wallet.proxyAddress;
-    });
-    const upstream = await this.upstream.balances(addresses);
-    return wallets.map((wallet, index) => {
-      const item = upstream[index];
+    const addresses = wallets.flatMap((wallet) =>
+      wallet.proxyAddress ? [wallet.proxyAddress] : [],
+    );
+    const upstream = addresses.length > 0 ? await this.upstream.balances(addresses) : [];
+    let next = 0;
+    return wallets.map((wallet) => {
+      if (!wallet.proxyAddress) {
+        return { walletId: wallet.id, proxyAddress: null, balanceMicro: null, blockNumber: null };
+      }
+      const item = upstream[next++];
       if (!item) {
         throw new ManagerError("UPSTREAM_REJECTED", "dpm-wallet returned too few balances", {
-          details: { expected: wallets.length, received: upstream.length },
+          details: { expected: addresses.length, received: upstream.length },
         });
       }
       return {
         walletId: wallet.id,
-        proxyAddress: wallet.proxyAddress ?? "",
+        proxyAddress: wallet.proxyAddress,
         balanceMicro: toMicro(item.balanceRaw, item.decimals),
         blockNumber: item.blockNumber ? item.blockNumber : null,
       };
@@ -367,8 +372,8 @@ export class WalletsService {
 
 export type WalletBalance = {
   walletId: string;
-  proxyAddress: string;
-  balanceMicro: string;
+  proxyAddress: string | null;
+  balanceMicro: string | null;
   blockNumber: number | null;
 };
 

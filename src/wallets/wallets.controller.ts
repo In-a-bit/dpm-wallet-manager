@@ -109,7 +109,6 @@ export class WalletsController {
   @ApiErrors(
     "VALIDATION_FAILED",
     "WALLET_NOT_FOUND",
-    "WALLET_NOT_READY",
     "BALANCES_UNAVAILABLE",
     "UPSTREAM_UNAVAILABLE",
     "UPSTREAM_REJECTED",

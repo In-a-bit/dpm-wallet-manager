@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { startHarness, type Harness } from "../src/testing/harness";
 
 /**
@@ -273,6 +275,37 @@ describe("wallets", () => {
       const response = await balances([a.id, b.id]);
       expect(response.body[0]).toMatchObject({ balanceMicro: "5", blockNumber: null });
       expect(response.body[1].balanceMicro).toBe("1234567");
+    });
+
+    it("returns nulls for a wallet without a proxy address and skips it upstream", async () => {
+      const a = (await create()).body;
+      const id = randomUUID();
+      await harness.wallets.insertProvisioning({
+        id,
+        ref: `mgr:${id}`,
+        kind: "user",
+        externalId: null,
+        label: null,
+        createdAt: new Date().toISOString(),
+      });
+      harness.upstream.setBalance(a.proxyAddress, { balanceRaw: "9", blockNumber: 5 });
+      harness.upstream.requests.length = 0;
+
+      const response = await balances([id, a.id]);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual([
+        { walletId: id, proxyAddress: null, balanceMicro: null, blockNumber: null },
+        { walletId: a.id, proxyAddress: a.proxyAddress, balanceMicro: "9", blockNumber: 5 },
+      ]);
+      const call = harness.upstream.requests.find((r) => r.path === "/v1/balances");
+      expect(call?.body).toEqual({ addresses: [a.proxyAddress] });
+
+      harness.upstream.requests.length = 0;
+      const only = await balances([id]);
+      expect(only.body).toEqual([
+        { walletId: id, proxyAddress: null, balanceMicro: null, blockNumber: null },
+      ]);
+      expect(harness.upstream.requests.some((r) => r.path === "/v1/balances")).toBe(false);
     });
 
     it("answers 404 for an unknown wallet", async () => {
