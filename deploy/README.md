@@ -130,6 +130,23 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
     `POST /submit` with the builder key and the wallet's EOA in `X-Builder-Address`.
 
   Anything else, such as the CLOB, needs the app key as well. Your backend sends it.
+- **Balances unavailable after an upgrade:** balances are read from the platform's data-api,
+  whose address setup takes from the platform when it saves the configuration. An install set
+  up before its platform published one (`PUBLIC_DATA_API_URL` on the platform side) has no
+  `DATA_API_URL`, and its admin UI shows "Balances unavailable". Running `dpm-custody setup`
+  again does not fix this: on a finished install it reports "Setup is already done" and does
+  not rewrite the configuration. Once the platform publishes its data-api, add the variable to
+  dpm-wallet's configuration and restart it:
+
+  ```sh
+  cd ~/dpm-custody
+  docker compose --env-file .env -f compose.yml exec setup \
+    sh -c 'echo "DATA_API_URL=https://<the platform data-api address>" >> /config/dpm-wallet.env'
+  docker compose --env-file .env -f compose.yml restart dpm-wallet
+  ```
+
+  The platform team can tell you the address; it is the `data_api` service that
+  `GET /wallet-install/config` reports.
 
 ---
 
