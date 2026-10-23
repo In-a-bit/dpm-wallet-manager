@@ -290,6 +290,56 @@ describe("orders", () => {
     });
   });
 
+  describe("operation rows", () => {
+    it("keeps one row, and one actor, per request without an idempotency key", async () => {
+      const harness = await startHarness({ DPM_WALLET_MANAGER_MODE: "segregated" });
+      try {
+        const walletId = (await harness.post("/v1/wallets", { body: {} })).body.id;
+        const orderHash = (
+          await harness.post(`/v1/wallets/${walletId}/orders/sign`, { body: ORDER })
+        ).body.orderHash;
+        const cancel = { orderHash, marketId: "market-1" };
+        const first = await harness.post(`/v1/wallets/${walletId}/orders/cancel`, {
+          body: cancel,
+          apiKey: harness.adminKey,
+        });
+        const second = await harness.post(`/v1/wallets/${walletId}/orders/cancel`, {
+          body: cancel,
+          apiKey: harness.operatorKey,
+        });
+        expect(second.body.operationId).not.toBe(first.body.operationId);
+        const a = await harness.operations.findById(first.body.operationId);
+        const b = await harness.operations.findById(second.body.operationId);
+        expect(a?.apiKeyId).not.toBeNull();
+        expect(b?.apiKeyId).not.toBeNull();
+        expect(a?.apiKeyId).not.toBe(b?.apiKeyId);
+
+        const o1 = await harness.post(`/v1/wallets/${walletId}/orders/sign`, { body: ORDER });
+        const o2 = await harness.post(`/v1/wallets/${walletId}/orders/sign`, {
+          body: ORDER,
+          apiKey: harness.operatorKey,
+        });
+        expect(o2.body.operationId).not.toBe(o1.body.operationId);
+      } finally {
+        await harness.close();
+      }
+    });
+
+    it("keeps one row per request when the idempotency keys differ", async () => {
+      const harness = await startHarness({ DPM_WALLET_MANAGER_MODE: "segregated" });
+      try {
+        const walletId = (await harness.post("/v1/wallets", { body: {} })).body.id;
+        const orders = harness.app.get(OrdersService);
+        const actor = { keyId: null, userId: null, username: null } as never;
+        const first = await orders.signOrder(walletId, ORDER as never, actor, "trade-a");
+        const second = await orders.signOrder(walletId, ORDER as never, actor, "trade-b");
+        expect(second.operationId).not.toBe(first.operationId);
+      } finally {
+        await harness.close();
+      }
+    });
+  });
+
   describe("idempotency", () => {
     it("replays rather than producing a second signature", async () => {
       const harness = await startHarness({ DPM_WALLET_MANAGER_MODE: "segregated" });

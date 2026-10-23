@@ -54,6 +54,7 @@ export type Operation = {
   resultSummary: string | null;
   status: string;
   relayerTransactionId: string | null;
+  idempotencyKey: string | null;
   apiKeyId: string | null;
   uiUserId: string | null;
   createdAt: string;
@@ -92,21 +93,24 @@ export class OperationRepository {
   }
 
   /**
-   * Inserts unless the same signing is already recorded, and returns the id of whichever row
-   * stands. A retry under a replayed idempotency key gets the original signature back, so the
-   * same kind, signer, result and request means the same action, not a second one.
+   * Inserts unless this is the same request retried under the same idempotency key, and returns
+   * the id of whichever row stands. A retry gets the original signature back, so the same key,
+   * kind, signer and request means the same action, not a second one. Without a key nothing is
+   * merged: two requests that look alike are still two requests, each with its own actor.
    */
   async insertOrGet(operation: NewOperation): Promise<string> {
-    const existing = await this.operations.findOne({
-      where: {
-        kind: operation.kind,
-        signerWalletId: operation.signerWalletId,
-        resultSummary: operation.resultSummary ?? undefined,
-        requestHash: operation.requestHash,
-      },
-      order: { createdAt: "ASC" },
-    });
-    if (existing && operation.resultSummary) return existing.id;
+    if (operation.idempotencyKey) {
+      const existing = await this.operations.findOne({
+        where: {
+          idempotencyKey: operation.idempotencyKey,
+          kind: operation.kind,
+          signerWalletId: operation.signerWalletId,
+          requestHash: operation.requestHash,
+        },
+        order: { createdAt: "ASC" },
+      });
+      if (existing) return existing.id;
+    }
     await this.operations.insert(operation);
     return operation.id;
   }

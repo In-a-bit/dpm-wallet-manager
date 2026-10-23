@@ -79,6 +79,7 @@ describe("RetentionService", () => {
       requestHash: "h",
       resultSummary: null,
       status: "ok",
+      idempotencyKey: null,
       apiKeyId: null,
       uiUserId: null,
       createdAt: ago(days),

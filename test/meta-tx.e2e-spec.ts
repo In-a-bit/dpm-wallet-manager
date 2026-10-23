@@ -1,3 +1,4 @@
+import { MetaTxService } from "../src/meta-tx/meta-tx.service";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 const CONDITION_ID = `0x${"7a".repeat(32)}`;
@@ -240,6 +241,71 @@ describe("meta-transactions", () => {
         idempotencyKey: "merge-1",
       });
       expect(second.body.operationId).toBe(first.body.operationId);
+    });
+
+    describe("operation rows", () => {
+      const rowOf = async (operationId: string) => {
+        const row = await harness.operations.findById(operationId);
+        expect(row).toBeDefined();
+        return row!;
+      };
+
+      it("keeps one row per request when no idempotency key is sent", async () => {
+        // The fake upstream never advances the allowance nonce, so both signings read identically.
+        const first = await harness.post(`/v1/wallets/${userId}/allowance`, {
+          apiKey: harness.adminKey,
+        });
+        const second = await harness.post(`/v1/wallets/${userId}/allowance`, {
+          apiKey: harness.operatorKey,
+        });
+        expect(second.body.operationId).not.toBe(first.body.operationId);
+        const [a, b] = [await rowOf(first.body.operationId), await rowOf(second.body.operationId)];
+        expect(a.apiKeyId).not.toBeNull();
+        expect(b.apiKeyId).not.toBeNull();
+        expect(a.apiKeyId).not.toBe(b.apiKeyId);
+      });
+
+      it("keeps one row per request when the idempotency keys differ", async () => {
+        const first = await harness.post(`/v1/wallets/${userId}/allowance`, {
+          idempotencyKey: "allow-a",
+        });
+        const second = await harness.post(`/v1/wallets/${userId}/allowance`, {
+          idempotencyKey: "allow-b",
+        });
+        expect(second.body.operationId).not.toBe(first.body.operationId);
+      });
+
+      it("returns the original row when a crashed request is retried under its key", async () => {
+        const service = harness.app.get(MetaTxService);
+        const actor = { keyId: null, userId: null, username: null } as never;
+        const record = jest
+          .spyOn(harness.audit, "record")
+          .mockRejectedValueOnce(new Error("crash after recording"));
+        try {
+          const args = { conditionId: CONDITION_ID, amountDecimal: "2" };
+          await expect(service.build("split", userId, args, actor, "crash-1")).rejects.toThrow(
+            "crash",
+          );
+          const retried = await service.build("split", userId, args, actor, "crash-1");
+          const rows = await harness.operations.query({ walletId: userId, kind: "split" }, 50, 0);
+          expect(rows.operations.filter((o) => o.idempotencyKey === "crash-1")).toHaveLength(1);
+          expect(rows.operations.find((o) => o.idempotencyKey === "crash-1")?.id).toBe(
+            retried.operationId,
+          );
+        } finally {
+          record.mockRestore();
+        }
+      });
+
+      it("does not expose the idempotency key on the operation", async () => {
+        const response = await harness.post(`/v1/wallets/${userId}/allowance`, {
+          idempotencyKey: "allow-hidden",
+        });
+        const listed = await harness.get("/v1/operations", { query: { walletId: userId } });
+        expect(JSON.stringify(listed.body)).not.toContain("allow-hidden");
+        expect(JSON.stringify(response.body)).not.toContain("allow-hidden");
+        expect((await rowOf(response.body.operationId)).idempotencyKey).toBe("allow-hidden");
+      });
     });
   });
 });

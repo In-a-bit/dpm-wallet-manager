@@ -61,6 +61,13 @@ export class OperationEntity {
   @Column("text", { name: "relayer_transaction_id", nullable: true })
   relayerTransactionId!: string | null;
 
+  /**
+   * The caller's `Idempotency-Key`, verbatim, so a retried request finds its own row. Client
+   * supplied, so it is never part of an API response.
+   */
+  @Column("text", { name: "idempotency_key", nullable: true })
+  idempotencyKey!: string | null;
+
   @Column("uuid", { name: "api_key_id", nullable: true })
   apiKeyId!: string | null;
 

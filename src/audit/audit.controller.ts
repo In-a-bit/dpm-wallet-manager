@@ -87,7 +87,8 @@ export class AuditController {
       query.cursor,
     );
     return {
-      items: page.operations,
+      // Field by field: the idempotency key is the client's own value and stays out of responses.
+      items: page.operations.map(({ idempotencyKey: _key, ...operation }) => operation),
       ...(page.total !== undefined ? { total: page.total } : {}),
       nextCursor: page.nextCursor,
       limit: query.limit,

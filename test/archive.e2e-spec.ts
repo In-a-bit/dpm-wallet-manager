@@ -60,9 +60,26 @@ async function waitFor(check: () => Promise<boolean> | boolean, ms = 10_000): Pr
   }
 }
 
+async function hasIdempotencyKeyColumn(harness: Harness): Promise<boolean> {
+  const rows: unknown[] = await harness.db.query(
+    `SELECT 1 FROM information_schema.columns
+     WHERE table_name = 'operations' AND column_name = 'idempotency_key'`,
+  );
+  return rows.length > 0;
+}
+
 async function seedOperation(harness: Harness, kind: OperationKind, createdAt: string) {
   const id = randomUUID();
   const walletId = randomUUID();
+  if (!(await hasIdempotencyKeyColumn(harness))) {
+    // Migrated back past the column: the repository would name it, so write the row by hand.
+    await harness.db.query(
+      `INSERT INTO operations (id, wallet_id, signer_wallet_id, kind, mode, request_hash, status, created_at)
+       VALUES ($1, $2, $2, $3, 'segregated', 'hash', 'signed', $4)`,
+      [id, walletId, kind, createdAt],
+    );
+    return id;
+  }
   await harness.operations.insert({
     id,
     walletId,
@@ -72,6 +89,7 @@ async function seedOperation(harness: Harness, kind: OperationKind, createdAt: s
     requestHash: "hash",
     resultSummary: null,
     status: "signed",
+    idempotencyKey: null,
     apiKeyId: null,
     uiUserId: null,
     createdAt,
@@ -499,13 +517,49 @@ describe("archives scope recount", () => {
   });
 });
 
+describe("operation idempotency key migration", () => {
+  it("adds a nullable column and a valid partial index, and reverts cleanly", async () => {
+    const harness = await startHarness();
+    try {
+      const column: { is_nullable: string; column_default: string | null }[] =
+        await harness.db.query(
+          `SELECT is_nullable, column_default FROM information_schema.columns
+           WHERE table_name = 'operations' AND column_name = 'idempotency_key'`,
+        );
+      expect(column).toEqual([{ is_nullable: "YES", column_default: null }]);
+      const index: { valid: boolean; partial: boolean }[] = await harness.db.query(
+        `SELECT i.indisvalid AS valid, i.indpred IS NOT NULL AS partial FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'operations_idempotency_key'`,
+      );
+      expect(index).toEqual([{ valid: true, partial: true }]);
+
+      // Back and forth: existing rows survive with a NULL key.
+      const id = await seedOperation(harness, "order", OLD);
+      await harness.db.undoLastMigration();
+      await harness.db.undoLastMigration();
+      expect(
+        await harness.db.query(
+          `SELECT 1 FROM pg_class WHERE relname = 'operations_idempotency_key'`,
+        ),
+      ).toEqual([]);
+      await harness.db.runMigrations();
+      const rows: { idempotency_key: string | null }[] = await harness.db.query(
+        `SELECT idempotency_key FROM operations WHERE id = $1`,
+        [id],
+      );
+      expect(rows).toEqual([{ idempotency_key: null }]);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
 describe("archives migration", () => {
   it("numbers only new operations, and archives the unnumbered old ones by created_at", async () => {
     const harness = await startHarness();
     try {
       // Back to before the archive migrations, with rows already in the table.
-      await harness.db.undoLastMigration();
-      await harness.db.undoLastMigration();
+      for (let i = 0; i < 4; i++) await harness.db.undoLastMigration();
       const existing = await seedOperation(harness, "withdraw", OLD);
       const routine = await seedOperation(harness, "order", OLD);
       await harness.db.runMigrations();

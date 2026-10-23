@@ -65,7 +65,8 @@ export class MetaTxService {
       idempotencyKey ? { idempotencyKey: `${idempotencyKey}:${kind}` } : {},
     );
 
-    // A replayed signature (same idempotency key) is the same operation, not a second one.
+    // A replayed signature (same idempotency key) is the same operation, not a second one;
+    // without a key every request is its own.
     const operationId = await this.operations.insertOrGet({
       id: randomUUID(),
       walletId: wallet.id,
@@ -77,6 +78,7 @@ export class MetaTxService {
       requestHash: hashRequest({ kind, ...args, recipient }),
       resultSummary: `${signed.from}:${signed.nonce}`,
       status: "signed",
+      idempotencyKey: idempotencyKey ?? null,
       apiKeyId: actor.keyId,
       uiUserId: actor.userId,
       createdAt: new Date().toISOString(),

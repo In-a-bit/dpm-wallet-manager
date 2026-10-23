@@ -81,6 +81,7 @@ export class OrdersService {
       actor,
       request,
       resultSummary: signed.orderHash,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
 
     await this.audit.record({
@@ -145,6 +146,7 @@ export class OrdersService {
       actor,
       request: { orderHash, marketId },
       resultSummary: orderHash,
+      ...(idempotencyKey ? { idempotencyKey } : {}),
     });
 
     await this.audit.record({
@@ -185,6 +187,7 @@ export class OrdersService {
     actor: Actor;
     request: unknown;
     resultSummary: string;
+    idempotencyKey?: string;
   }): Promise<string> {
     return this.operations.insertOrGet({
       id: randomUUID(),
@@ -195,6 +198,7 @@ export class OrdersService {
       requestHash: hashRequest(entry.request),
       resultSummary: entry.resultSummary,
       status: "signed",
+      idempotencyKey: entry.idempotencyKey ?? null,
       apiKeyId: entry.actor.keyId,
       uiUserId: entry.actor.userId,
       createdAt: new Date().toISOString(),

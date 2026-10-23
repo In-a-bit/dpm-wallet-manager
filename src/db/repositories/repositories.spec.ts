@@ -221,11 +221,77 @@ describe("repositories", () => {
         requestHash: "abc",
         resultSummary: "0xhash",
         status: "signed",
+        idempotencyKey: null,
         apiKeyId: null,
         uiUserId: null,
         createdAt: now(),
       });
       expect((await operations.query({ walletId }, 10, 0)).total).toBe(1);
+    });
+
+    describe("insertOrGet", () => {
+      const fresh = (over: Partial<Parameters<OperationRepository["insert"]>[0]> = {}) => {
+        const walletId = over.walletId ?? randomUUID();
+        return {
+          id: randomUUID(),
+          walletId,
+          signerWalletId: walletId,
+          kind: "allowance" as const,
+          mode: "segregated",
+          requestHash: "same",
+          resultSummary: "0xfrom:0",
+          status: "signed",
+          idempotencyKey: null,
+          apiKeyId: randomUUID(),
+          uiUserId: null,
+          createdAt: now(),
+          ...over,
+        };
+      };
+
+      it("never merges requests that carry no key", async () => {
+        const first = fresh();
+        const second = fresh({ walletId: first.walletId, apiKeyId: randomUUID() });
+        expect(await operations.insertOrGet(first)).toBe(first.id);
+        expect(await operations.insertOrGet(second)).toBe(second.id);
+        expect((await operations.query({ walletId: first.walletId }, 10, 0)).total).toBe(2);
+      });
+
+      it("does not merge a keyed request into an earlier keyless one", async () => {
+        const first = fresh();
+        const second = fresh({ walletId: first.walletId, idempotencyKey: "k" });
+        await operations.insertOrGet(first);
+        expect(await operations.insertOrGet(second)).toBe(second.id);
+      });
+
+      it("does not merge different keys", async () => {
+        const first = fresh({ idempotencyKey: "a" });
+        const second = fresh({ walletId: first.walletId, idempotencyKey: "b" });
+        await operations.insertOrGet(first);
+        expect(await operations.insertOrGet(second)).toBe(second.id);
+      });
+
+      it("returns the original row for the same key, kind, signer and request", async () => {
+        const first = fresh({ idempotencyKey: "retry" });
+        const retry = fresh({ walletId: first.walletId, idempotencyKey: "retry" });
+        await operations.insertOrGet(first);
+        expect(await operations.insertOrGet(retry)).toBe(first.id);
+        expect((await operations.findById(first.id))?.apiKeyId).toBe(first.apiKeyId);
+        expect((await operations.query({ walletId: first.walletId }, 10, 0)).total).toBe(1);
+      });
+
+      it("keeps the key apart across kinds, signers and request hashes", async () => {
+        const base = fresh({ idempotencyKey: "shared" });
+        await operations.insertOrGet(base);
+        for (const over of [
+          { kind: "cancel" as const },
+          { signerWalletId: randomUUID() },
+          { requestHash: "other" },
+        ]) {
+          const other = fresh({ walletId: base.walletId, idempotencyKey: "shared", ...over });
+          expect(await operations.insertOrGet(other)).toBe(other.id);
+        }
+      });
     });
   });
 
