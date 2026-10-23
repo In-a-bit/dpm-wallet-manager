@@ -114,13 +114,17 @@ export type UpstreamRelayTransaction = {
   [key: string]: unknown;
 };
 
-/** One entry of `POST /v1/balances`, in request order. `blockNumber` is absent until synced. */
+/**
+ * One entry of `POST /v1/balances`, in request order, as data-api returns it. `blockNumber` is
+ * absent until synced. `balance` is data-api's human-unit float, for display only; amounts are
+ * read from `balanceRaw`. `allowanceRaw` is null for a wallet that never approved the exchange.
+ */
 export type UpstreamCollateralBalance = {
   user: string;
   decimals: number;
   balanceRaw: string;
-  balance: string;
-  allowanceRaw: string;
+  balance: number;
+  allowanceRaw: string | null;
   blockNumber?: number;
   updatedAt?: string;
 };

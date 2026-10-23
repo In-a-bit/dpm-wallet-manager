@@ -437,8 +437,8 @@ export class FakeDpmWallet {
       user: address,
       decimals,
       balanceRaw,
-      balance: balanceRaw,
-      allowanceRaw: "0",
+      balance: Number(balanceRaw) / 10 ** decimals,
+      allowanceRaw: configured.allowanceRaw ?? null,
       updatedAt: new Date().toISOString(),
       ...(configured.blockNumber === undefined ? {} : { blockNumber: configured.blockNumber }),
     };
