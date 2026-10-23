@@ -151,12 +151,9 @@ Indexes the trimming and paging need, added by migrations:
 
 ### 4. Restarts
 
-- **Graceful shutdown:** both services call `app.enableShutdownHooks()`.
-  - On SIGTERM they stop accepting connections, let in-flight requests finish (up to 20 s) and
-    close the database.
-  - Today node runs as PID 1 with no handler, so every stop waits the full 30 s grace and is then
-    killed mid-request.
-  - The retention job stops on shutdown.
+- **Graceful shutdown already exists** (`src/startup/shutdown.ts` in both: drain up to 25 s,
+  then `app.close()`). The only addition: the retention job stops on `onModuleDestroy`, so a
+  shutdown never waits on, or cuts into, a half-run batch loop beyond the batch in flight.
 - **Readiness:**
   - A new public `GET /v1/health/ready` in both services runs `SELECT 1` and answers 200, or 503
     when the database is unreachable.
