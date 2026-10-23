@@ -40,6 +40,8 @@ export const ERROR_STATUS = {
   ARCHIVE_NOT_READY: 409,
   ARCHIVE_CODE_MISMATCH: 400,
   ARCHIVE_NOT_FOUND: 404,
+  ARCHIVE_NOT_CANCELLABLE: 409,
+  ARCHIVE_SCOPE_CHANGED: 409,
   INTERNAL_ERROR: 500,
 } as const;
 
@@ -123,6 +125,13 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
     "The code does not match the 6-character code in the archive's file name. Nothing was " +
     "deleted.",
   ARCHIVE_NOT_FOUND: "No archive with that id.",
+  ARCHIVE_NOT_CANCELLABLE:
+    "Only a pending or downloaded archive can be cancelled. One that is deleting has started " +
+    "removing rows and must finish; done and cancelled are final.",
+  ARCHIVE_SCOPE_CHANGED:
+    "The rows in the archive's scope no longer match the count fixed when it was created, so " +
+    "the downloaded file is not a record of what a delete would remove. Nothing was deleted; " +
+    "cancel this archive and create a new one.",
   INTERNAL_ERROR: "An unexpected failure. The message is withheld.",
 };
 

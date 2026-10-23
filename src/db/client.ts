@@ -34,6 +34,9 @@ export function databaseOptions(connectionString: string): DataSourceOptions {
     // not something a booting container infers from the entities in front of it.
     synchronize: false,
     migrationsRun: false,
+    // One transaction per migration, so a migration can opt out (`transaction = false`) to build
+    // an index CONCURRENTLY. In TypeORM's default `all` mode such an opt-out is an error.
+    migrationsTransactionMode: "each",
   };
 }
 

@@ -28,6 +28,7 @@ import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import { archiveCode } from "./archive-writer";
 import { ArchiveService } from "./archive.service";
 import {
+  ArchiveCancelledDto,
   ArchiveCreatedDto,
   ArchiveDeleteAcceptedDto,
   ArchivePageDto,
@@ -127,7 +128,13 @@ export class ArchiveController {
     description: "Gzipped ndjson: a manifest line, then `{table, row}` lines.",
     content: { "application/gzip": { schema: { type: "string", format: "binary" } } },
   })
-  @ApiErrors("VALIDATION_FAILED", "ARCHIVE_NOT_FOUND", "ARCHIVE_NOT_READY")
+  @ApiErrors(
+    "VALIDATION_FAILED",
+    "ARCHIVE_NOT_FOUND",
+    "ARCHIVE_NOT_READY",
+    "UPSTREAM_UNAVAILABLE",
+    "UPSTREAM_REJECTED",
+  )
   async download(
     @Param("id", IsUuidPipe) id: string,
     @CurrentActor() actor: Actor,
@@ -156,6 +163,7 @@ export class ArchiveController {
     "ARCHIVE_CODE_MISMATCH",
     "ARCHIVE_NOT_FOUND",
     "ARCHIVE_NOT_READY",
+    "ARCHIVE_SCOPE_CHANGED",
   )
   delete(
     @Param("id", IsUuidPipe) id: string,
@@ -163,5 +171,31 @@ export class ArchiveController {
     @CurrentActor() actor: Actor,
   ): Promise<ArchiveDeleteAcceptedDto> {
     return this.archives.requestDelete(id, body.code, actor);
+  }
+
+  /**
+   * Cancel an archive.
+   *
+   * Abandons a `pending` or `downloaded` archive, so a new one can be created. Deletes nothing and
+   * changes no record; the archive stays in the history as `cancelled`. An archive that is
+   * `deleting` has started removing rows and cannot be cancelled.
+   */
+  @Post(":id/cancel")
+  @Roles("admin")
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ operationId: "cancelArchive", summary: "Cancel an archive" })
+  @ApiParam(ARCHIVE_ID)
+  @ApiOkResponse({ type: ArchiveCancelledDto })
+  @ApiErrors(
+    "VALIDATION_FAILED",
+    "CSRF_HEADER_REQUIRED",
+    "ARCHIVE_NOT_FOUND",
+    "ARCHIVE_NOT_CANCELLABLE",
+  )
+  cancel(
+    @Param("id", IsUuidPipe) id: string,
+    @CurrentActor() actor: Actor,
+  ): Promise<ArchiveCancelledDto> {
+    return this.archives.cancel(id, actor);
   }
 }

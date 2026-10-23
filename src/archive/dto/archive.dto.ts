@@ -70,6 +70,11 @@ export class ArchiveDeleteAcceptedDto {
   status!: "deleting";
 }
 
+export class ArchiveCancelledDto {
+  @ApiProperty({ enum: ["cancelled"], example: "cancelled" })
+  status!: "cancelled";
+}
+
 export class ArchiveDto extends ArchiveCreatedDto {
   @ApiProperty({ format: "date-time", example: "2026-07-01T00:00:00.000Z" })
   before!: string;

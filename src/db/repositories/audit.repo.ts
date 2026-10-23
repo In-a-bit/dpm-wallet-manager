@@ -28,7 +28,7 @@ export const ROUTINE_AUDIT_SQL = `(outcome = 'success' AND action IN (${ROUTINE_
 
 /**
  * SQL selecting the important rows only an archive removes: everything not routine, except the
- * archive's own `archive.*` trail, which is never archived or deleted.
+ * archive's own `archive.*` trail (create, download, delete, cancel), which is never archived or deleted.
  */
 export const IMPORTANT_AUDIT_SQL = `(NOT ${ROUTINE_AUDIT_SQL} AND action NOT LIKE 'archive.%')`;
 
@@ -111,6 +111,16 @@ export class AuditRepository {
       [before],
     );
     return { maxId: rows[0]?.maxId ?? 0, rows: rows[0]?.rows ?? 0 };
+  }
+
+  /** How many rows the archive bound covers right now. */
+  async countArchived(bound: ArchiveBound): Promise<number> {
+    const rows: { rows: number }[] = await this.events.query(
+      `SELECT COUNT(*)::int AS rows FROM audit_events
+       WHERE ${IMPORTANT_AUDIT_SQL} AND created_at < $1 AND id <= $2`,
+      [bound.before, bound.maxId],
+    );
+    return rows[0]?.rows ?? 0;
   }
 
   /** One page of an archive's rows, in id order, after `afterId`. */

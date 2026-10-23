@@ -19,6 +19,8 @@ this rule.
 
 Additive: `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN` that is nullable or has a `DEFAULT`.
 
+Adding a column with a volatile default (`bigserial`, `nextval(...)`, `gen_random_uuid()`) rewrites the whole table under an exclusive lock and needs free disk about the size of the table: add it nullable, then `ALTER COLUMN ... SET DEFAULT`, so only new rows get a value.
+
 Not additive, so it waits for a later release (or raises `MIN_UPGRADE_FROM`): `DROP` of a table,
 column or index the older version uses, renaming anything, `ADD COLUMN ... NOT NULL` without a
 default, tightening a type or constraint, changing what an existing column means.

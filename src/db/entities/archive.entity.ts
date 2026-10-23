@@ -2,7 +2,7 @@ import { Column, Entity, Index, PrimaryColumn, type ValueTransformer } from "typ
 
 import { isoTimestamp } from "../iso-timestamp";
 
-export const ARCHIVE_STATUSES = ["pending", "downloaded", "deleting", "done"] as const;
+export const ARCHIVE_STATUSES = ["pending", "downloaded", "deleting", "done", "cancelled"] as const;
 export type ArchiveStatus = (typeof ARCHIVE_STATUSES)[number];
 
 /** Per table: the id (or, for `manager.operations`, the `seq`) ceiling and the row count. */

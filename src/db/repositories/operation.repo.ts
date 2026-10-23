@@ -25,11 +25,24 @@ export const ROUTINE_OPERATION_KINDS = [
 export const IMPORTANT_OPERATION_SQL = `(kind = 'withdraw')`;
 
 /**
- * An archive's fixed scope over this table. Ids here are uuids, so the bound is `seq`: a
- * `bigserial` every row gets on insert, which a row written after the scope was fixed always
- * exceeds, whatever `created_at` it carries.
+ * An archive's fixed scope over this table. Ids here are uuids, so the bound is `seq`: a sequence
+ * number every row inserted since the archive migration gets, which a row written after the
+ * scope was fixed always exceeds, whatever `created_at` it carries. Rows from before the
+ * migration have a NULL `seq` and read as 0: they predate every scope.
  */
 export type OperationArchiveBound = { before: string; maxSeq: number };
+
+/** Where an export page resumes: after this `(COALESCE(seq, 0), id)`. */
+export type OperationArchivePosition = { seq: number; id: string };
+
+/** Before every row: no `seq` is below 0 and no uuid below the nil one. */
+export const ARCHIVE_START: OperationArchivePosition = {
+  seq: -1,
+  id: "00000000-0000-0000-0000-000000000000",
+};
+
+/** The archive bound over `operations`, with `$1` the cutoff and `$2` the `seq` ceiling. */
+const ARCHIVED_OPERATION_SQL = `${IMPORTANT_OPERATION_SQL} AND created_at < $1 AND COALESCE(seq, 0) <= $2`;
 
 export type Operation = {
   id: string;
@@ -146,50 +159,64 @@ export class OperationRepository {
     return deletedCount(result);
   }
 
-  /** The highest `seq` and the row count of the important rows older than `before`, right now. */
+  /** The highest `seq` (0 when none) and the row count of the important rows before `before`. */
   async importantScope(before: string): Promise<{ maxSeq: number; rows: number }> {
-    const rows: { maxSeq: string | null; rows: number }[] = await this.operations.query(
-      `SELECT MAX(seq)::text AS "maxSeq", COUNT(*)::int AS rows FROM operations
+    const rows: { maxSeq: string; rows: number }[] = await this.operations.query(
+      `SELECT COALESCE(MAX(seq), 0)::text AS "maxSeq", COUNT(*)::int AS rows FROM operations
        WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1`,
       [before],
     );
     return { maxSeq: Number(rows[0]?.maxSeq ?? 0), rows: rows[0]?.rows ?? 0 };
   }
 
-  /** One page of an archive's rows in `seq` order after `afterSeq`, each with its `seq`. */
+  /** How many rows the archive bound covers right now. */
+  async countArchived(bound: OperationArchiveBound): Promise<number> {
+    const rows: { rows: number }[] = await this.operations.query(
+      `SELECT COUNT(*)::int AS rows FROM operations WHERE ${ARCHIVED_OPERATION_SQL}`,
+      [bound.before, bound.maxSeq],
+    );
+    return rows[0]?.rows ?? 0;
+  }
+
+  /**
+   * One page of an archive's rows in `(COALESCE(seq, 0), id)` order after `after`, each with its
+   * position, so the next page resumes exactly where this one stopped.
+   */
   async importantPage(
     bound: OperationArchiveBound,
-    afterSeq: number,
+    after: OperationArchivePosition,
     limit: number,
-  ): Promise<{ seq: number; operation: Operation }[]> {
+  ): Promise<{ position: OperationArchivePosition; operation: Operation }[]> {
     const rows: (Omit<Operation, "createdAt"> & { createdAt: Date; seq: string })[] =
       await this.operations.query(
         `SELECT id, wallet_id AS "walletId", signer_wallet_id AS "signerWalletId", kind, mode,
                 request_hash AS "requestHash", result_summary AS "resultSummary", status,
                 relayer_transaction_id AS "relayerTransactionId", api_key_id AS "apiKeyId",
-                ui_user_id AS "uiUserId", created_at AS "createdAt", seq::text AS seq
+                ui_user_id AS "uiUserId", created_at AS "createdAt",
+                COALESCE(seq, 0)::text AS seq
          FROM operations
-         WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1 AND seq <= $2 AND seq > $3
-         ORDER BY seq
-         LIMIT $4`,
-        [bound.before, bound.maxSeq, afterSeq, limit],
+         WHERE ${ARCHIVED_OPERATION_SQL}
+           AND (COALESCE(seq, 0), id) > ($3::bigint, $4::uuid)
+         ORDER BY COALESCE(seq, 0), id
+         LIMIT $5`,
+        [bound.before, bound.maxSeq, after.seq, after.id, limit],
       );
     return rows.map(({ seq, createdAt, ...rest }) => ({
-      seq: Number(seq),
+      position: { seq: Number(seq), id: rest.id },
       operation: { ...rest, createdAt: createdAt.toISOString() },
     }));
   }
 
   /**
-   * Deletes one batch of an archive's rows (lowest `seq` first) and returns how many went: exactly
+   * Deletes one batch of an archive's rows (in export order) and returns how many went: exactly
    * the rows `importantPage` exported, never one written after the scope was fixed.
    */
   async deleteArchived(bound: OperationArchiveBound, batch: number): Promise<number> {
     const result: unknown = await this.operations.query(
       `DELETE FROM operations WHERE id IN (
          SELECT id FROM operations
-         WHERE ${IMPORTANT_OPERATION_SQL} AND created_at < $1 AND seq <= $2
-         ORDER BY seq
+         WHERE ${ARCHIVED_OPERATION_SQL}
+         ORDER BY COALESCE(seq, 0), id
          LIMIT $3
        ) RETURNING id`,
       [bound.before, bound.maxSeq, batch],

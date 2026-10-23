@@ -26,6 +26,7 @@ export const AuditAction = {
   ArchiveCreate: "archive.create",
   ArchiveDownload: "archive.download",
   ArchiveDelete: "archive.delete",
+  ArchiveCancel: "archive.cancel",
 
   PlatformModeBurned: "platform.mode_burned",
   PlatformMasterWalletCreate: "platform.master_wallet_create",

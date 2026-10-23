@@ -4,14 +4,15 @@ import { Inject, Injectable, type OnModuleDestroy } from "@nestjs/common";
 import type { Response } from "express";
 
 import { DpmWalletClient } from "../clients/dpm-wallet.client";
+import type { UpstreamAuditExportPage } from "../clients/dpm-wallet.types";
 import type { Actor } from "../common/actor";
 import type { Config } from "../config";
 import type { ArchiveScope } from "../db/entities";
 import { ArchiveRepository, type Archive } from "../db/repositories/archive.repo";
 import { AuditRepository } from "../db/repositories/audit.repo";
-import { OperationRepository } from "../db/repositories/operation.repo";
+import { ARCHIVE_START, OperationRepository } from "../db/repositories/operation.repo";
 import { ManagerError, validationFailed } from "../errors";
-import { AuditLog } from "../observability/audit";
+import { AuditLog, type AuditRecord } from "../observability/audit";
 import { AuditAction, AuditOutcome } from "../observability/audit-action";
 import { logError, logInfo } from "../observability/log";
 import { CONFIG } from "../tokens";
@@ -109,6 +110,29 @@ export class ArchiveService implements OnModuleDestroy {
       throw notReady(`Archive ${id} is ${archive.status}; its rows can no longer be downloaded.`);
     }
     const install = installName(this.config.managerPublicUrl);
+
+    // dpm-wallet's first page is fetched before a byte is written, so dpm-wallet being down
+    // answers as an error response rather than a cut-off file.
+    const wallet = archive.scope[ARCHIVE_TABLES.wallet];
+    let firstWalletPage: UpstreamAuditExportPage | undefined;
+    if (wallet && wallet.rows > 0) {
+      try {
+        firstWalletPage = await this.upstream.auditExport({
+          before: archive.before,
+          maxId: wallet.maxId,
+          limit: ARCHIVE_PAGE,
+        });
+      } catch (err) {
+        await this.recordQuietly({
+          actor,
+          action: AuditAction.ArchiveDownload,
+          outcome: AuditOutcome.Failure,
+          detail: { archiveId: id, reason: "upstream", rowsSent: 0 },
+        });
+        throw err;
+      }
+    }
+
     res.status(200);
     res.setHeader("Content-Type", "application/gzip");
     res.setHeader(
@@ -119,13 +143,16 @@ export class ArchiveService implements OnModuleDestroy {
 
     const counted = { rows: 0 };
     try {
-      const file = await writeArchive(this.records(archive, install, counted), res);
+      const file = await writeArchive(
+        this.records(archive, install, counted, firstWalletPage),
+        res,
+      );
       const recorded = await this.archives.markDownloaded(id, {
         ...file,
         rowCount: counted.rows,
         at: new Date().toISOString(),
       });
-      await this.audit.record({
+      await this.recordQuietly({
         actor,
         action: AuditAction.ArchiveDownload,
         outcome: recorded ? AuditOutcome.Success : AuditOutcome.Failure,
@@ -135,7 +162,9 @@ export class ArchiveService implements OnModuleDestroy {
       // ERR_STREAM_PREMATURE_CLOSE is a client that broke off; anything else failed on this side.
       const reason = (err as { code?: string }).code ?? "error";
       logError("archive.download_failed", { archiveId: id, reason, err });
-      await this.audit.record({
+      // The response is already gone; nothing thrown from here could reach the client, so an
+      // audit failure must not become an unhandled rejection either.
+      await this.recordQuietly({
         actor,
         action: AuditAction.ArchiveDownload,
         outcome: AuditOutcome.Failure,
@@ -173,6 +202,19 @@ export class ArchiveService implements OnModuleDestroy {
         "The code does not match the archive's file name. Nothing was deleted.",
       );
     }
+    if (archive.status === "downloaded") {
+      // Before the first batch: the manager tables must still hold exactly what the file holds.
+      const changed = await this.scopeChanges(archive);
+      if (changed.length > 0) {
+        await deny(`scope changed: ${changed.join(", ")}`);
+        throw new ManagerError(
+          "ARCHIVE_SCOPE_CHANGED",
+          `The rows in scope no longer match the archive (${changed.join(", ")}). Nothing was ` +
+            "deleted; cancel this archive and create a new one.",
+          { details: { tables: changed } },
+        );
+      }
+    }
     if (!(await this.archives.markDeleting(id))) throw notReady(`Archive ${id} changed state.`);
     await this.audit.record({
       actor,
@@ -182,6 +224,69 @@ export class ArchiveService implements OnModuleDestroy {
     });
     this.resume();
     return { status: "deleting" };
+  }
+
+  /**
+   * Abandons a `pending` or `downloaded` archive. Deletes nothing and touches no record; the
+   * archive stays in the history as `cancelled`, and a new one can be created.
+   */
+  async cancel(id: string, actor: Actor): Promise<{ status: "cancelled" }> {
+    const archive = await this.find(id);
+    if (!(await this.archives.markCancelled(id))) {
+      await this.audit.record({
+        actor,
+        action: AuditAction.ArchiveCancel,
+        outcome: AuditOutcome.Denied,
+        detail: { archiveId: id, reason: `status ${archive.status}` },
+      });
+      throw new ManagerError(
+        "ARCHIVE_NOT_CANCELLABLE",
+        `Archive ${id} is ${archive.status}; only a pending or downloaded archive can be cancelled.`,
+      );
+    }
+    await this.audit.record({
+      actor,
+      action: AuditAction.ArchiveCancel,
+      outcome: AuditOutcome.Success,
+      detail: { archiveId: id, previousStatus: archive.status },
+    });
+    return { status: "cancelled" };
+  }
+
+  /** The manager tables whose in-scope count differs from the archive's fixed `rows`. */
+  private async scopeChanges(archive: Archive): Promise<string[]> {
+    const { before, scope } = archive;
+    const counts: [string, () => Promise<number>][] = [
+      [
+        ARCHIVE_TABLES.operations,
+        () =>
+          this.operations.countArchived({
+            before,
+            maxSeq: scope[ARCHIVE_TABLES.operations]?.maxId ?? 0,
+          }),
+      ],
+      [
+        ARCHIVE_TABLES.audit,
+        () =>
+          this.auditEvents.countArchived({
+            before,
+            maxId: scope[ARCHIVE_TABLES.audit]?.maxId ?? 0,
+          }),
+      ],
+    ];
+    const changed: string[] = [];
+    for (const [table, count] of counts) {
+      if ((await count()) !== (scope[table]?.rows ?? 0)) changed.push(table);
+    }
+    return changed;
+  }
+
+  private async recordQuietly(record: AuditRecord): Promise<void> {
+    try {
+      await this.audit.record(record);
+    } catch (err) {
+      logError("archive.audit_failed", { action: record.action, err });
+    }
   }
 
   /**
@@ -272,6 +377,7 @@ export class ArchiveService implements OnModuleDestroy {
     archive: Archive,
     install: string,
     counted: { rows: number },
+    firstWalletPage?: UpstreamAuditExportPage,
   ): AsyncGenerator<unknown> {
     const { before, scope } = archive;
     yield {
@@ -294,7 +400,7 @@ export class ArchiveService implements OnModuleDestroy {
     const ops = scope[ARCHIVE_TABLES.operations];
     let rows = 0;
     if (ops && ops.rows > 0) {
-      for (let after = 0; ;) {
+      for (let after = ARCHIVE_START; ;) {
         const page = await this.operations.importantPage(
           { before, maxSeq: ops.maxId },
           after,
@@ -307,7 +413,7 @@ export class ArchiveService implements OnModuleDestroy {
         }
         const last = page.at(-1);
         if (!last || page.length < ARCHIVE_PAGE) break;
-        after = last.seq;
+        after = last.position;
       }
     }
     check(ARCHIVE_TABLES.operations, rows);
@@ -338,12 +444,15 @@ export class ArchiveService implements OnModuleDestroy {
     if (wallet && wallet.rows > 0) {
       let cursor: string | undefined;
       do {
-        const page = await this.upstream.auditExport({
-          before,
-          maxId: wallet.maxId,
-          limit: ARCHIVE_PAGE,
-          ...(cursor === undefined ? {} : { cursor }),
-        });
+        const page =
+          cursor === undefined && firstWalletPage
+            ? firstWalletPage
+            : await this.upstream.auditExport({
+                before,
+                maxId: wallet.maxId,
+                limit: ARCHIVE_PAGE,
+                ...(cursor === undefined ? {} : { cursor }),
+              });
         for (const row of page.items) {
           if (row.id > wallet.maxId) throw new Error(`wallet.audit_events: id ${row.id} > maxId`);
           yield { table: ARCHIVE_TABLES.wallet, row };

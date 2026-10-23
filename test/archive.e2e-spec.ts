@@ -41,6 +41,17 @@ async function download(
   };
 }
 
+/**
+ * Downloads and waits for the archive to be recorded as `downloaded`: the server records it once
+ * its last byte is handed off, which can be just after the client has read that byte.
+ */
+async function downloadFully(harness: Harness, id: string): Promise<Download> {
+  const response = await download(harness, id);
+  expect(response.status).toBe(200);
+  await waitFor(async () => (await archiveStatus(harness, id)) === "downloaded");
+  return response;
+}
+
 async function waitFor(check: () => Promise<boolean> | boolean, ms = 10_000): Promise<void> {
   const until = Date.now() + ms;
   while (!(await check())) {
@@ -95,6 +106,7 @@ describe("archives", () => {
   const outOfScope: Record<string, (string | number)[]> = { [OPS]: [], [AUDIT]: [], [WALLET]: [] };
   let archive: { id: string; code: string; scope: Record<string, { maxId: number; rows: number }> };
   let adminKeyId: string;
+  let nextId: string;
 
   beforeAll(async () => {
     harness = await startHarness({ MANAGER_PUBLIC_URL: "https://Custody.Example.com:8443/x" });
@@ -111,6 +123,7 @@ describe("archives", () => {
     outOfScope[AUDIT]!.push(await seedAudit(harness, "sign.order", "success", OLD));
     outOfScope[AUDIT]!.push(await seedAudit(harness, "archive.create", "success", OLD));
     outOfScope[AUDIT]!.push(await seedAudit(harness, "archive.delete", "denied", OLD));
+    outOfScope[AUDIT]!.push(await seedAudit(harness, "archive.cancel", "success", OLD));
     outOfScope[AUDIT]!.push(await seedAudit(harness, "key.create", "success", RECENT));
 
     for (let id = 1; id <= 4; id++) {
@@ -223,9 +236,20 @@ describe("archives", () => {
     expect(del.body.error.code).toBe("ARCHIVE_NOT_READY");
   });
 
-  it("streams the scope as gzipped ndjson and records its SHA-256", async () => {
+  it("answers an error, not a cut-off file, when dpm-wallet is down before the first byte", async () => {
+    harness.upstream.failNextWith(503, "UNAVAILABLE", "dpm-wallet is down");
     const response = await download(harness, archive.id);
-    expect(response.status).toBe(200);
+    // UPSTREAM_UNAVAILABLE is this service's fixed 502 (ERROR_STATUS), as on every other route.
+    expect(response.status).toBe(502);
+    expect(response.headers["content-type"]).toMatch(/^application\/json/);
+    expect(JSON.parse(response.body.toString("utf8"))).toMatchObject({
+      error: { code: "UPSTREAM_UNAVAILABLE" },
+    });
+    expect(await archiveStatus(harness, archive.id)).toBe("pending");
+  });
+
+  it("streams the scope as gzipped ndjson and records its SHA-256", async () => {
+    const response = await downloadFully(harness, archive.id);
     expect(response.headers["content-type"]).toBe("application/gzip");
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
     expect(response.headers["content-disposition"]).toBe(
@@ -323,6 +347,7 @@ describe("archives", () => {
   it("allows a new archive once the last one is done", async () => {
     const next = await harness.post("/v1/archives", { body: { before: BEFORE } });
     expect(next.status).toBe(201);
+    nextId = next.body.id as string;
     // The late rows are what this one covers.
     expect(next.body.scope).toMatchObject({
       [OPS]: { rows: 1 },
@@ -353,6 +378,66 @@ describe("archives", () => {
     );
     for (const event of mine) expect(event.actorKeyId).toBe(adminKeyId);
   });
+
+  describe("cancel", () => {
+    async function counts(): Promise<number[]> {
+      const ops: { n: number }[] = await harness.db.query(
+        `SELECT COUNT(*)::int AS n FROM operations`,
+      );
+      const audit: { n: number }[] = await harness.db.query(
+        `SELECT COUNT(*)::int AS n FROM audit_events WHERE action NOT LIKE 'archive.%'`,
+      );
+      return [ops[0]!.n, audit[0]!.n, harness.upstream.importantAudit.length];
+    }
+
+    it("refuses a done archive", async () => {
+      const response = await harness.post(`/v1/archives/${archive.id}/cancel`);
+      expect(response.status).toBe(409);
+      expect(response.body.error.code).toBe("ARCHIVE_NOT_CANCELLABLE");
+    });
+
+    it("refuses a viewer", async () => {
+      const response = await harness.post(`/v1/archives/${nextId}/cancel`, {
+        apiKey: harness.readonlyKey,
+      });
+      expect(response.status).toBe(403);
+    });
+
+    it("abandons a downloaded archive without touching a record, then allows a new one", async () => {
+      await downloadFully(harness, nextId);
+      const before = await counts();
+
+      const response = await harness.post(`/v1/archives/${nextId}/cancel`);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ status: "cancelled" });
+      expect(await counts()).toEqual(before);
+      expect(await archiveStatus(harness, nextId)).toBe("cancelled");
+      // A cancelled archive cannot be downloaded or deleted, and stays in the history.
+      expect((await download(harness, nextId)).status).toBe(409);
+      const code = nextId.slice(0, 6).toUpperCase();
+      const del = await harness.post(`/v1/archives/${nextId}/delete`, { body: { code } });
+      expect(del.status).toBe(409);
+      const list = await harness.get("/v1/archives");
+      expect(list.body.items.map((a: { id: string }) => a.id)).toContain(nextId);
+
+      const created = await harness.post("/v1/archives", { body: { before: BEFORE } });
+      expect(created.status).toBe(201);
+      // Deleting is past the point of no return.
+      await harness.db.query(`UPDATE archives SET status = 'deleting' WHERE id = $1`, [
+        created.body.id,
+      ]);
+      const deleting = await harness.post(`/v1/archives/${created.body.id}/cancel`);
+      expect(deleting.status).toBe(409);
+      expect(deleting.body.error.code).toBe("ARCHIVE_NOT_CANCELLABLE");
+      expect(await counts()).toEqual(before);
+
+      const events = (await harness.get("/v1/audit", { query: { action: "archive.cancel" } })).body
+        .items as { outcome: string; actorKeyId: string; detail: { archiveId: string } | null }[];
+      const mine = events.filter((e) => e.detail?.archiveId === nextId);
+      expect(mine.map((e) => e.outcome)).toEqual(["success"]);
+      expect(mine[0]!.actorKeyId).toBe(adminKeyId);
+    });
+  });
 });
 
 describe("archives after a restart", () => {
@@ -362,7 +447,7 @@ describe("archives after a restart", () => {
       const id = await seedOperation(harness, "withdraw", OLD);
       const created = await harness.post("/v1/archives", { body: { before: BEFORE } });
       expect(created.status).toBe(201);
-      expect((await download(harness, created.body.id as string)).status).toBe(200);
+      await downloadFully(harness, created.body.id as string);
       // As if the container died mid-delete.
       await harness.db.query(`UPDATE archives SET status = 'deleting' WHERE id = $1`, [
         created.body.id,
@@ -387,29 +472,82 @@ describe("archives after a restart", () => {
   });
 });
 
-describe("archives migration", () => {
-  it("gives every existing operation a distinct seq, in insertion order for new rows", async () => {
+describe("archives scope recount", () => {
+  it("refuses the delete, leaving the archive downloaded, when the scope count changed", async () => {
     const harness = await startHarness();
     try {
-      await harness.db.undoLastMigration();
-      const existing = [
-        await seedOperation(harness, "withdraw", OLD),
-        await seedOperation(harness, "order", OLD),
-      ];
-      await harness.db.runMigrations();
-      const later = await seedOperation(harness, "withdraw", OLD);
+      const kept = await seedOperation(harness, "withdraw", OLD);
+      const removed = await seedOperation(harness, "withdraw", OLD);
+      const created = await harness.post("/v1/archives", { body: { before: BEFORE } });
+      await downloadFully(harness, created.body.id as string);
+      await harness.db.query(`DELETE FROM operations WHERE id = $1`, [removed]);
 
-      const rows: { id: string; seq: string }[] = await harness.db.query(
+      const response = await harness.post(`/v1/archives/${created.body.id}/delete`, {
+        body: { code: created.body.code },
+      });
+      expect(response.status).toBe(409);
+      expect(response.body.error).toMatchObject({
+        code: "ARCHIVE_SCOPE_CHANGED",
+        details: { tables: [OPS] },
+      });
+      expect(await archiveStatus(harness, created.body.id)).toBe("downloaded");
+      const ops: unknown[] = await harness.db.query(`SELECT 1 FROM operations WHERE id = $1`, [
+        kept,
+      ]);
+      expect(ops).toHaveLength(1);
+    } finally {
+      await harness.close();
+    }
+  });
+});
+
+describe("archives migration", () => {
+  it("numbers only new operations, and archives the unnumbered old ones by created_at", async () => {
+    const harness = await startHarness();
+    try {
+      // Back to before the archive migrations, with rows already in the table.
+      await harness.db.undoLastMigration();
+      await harness.db.undoLastMigration();
+      const existing = await seedOperation(harness, "withdraw", OLD);
+      const routine = await seedOperation(harness, "order", OLD);
+      await harness.db.runMigrations();
+
+      const seqs: { id: string; seq: string | null }[] = await harness.db.query(
         `SELECT id, seq::text AS seq FROM operations`,
       );
-      const seqOf = new Map(rows.map((r) => [r.id, Number(r.seq)]));
-      expect(existing.every((id) => Number.isInteger(seqOf.get(id)))).toBe(true);
-      expect(new Set(seqOf.values()).size).toBe(rows.length);
-      expect(seqOf.get(later)!).toBeGreaterThan(Math.max(...existing.map((id) => seqOf.get(id)!)));
-      const index: unknown[] = await harness.db.query(
-        `SELECT 1 FROM pg_indexes WHERE tablename = 'operations' AND indexname = 'operations_seq'`,
+      // No rewrite: the existing rows were left without a number.
+      expect(seqs.every((r) => r.seq === null)).toBe(true);
+      const index: { valid: boolean }[] = await harness.db.query(
+        `SELECT i.indisvalid AS valid FROM pg_index i
+         JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'operations_archive_seq'`,
       );
-      expect(index).toHaveLength(1);
+      expect(index).toEqual([{ valid: true }]);
+
+      const created = await harness.post("/v1/archives", { body: { before: BEFORE } });
+      expect(created.body.scope[OPS]).toEqual({ maxId: 0, rows: 1 });
+      // Written after the scope was fixed, dated before the cutoff: numbered, so out of scope.
+      const late = await seedOperation(harness, "withdraw", OLD);
+      const lateSeq: { seq: string }[] = await harness.db.query(
+        `SELECT seq::text AS seq FROM operations WHERE id = $1`,
+        [late],
+      );
+      expect(Number(lateSeq[0]!.seq)).toBeGreaterThan(0);
+
+      const file = await downloadFully(harness, created.body.id as string);
+      const rows = gunzipSync(file.body)
+        .toString("utf8")
+        .trimEnd()
+        .split("\n")
+        .slice(1)
+        .map((line) => (JSON.parse(line) as { row: { id: string } }).row.id);
+      expect(rows).toEqual([existing]);
+
+      await harness.post(`/v1/archives/${created.body.id}/delete`, {
+        body: { code: created.body.code },
+      });
+      await waitFor(async () => (await archiveStatus(harness, created.body.id)) === "done");
+      const left: { id: string }[] = await harness.db.query(`SELECT id FROM operations`);
+      expect(left.map((r) => r.id).sort()).toEqual([late, routine].sort());
     } finally {
       await harness.close();
     }

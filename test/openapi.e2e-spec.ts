@@ -85,6 +85,7 @@ describe("openapi", () => {
     "GET /v1/archives/preview",
     "GET /v1/archives/{id}/download",
     "POST /v1/archives/{id}/delete",
+    "POST /v1/archives/{id}/cancel",
   ];
 
   /**

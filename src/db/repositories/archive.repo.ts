@@ -113,6 +113,17 @@ export class ArchiveRepository {
     return (result.affected ?? 0) > 0;
   }
 
+  /** `pending` or `downloaded` to `cancelled`; false from any other state. Touches no records. */
+  async markCancelled(id: string): Promise<boolean> {
+    const result = await this.archives
+      .createQueryBuilder()
+      .update()
+      .set({ status: "cancelled" })
+      .where("id = :id AND status IN ('pending', 'downloaded')", { id })
+      .execute();
+    return (result.affected ?? 0) > 0;
+  }
+
   async setDeleted(id: string, deleted: Record<string, number>): Promise<void> {
     await this.archives.update({ id }, { deleted });
   }
