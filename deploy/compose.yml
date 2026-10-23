@@ -62,7 +62,7 @@ services:
 
   dpm-wallet:
     <<: [*platform-host, *logging]
-    image: ghcr.io/in-a-bit/dpm-wallet:${DPM_WALLET_TAG:-main}
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet:${DPM_WALLET_TAG:?DPM_WALLET_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     # Wait for setup's configuration, load it, then do what the image always does:
     # migrate, then start. The file's values are single-quoted, which `.` reads verbatim.
@@ -89,7 +89,7 @@ services:
 
   dpm-wallet-manager:
     <<: [*platform-host, *logging]
-    image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     command:
       - sh
@@ -122,7 +122,7 @@ services:
   # closed terminal never stops a setup half-way. The terminal app runs in here too (exec).
   setup:
     <<: [*platform-host, *logging]
-    image: ghcr.io/in-a-bit/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:-main}
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     command: ["node", "dist/setup/main"]
     environment:

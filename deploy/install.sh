@@ -4,10 +4,15 @@
 #   curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh | sh
 #
 # It checks Docker, puts three files in ~/dpm-custody (override with DPM_CUSTODY_DIR), writes
-# .env with a fresh database password, starts the stack, then runs setup in this terminal. Running it again on an existing install starts it and finishes setup if it is not
-# done; nothing is overwritten.
+# .env with a fresh database password, starts the stack, then runs setup in this terminal. Running
+# it again on an existing install starts it and finishes setup if it is not done. It refreshes
+# only the dpm-custody script (run `dpm-custody upgrade` to move to a new version); compose.yml,
+# versions.env and .env are never overwritten.
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
+# DPM_CUSTODY_RELEASES_URL replaces the download base (…/releases/latest/download or
+# …/releases/download/<tag>); file:// works. Downloads are checked against the release's
+# SHA256SUMS. DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
 # DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (3000) when it is taken.
 # DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
 # are all prefixed with it, so two installs with different names run side by side.
@@ -38,13 +43,71 @@ check_docker() {
     fail "Docker Compose v2 is missing. Update Docker to a current version, then run this again."
 }
 
+# Downloads go to a temporary folder first, so a bad download or checksum never leaves anything
+# half-written in the install folder.
+STAGE=""
+cleanup() { [ -z "$STAGE" ] || rm -rf "$STAGE"; }
+trap cleanup EXIT
+
+releases_base() {
+  if [ -n "${DPM_CUSTODY_RELEASES_URL:-}" ]; then
+    printf '%s' "${DPM_CUSTODY_RELEASES_URL%/}"
+  elif [ "$RELEASE" = latest ]; then
+    printf '%s' "$REPO_RELEASES/latest/download"
+  else
+    printf '%s' "$REPO_RELEASES/download/$RELEASE"
+  fi
+}
+
+# fetch_file NAME downloads one release file into the staging folder.
 fetch_file() {
   if [ -n "${DPM_CUSTODY_SOURCE:-}" ]; then
-    cp "$DPM_CUSTODY_SOURCE/$1" "$DIR/$1"
+    cp "$DPM_CUSTODY_SOURCE/$1" "$STAGE/$1" || fail "Could not copy $1 from $DPM_CUSTODY_SOURCE."
     return
   fi
-  if [ "$RELEASE" = latest ]; then base="$REPO_RELEASES/latest/download"; else base="$REPO_RELEASES/download/$RELEASE"; fi
-  curl -fsSL "$base/$1" -o "$DIR/$1" || fail "Could not download $1. Check the internet connection."
+  curl -fsSL "$(releases_base)/$1" -o "$STAGE/$1" || fail "Could not download $1. Check the internet connection."
+}
+
+# sha_check runs the available checksum tool over a sums file, in the staging folder.
+sha_check() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$STAGE" && sha256sum -c "$1") >/dev/null 2>&1
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$STAGE" && shasum -a 256 -c "$1") >/dev/null 2>&1
+  else
+    fail "Neither sha256sum nor shasum is available to check the download."
+  fi
+}
+
+# verify_files NAME... checks the staged files against the release's SHA256SUMS. A release
+# without one (older releases) is accepted with a warning; a mismatch aborts.
+verify_files() {
+  if [ -n "${DPM_CUSTODY_SOURCE:-}" ]; then
+    [ -f "$DPM_CUSTODY_SOURCE/SHA256SUMS" ] && cp "$DPM_CUSTODY_SOURCE/SHA256SUMS" "$STAGE/SHA256SUMS" || true
+  else
+    curl -fsSL "$(releases_base)/SHA256SUMS" -o "$STAGE/SHA256SUMS" 2>/dev/null || rm -f "$STAGE/SHA256SUMS"
+  fi
+  if [ ! -s "$STAGE/SHA256SUMS" ]; then
+    say "  ! This release has no SHA256SUMS; the downloads could not be checked."
+    return 0
+  fi
+  : >"$STAGE/SHA256SUMS.use"
+  for f in "$@"; do
+    line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"
+    [ -n "$line" ] || fail "SHA256SUMS has no entry for $f. Nothing was installed."
+    printf '%s\n' "$line" >>"$STAGE/SHA256SUMS.use"
+  done
+  sha_check SHA256SUMS.use || fail "A downloaded file does not match SHA256SUMS. Nothing was installed. Try again; if it keeps failing, tell the platform team."
+}
+
+# refresh_custody replaces only the dpm-custody script in an existing install.
+refresh_custody() {
+  fetch_file dpm-custody
+  verify_files dpm-custody
+  # Copy next to the target first so the final mv is an atomic rename on the same filesystem.
+  cp "$STAGE/dpm-custody" "$DIR/.dpm-custody.new"
+  chmod +x "$DIR/.dpm-custody.new"
+  mv -f "$DIR/.dpm-custody.new" "$DIR/dpm-custody"
 }
 
 random_password() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
@@ -61,6 +124,8 @@ write_env() {
     say "MANAGER_PORT=$MANAGER_PORT"
     say "MANAGER_PUBLIC_URL=http://localhost:$MANAGER_PORT"
     grep -E '^DPM_WALLET(_MANAGER)?_TAG=' "$DIR/versions.env"
+    version="$(sed -n 's/^RELEASE_VERSION=//p' "$DIR/versions.env" | head -n 1)"
+    say "DPM_CUSTODY_VERSION=${version:-unknown}"
   } >"$DIR/.env"
 }
 
@@ -102,15 +167,26 @@ main() {
   say "  DPM Custody installer"
   say ""
   check_docker
-  mkdir -p "$DIR"
+  STAGE="$(mktemp -d)"
   if [ -f "$DIR/.env" ]; then
-    say "  Found an existing install in $DIR; starting it."
+    # Only the dpm-custody script is refreshed; compose.yml, versions.env and .env stay as they are.
+    say "  Found an existing install in $DIR."
+    refresh_custody
+    say "  Updated $DIR/dpm-custody. To move this install to the new version, run:  $DIR/dpm-custody upgrade"
+    say "  Starting the install as it is ..."
   else
     check_name
     say "  Installing into $DIR ..."
     for f in compose.yml versions.env dpm-custody; do fetch_file "$f"; done
+    verify_files compose.yml versions.env dpm-custody
+    mkdir -p "$DIR"
+    for f in compose.yml versions.env dpm-custody; do cp "$STAGE/$f" "$DIR/$f"; done
     chmod +x "$DIR/dpm-custody"
     write_env
+  fi
+  if [ "${DPM_CUSTODY_NO_START:-}" = 1 ]; then
+    say "  DPM_CUSTODY_NO_START=1: stopping before the services start."
+    exit 0
   fi
   say "  Downloading and starting the services (the first time takes a few minutes) ..."
   (cd "$DIR" && docker compose --env-file .env -f compose.yml up -d --pull missing) ||

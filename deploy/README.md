@@ -97,7 +97,10 @@ machine. It contains secrets, so keep it private.
 ## If something goes wrong
 
 - **"Docker is not running":** open Docker Desktop, wait a minute, and run the installer again.
-  Running it again is always safe: it never overwrites an existing install.
+  Running it again is always safe: on an existing install it only refreshes the `dpm-custody`
+  script (checked against the release's `SHA256SUMS`) and starts the stack. It never touches
+  `compose.yml`, `versions.env` or `.env`. To move to the new version, run
+  `./dpm-custody upgrade`.
 - **"This key was not accepted":** copy the whole key again, and check you chose the right
   platform.
 - **Setup stopped with an error:** fix what the dashboard says, then press **r**. Finished steps
@@ -106,6 +109,19 @@ machine. It contains secrets, so keep it private.
   port, e.g. `DPM_CUSTODY_MANAGER_PORT=3001` before `sh`.
 
 For anything else, run `dpm-custody support` and send the file it writes to the platform team.
+
+## Release files and checks
+
+Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody` and
+a `SHA256SUMS` file. The installer checks every file it downloads against `SHA256SUMS` and stops
+without writing anything if one differs; a release without `SHA256SUMS` installs with a warning.
+`versions.env` pins both images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`,
+which the installer writes to `.env` as `DPM_CUSTODY_VERSION`.
+
+Installer variables: `DPM_CUSTODY_RELEASES_URL` replaces the download base (`file://` works),
+`DPM_CUSTODY_NO_START=1` stops after the files and `.env` are written, and `DPM_IMAGE_REGISTRY`
+(default `ghcr.io/in-a-bit`) names the registry the images are pulled from. Run
+`bash deploy/test/install.test.sh` to check the installer without Docker.
 
 ## For administrators
 

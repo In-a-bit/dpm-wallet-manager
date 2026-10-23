@@ -95,10 +95,32 @@ jobs:
             exit 1
           }
 
-      - name: Pin the manager image to this release
+      # Pin both images by digest as <version>@sha256:<digest>, so an install gets exactly the
+      # images this release was tested with even if a tag is later moved.
+      - name: Pin the images to this release
         env:
           VERSION: ${{ github.ref_name }}
-        run: sed -i "s/^DPM_WALLET_MANAGER_TAG=.*/DPM_WALLET_MANAGER_TAG=${VERSION#v}/" deploy/versions.env
+        run: |
+          set -eu
+          WALLET_TAG="$(sed -n 's/^DPM_WALLET_TAG=//p' deploy/versions.env)"
+          MANAGER_TAG="${VERSION#v}"
+          WALLET_DIGEST="$(docker buildx imagetools inspect "ghcr.io/in-a-bit/dpm-wallet:${WALLET_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          MANAGER_DIGEST="$(docker buildx imagetools inspect "ghcr.io/in-a-bit/dpm-wallet-manager:${MANAGER_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          if [ -z "$WALLET_DIGEST" ] || [ -z "$MANAGER_DIGEST" ]; then
+            echo "::error::Could not resolve an image digest (wallet='${WALLET_DIGEST}', manager='${MANAGER_DIGEST}')."
+            exit 1
+          fi
+          sed -i "s|^DPM_WALLET_TAG=.*|DPM_WALLET_TAG=${WALLET_TAG}@${WALLET_DIGEST}|" deploy/versions.env
+          sed -i "s|^DPM_WALLET_MANAGER_TAG=.*|DPM_WALLET_MANAGER_TAG=${MANAGER_TAG}@${MANAGER_DIGEST}|" deploy/versions.env
+          sed -i "s|^RELEASE_VERSION=.*|RELEASE_VERSION=${MANAGER_TAG}|" deploy/versions.env
+          cat deploy/versions.env
+
+      - name: Checksum the install files
+        run: |
+          set -eu
+          cd deploy
+          sha256sum install.sh install.ps1 compose.yml versions.env dpm-custody > SHA256SUMS
+          cat SHA256SUMS
 
       - name: Attach install files to the release
         uses: softprops/action-gh-release@v2
@@ -109,3 +131,4 @@ jobs:
             deploy/compose.yml
             deploy/versions.env
             deploy/dpm-custody
+            deploy/SHA256SUMS
