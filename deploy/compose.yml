@@ -28,7 +28,9 @@ x-logging: &logging
 
 # Used by the two app services. The images have no curl, so the probe is a one-line node fetch.
 # start_period gives migrations time; until setup writes /config/ready the app is not running
-# yet, so it shows `starting` and then `unhealthy` until setup finishes.
+# yet, so it shows `starting` and then `unhealthy` until setup finishes. For that reason the manager
+# depends on dpm-wallet only being started, not healthy: on a fresh install dpm-wallet stays
+# unhealthy until setup runs, and waiting for it would stop `docker compose up -d` and the installer.
 x-healthcheck: &healthcheck
   interval: 10s
   timeout: 5s
@@ -113,7 +115,7 @@ services:
       postgres:
         condition: service_healthy
       dpm-wallet:
-        condition: service_healthy
+        condition: service_started
     stop_grace_period: 30s
 
   # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a

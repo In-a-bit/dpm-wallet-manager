@@ -173,12 +173,12 @@ A bad value stops the manager from starting, and the log says which one.
 `GET /v1/health` answers whether the process is up. `GET /v1/health/ready` also runs a database
 query and answers `200 {"status":"ok"}` or `503 {"status":"unavailable"}`; neither needs a key.
 Compose runs the ready probe on dpm-wallet (port 8090, inside the stack) and the manager (port
-3000), every 10 seconds, with a 60 second start period, and starts the manager only once dpm-wallet
-is healthy. Check with `docker compose --env-file .env -f compose.yml ps`.
+3000), every 10 seconds, with a 60 second start period. Check with `docker compose --env-file .env -f compose.yml ps`.
 
 On a fresh install both services wait for setup to write their configuration, so they show
 `starting` and then `unhealthy` until setup finishes. That is expected, and they turn `healthy`
-by themselves afterwards.
+by themselves afterwards. The manager starts after dpm-wallet has started, not after it is healthy,
+so a fresh install can come up and reach setup.
 
 ---
 
