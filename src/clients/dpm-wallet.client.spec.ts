@@ -48,6 +48,16 @@ describe("DpmWalletClient", () => {
     expect(second).toEqual(first);
   });
 
+  it("maps a 422 RELAY_REJECTED from relay() to TRANSFER_REJECTED", async () => {
+    upstream.failRelayWith = { status: 422, code: "RELAY_REJECTED" };
+    const error = await client
+      .relay({ from: "0xfrom", to: "0xto", data: "0x", nonce: "1", signature: "0x" } as never)
+      .catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(UpstreamError);
+    expect((error as UpstreamError).code).toBe("TRANSFER_REJECTED");
+    expect((error as UpstreamError).status).toBe(422);
+  });
+
   it("renames CUSTOMER_NOT_REGISTERED to our own vocabulary, keeping the original in details", async () => {
     upstream.failNextWith(409, "CUSTOMER_NOT_REGISTERED", "not registered");
     const error = await client.metaTx("allowance", { ref: "mgr:x" }).catch((err: unknown) => err);

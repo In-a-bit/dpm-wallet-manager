@@ -186,9 +186,8 @@ export class OrdersService {
     request: unknown;
     resultSummary: string;
   }): Promise<string> {
-    const id = randomUUID();
-    await this.operations.insert({
-      id,
+    return this.operations.insertOrGet({
+      id: randomUUID(),
       walletId: entry.wallet.id,
       signerWalletId: entry.routing.signer.id,
       kind: entry.kind,
@@ -200,7 +199,6 @@ export class OrdersService {
       uiUserId: entry.actor.userId,
       createdAt: new Date().toISOString(),
     });
-    return id;
   }
 }
 

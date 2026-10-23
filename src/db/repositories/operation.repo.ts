@@ -59,6 +59,26 @@ export class OperationRepository {
   }
 
   /**
+   * Inserts unless the same signing is already recorded, and returns the id of whichever row
+   * stands. A retry under a replayed idempotency key gets the original signature back, so the
+   * same kind, signer, result and request means the same action, not a second one.
+   */
+  async insertOrGet(operation: NewOperation): Promise<string> {
+    const existing = await this.operations.findOne({
+      where: {
+        kind: operation.kind,
+        signerWalletId: operation.signerWalletId,
+        resultSummary: operation.resultSummary ?? undefined,
+        requestHash: operation.requestHash,
+      },
+      order: { createdAt: "ASC" },
+    });
+    if (existing && operation.resultSummary) return existing.id;
+    await this.operations.insert(operation);
+    return operation.id;
+  }
+
+  /**
    * The order this hash came from, so a cancel can be signed by whoever signed the order. In
    * shared mode that is not the wallet the caller names.
    */

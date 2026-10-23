@@ -1,3 +1,4 @@
+import { OrdersService } from "../src/orders/orders.service";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 /**
@@ -303,6 +304,24 @@ describe("orders", () => {
           idempotencyKey: "trade-1",
         });
         expect(second.body).toEqual(first.body);
+        expect((await harness.operations.query({ kind: "order" }, 10, 0)).total).toBe(1);
+      } finally {
+        await harness.close();
+      }
+    });
+
+    it("records one operation when the handler re-runs under a replayed key", async () => {
+      const harness = await startHarness({ DPM_WALLET_MANAGER_MODE: "segregated" });
+      try {
+        const walletId = (await harness.post("/v1/wallets", { body: {} })).body.id;
+        // Straight at the service: the manager's own interceptor stores a response only on
+        // success, so after a crash the handler runs again and dpm-wallet replays the signature.
+        const orders = harness.app.get(OrdersService);
+        const actor = { keyId: null, userId: null, username: null } as never;
+        const first = await orders.signOrder(walletId, ORDER as never, actor, "trade-2");
+        const second = await orders.signOrder(walletId, ORDER as never, actor, "trade-2");
+
+        expect(second.operationId).toBe(first.operationId);
         expect((await harness.operations.query({ kind: "order" }, 10, 0)).total).toBe(1);
       } finally {
         await harness.close();

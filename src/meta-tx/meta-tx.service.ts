@@ -65,9 +65,9 @@ export class MetaTxService {
       idempotencyKey ? { idempotencyKey: `${idempotencyKey}:${kind}` } : {},
     );
 
-    const operationId = randomUUID();
-    await this.operations.insert({
-      id: operationId,
+    // A replayed signature (same idempotency key) is the same operation, not a second one.
+    const operationId = await this.operations.insertOrGet({
+      id: randomUUID(),
       walletId: wallet.id,
       // A meta-transaction is always signed by the wallet it moves funds from; there is no
       // routing here, which is exactly why the funds policy has to carry the whole weight.

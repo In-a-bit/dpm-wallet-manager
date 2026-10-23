@@ -155,7 +155,8 @@ export class DpmWalletClient {
 
   /**
    * Submits a signed meta-transaction to relayer-api through dpm-wallet, which answers 201. A
-   * relayer refusal comes back as dpm-wallet's 502 `RELAYER_REQUEST_FAILED`, left to the fallback.
+   * relayer refusal (4xx) comes back as dpm-wallet's 422 `RELAY_REJECTED`, which maps to
+   * `TRANSFER_REJECTED`.
    */
   relay(
     request: UpstreamSubmitTransactionRequest,

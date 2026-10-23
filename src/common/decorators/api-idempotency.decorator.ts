@@ -20,7 +20,7 @@ export function ApiIdempotencyKey() {
       description:
         "An opaque key of the caller's choosing. Retrying with the same key and the same body " +
         "replays the original response instead of signing again; the same key with a different " +
-        "body is refused with `IDEMPOTENCY_CONFLICT`. The key is forwarded to dpm-wallet, so the " +
+        "body is refused with `IDEMPOTENCY_CONFLICT`. Keys are honoured for 24 hours. The key is forwarded to dpm-wallet, so the " +
         "protection holds even if this service returned before the caller saw the response.",
       example: "trade-2026-08-26-0001",
     }),

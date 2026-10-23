@@ -1,5 +1,4 @@
 import type { DpmWalletClient } from "../clients/dpm-wallet.client";
-import { UpstreamError } from "../clients/dpm-wallet.client";
 import type { Actor } from "../common/actor";
 import type { OperationRepository } from "../db/repositories/operation.repo";
 import type { WalletsService } from "../wallets/wallets.service";
@@ -39,7 +38,7 @@ function harness() {
           };
           if (signingKey) signedByKey.set(signingKey, signed);
         }
-        return { ...signed, walletId, operationId: `op-${signBodies.length}`, external: false };
+        return { ...signed, walletId, operationId: `op-${String(signed.nonce)}`, external: false };
       },
     ),
   };
@@ -78,22 +77,12 @@ describe("TransfersService.transfer", () => {
     expect(relayBodies[1]).toBe(relayBodies[0]);
     expect(relayKeys).toEqual(["k1:relay", "k1:relay"]);
     expect(second.relayerTransactionId).toBe("tx-1");
-    expect(operations.setRelayerTransactionId).toHaveBeenLastCalledWith("op-2", "tx-1");
+    expect(operations.setRelayerTransactionId).toHaveBeenLastCalledWith("op-101", "tx-1");
   });
 
   it("sends no relay key when the caller gave none", async () => {
     const { service, relayKeys } = harness();
     await service.transfer("w1", ARGS, ACTOR);
     expect(relayKeys).toEqual([undefined]);
-  });
-
-  it("maps a relayer refusal on the identical second submit to TRANSFER_REJECTED", async () => {
-    const { service, upstream } = harness();
-    upstream.relay.mockRejectedValueOnce(
-      new UpstreamError("TRANSFER_REJECTED", "relayer said no", { upstreamCode: "RELAY_REJECTED" }),
-    );
-    await expect(service.transfer("w1", ARGS, ACTOR, "k2")).rejects.toMatchObject({
-      code: "TRANSFER_REJECTED",
-    });
   });
 });
