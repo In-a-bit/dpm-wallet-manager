@@ -36,6 +36,19 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
     `RETENTION_ENABLED` (default `true`).
   - Days are whole numbers from 1 to 3650. Routed may not be below operations.
   - A bad value fails the boot.
+- **Retention settings:**
+  - Stored in `platform_settings` under the keys `retention.routine_days`,
+    `retention.routed_order_days`, `retention.enabled` and `archive.reminder_days`.
+  - A dashboard value wins over the env default.
+  - Changes are audited as `settings.retention_update`.
+- **Storage settings:** `storage.warning_percent` (75), `storage.warning_days` (30),
+  `storage.critical_percent` (90), `storage.critical_days` (7) and
+  `storage.alert_webhook_url` (empty).
+- **The manager drives dpm-wallet's routine and archive deletions** through the dpm-wallet
+  endpoints `POST /v1/maintenance/purge-routine-audit`, `GET /v1/maintenance/audit-export` and
+  `POST /v1/maintenance/delete-archived-audit`. dpm-wallet never computes a routine cutoff itself.
+- **Important records are never deleted automatically.** Only an archive the operator downloaded
+  and confirmed deletes them.
 - **Routine operation kinds:** `order`, `cancel`, `allowance`, `redeem`, `split`, `merge`.
   `withdraw` is never deleted.
 - **Routine audit actions:**
@@ -80,98 +93,112 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
 3. **A retry after a crash mid-transfer.** It must not produce a second signed nonce (Task 7).
 4. **An upgrade where the new manager crash-loops on migration.** It must roll back by itself to
    the previous tags, leave the operator's other `.env` edits intact, and report it (Task 10).
-5. **An install created before this work, with no `DPM_CUSTODY_VERSION`.** `upgrade` must
+5. **Rows written after an archive was created.** They must never be deleted by that archive's
+   delete. The test inserts an important row older than the cutoff after `POST /v1/archives` and
+   before delete, and the row survives (Task 14).
+6. **A broken-off archive download.** The archive stays `pending` and delete is refused (Task 14).
+7. **An archive file that was edited, or belongs to another install.** The viewer shows it
+   unverified, and still lets the operator browse it under the warning (Task 15).
+8. **An install created before this work, with no `DPM_CUSTODY_VERSION`.** `upgrade` must
    proceed once, say the version is unknown, and record the target (Task 10).
 
 ---
 
-### Task 1: Manager retention (config, indexes, purge, scheduler)
+### Task 1: dpm-wallet retention and maintenance endpoints
 
 **Files:**
-- Modify: `M/src/config.ts`, `M/src/config.spec.ts`
-- Create: `M/src/db/migrations/1793000000000-RetentionIndexes.ts`
-- Modify: `M/src/db/repositories/{operation,audit,idempotency,ui-session}.repo.ts`
-- Create: `M/src/retention/retention.service.ts`, `M/src/retention/retention.module.ts`,
-  `M/src/retention/retention.service.spec.ts`
-- Modify: `M/src/app.module.ts`, `M/.env.example` (if present)
+- Modify: `W/src/db/repositories/{audit,idempotency}.repo.ts`
+- Create: `W/src/retention/retention.service.ts`, `W/src/retention/retention.module.ts`
+  (hourly idempotency purge only)
+- Create: `W/src/maintenance/maintenance.controller.ts`, `W/src/maintenance/maintenance.module.ts`,
+  `W/src/maintenance/dto/*`
+- Test: `W/test/maintenance.e2e-spec.ts`, `W/src/retention/retention.service.spec.ts`
+- Modify: `W/src/app.module.ts`
 
 **Interfaces:**
+- Produces, all behind the existing API-key guard:
+  - `POST /v1/maintenance/purge-routine-audit {before: ISO, batch: 1..5000}` returns
+    `{deleted}`. It deletes one batch of routine success audit rows with `created_at < before`.
+  - `GET /v1/maintenance/audit-export?before&maxId&cursor&limit(≤1000)` returns
+    `{items: AuditEvent[], nextCursor}`. The items are important rows only (not routine success),
+    with `id <= maxId AND created_at < before`, ordered by `id` ascending.
+  - `POST /v1/maintenance/delete-archived-audit {before, maxId, batch}` returns `{deleted}`. It
+    uses the same row set as the export and deletes one batch.
+  - `GET /v1/maintenance/audit-scope?before` returns `{maxId, rows}`, the important rows in scope
+    now.
+  - Each refuses a `before` newer than 24 h ago with a 400 validation error.
+  - The routine rule lives in one exported predicate, `ROUTINE_AUDIT_ACTIONS` plus
+    `outcome = 'success'`, which `purge` and `export` share.
+
+- [ ] **Step 1: e2e tests:**
+  - Purge deletes only routine success rows older than `before`, at most `batch` per call.
+  - Export pages important rows in `id` order with no routine rows.
+  - Rows inserted after the scope call (`id > maxId`) are never exported or deleted.
+  - `before` = now gives 400. A missing API key gives 401.
+- [ ] **Step 2: retention service test.** Idempotency keys older than 24 h are purged by
+  `runOnce`. Share the 24 h constant with `startup.service.ts`. The timers are cleared in
+  `onModuleDestroy`.
+- [ ] **Step 3:** implement. The batch deletes use `DELETE … WHERE id IN (SELECT id … LIMIT $n)`.
+- [ ] **Step 4:** lint, typecheck and test all PASS. Commit
+  `maintenance: purge, export and delete audit rows for the manager to drive`.
+
+### Task 2: Manager retention (settings, indexes, purge, scheduler)
+
+**Files:**
+- Modify: `M/src/config.ts` (+ spec), the env defaults
+- Create: `M/src/settings/retention-settings.service.ts` (+ spec)
+- Create: `M/src/db/migrations/1793000000000-RetentionIndexes.ts`
+- Modify: `M/src/db/repositories/{operation,audit,idempotency,ui-session}.repo.ts`
+- Modify: `M/src/clients/dpm-wallet.client.ts`
+- Create: `M/src/retention/retention.service.ts`, `M/src/retention/retention.module.ts`,
+  `M/src/retention/retention.service.spec.ts`
+- Modify: `M/src/app.module.ts`
+
+**Interfaces:**
+- Consumes: the Task 1 endpoints.
 - Produces:
-  - `Config.retention: { enabled: boolean; operationsDays: number; routedOrderDays: number }`.
-  - `OperationRepository.purgeRoutine(cutoff: string, routedCutoff: string, batch: number): Promise<number>`.
-    It deletes one batch and returns the count.
-  - `AuditRepository.purgeRoutine(cutoff: string, batch: number): Promise<number>`.
-  - `IdempotencyRepository.purgeExpired` and `UiSessionRepository.purgeExpired` are reused as is.
-  - `RetentionService.runOnce(now?: Date): Promise<Record<string, number>>`.
+  - `Config.retentionDefaults: { enabled; routineDays; routedOrderDays }`, validated as in Global
+    Constraints, with an empty string treated as unset.
+  - `RetentionSettingsService.effective(): Promise<{ enabled; routineDays; routedOrderDays;
+    archiveReminderDays; sources: Record<string, "dashboard" | "environment" | "default"> }>`.
+  - `RetentionSettingsService.update(patch, actor)`. `null` clears a key. The bounds are checked
+    against the effective values after the patch. It writes `settings.retention_update`.
+  - `OperationRepository.purgeRoutine(cutoff, routedCutoff, batch): Promise<number>` and
+    `AuditRepository.purgeRoutine(cutoff, batch): Promise<number>`.
+  - `DpmWalletClient.purgeRoutineAudit(before, batch)`, `auditScope(before)`,
+    `auditExport(q)` and `deleteArchivedAudit(...)`.
+  - `RetentionService.runOnce(now?: Date): Promise<Record<string, number>>`, with a
+    `routineDaysOverride` hook that Task 13 uses for tightening.
 
-- [ ] **Step 1: config tests** (`config.spec.ts`):
-  - defaults are `{enabled:true, operationsDays:90, routedOrderDays:365}`;
-  - `OPERATIONS_RETENTION_DAYS=0` throws, and so does `3651` and `abc`;
-  - routed `30` with operations `90` throws;
-  - `RETENTION_ENABLED=false` gives `enabled:false`, and `RETENTION_ENABLED=maybe` throws.
-- [ ] **Step 2:** implement in `loadConfig` with `parsePositiveInt`'s style plus range checks.
-  Run `npx jest src/config.spec.ts` and expect PASS.
-- [ ] **Step 3: migration** `RetentionIndexes`. `up` creates:
-  - `operations_created_at_id` on `operations (created_at, id)`;
-  - `operations_order_result_summary` on `operations (result_summary) WHERE kind = 'order'`;
-  - `audit_events_created_at_id` on `audit_events (created_at, id)`.
-
-  `down` drops all three. It is additive only. Run `npm run db:migrate` against the dev DB and
-  `npm run db:check`, and expect it to apply.
-- [ ] **Step 4: repo tests** (`retention.service.spec.ts`, DB-backed through `pg-test-db`).
+- [ ] **Step 1: config and settings tests:**
+  - env defaults and bad values (0, 3651, `abc`, routed below routine, `RETENTION_ENABLED=maybe`)
+    throw at boot;
+  - a dashboard value overrides env and reports source `dashboard`;
+  - `null` reverts to `environment`;
+  - a patch making routed below routine gets 400 `VALIDATION_FAILED`;
+  - an update writes the audit event with the old and new values.
+- [ ] **Step 2: migration** `RetentionIndexes`. `up` creates `operations_created_at_id`
+  `(created_at, id)`, `operations_order_result_summary` `(result_summary) WHERE kind = 'order'`
+  and `audit_events_created_at_id` `(created_at, id)`. `down` drops all three. Apply it to the dev
+  DB.
+- [ ] **Step 3: retention test** (DB-backed, with the dpm-wallet client faked to record calls).
   Seeds:
   - operations: a direct `order` 100 days old (deleted), a direct `order` 10 days old (kept), a
     routed `order` 200 days old (kept) and 400 days old (deleted), a `withdraw` 1000 days old
     (kept), and a `merge` 100 days old (deleted);
   - audit: `sign.order` success 100 days old (deleted), `sign.order` denied 100 days old (kept),
     `meta.withdraw` success 1000 days old (kept), and `api_key.create` 1000 days old (kept);
-  - an idempotency key past expiry (deleted).
+  - an expired idempotency key and session (deleted).
 
-  `runOnce()` returns counts matching that, and a second `runOnce()` returns all zeros.
-- [ ] **Step 5: batching test:** seed 12,001 routine operations with batch size injected as 5000.
-  `runOnce` deletes all of them in 3 batches. `RetentionService` takes batch size from a
-  constructor default so the test can lower it.
-- [ ] **Step 6: implement:**
-  - Both repo `purgeRoutine` methods use `DELETE … WHERE id IN (SELECT id … LIMIT $batch)`.
-  - `RetentionService` implements `OnApplicationBootstrap`/`OnModuleDestroy`:
-    - `setTimeout` 60 s, then `setInterval` 1 h. Skip when `!enabled`.
-    - A `running` flag prevents overlap.
-    - It catches errors and logs `retention.failed` with `logError`, and logs `retention.run`.
-    - `onModuleDestroy` clears the timers.
-    - In the test harness, either keep `RETENTION_ENABLED=false` or confirm the 60 s timer never
-      fires in tests.
-- [ ] **Step 7:** run `npm run lint && npm run typecheck && npm test` and expect PASS (pre-existing
-  failures noted).
-- [ ] **Step 8:** commit `retention: trim routine operations and audit rows on a schedule`.
-
-### Task 2: dpm-wallet retention
-
-**Files:**
-- Modify: `W/src/config.ts` (+ spec)
-- Modify: `W/src/db/repositories/{audit,idempotency}.repo.ts`
-- Create: `W/src/retention/retention.service.ts`, `W/src/retention/retention.module.ts`,
-  `W/src/retention/retention.service.spec.ts`
-- Modify: `W/src/app.module.ts`
-
-**Interfaces:**
-- Produces:
-  - `Config.retention: { enabled: boolean; operationsDays: number }`. dpm-wallet does not read
-    the routed variable.
-  - `AuditRepository.purgeRoutine(cutoff: string, batch: number): Promise<number>`.
-  - `RetentionService.runOnce(now?: Date)`.
-
-- [ ] **Step 1: config tests**, the same cases as Task 1 minus routed.
-- [ ] **Step 2: retention test** (DB-backed, the repo's existing test-DB harness):
-  - deleted: `sign.order` success 100 days old, `meta.split` success 100 days old, an idempotency
-    key older than 24 h;
-  - kept: `sign.cancel` success 10 days old, `meta.withdraw` success 1000 days old, and every
-    `address.*` and `vault.*` row.
-- [ ] **Step 3:** implement with the same shape as Task 1:
-  - Idempotency uses `purgeOlderThan` with the existing 24 h `IDEMPOTENCY_RETENTION_MS`. Move that
-    constant somewhere both the startup and retention services import.
-  - The audit table's batch subquery orders by `id`.
-- [ ] **Step 4:** lint, typecheck and test all PASS. Commit
-  `retention: trim routine audit rows and idempotency keys on a schedule`.
+  `runOnce` returns those counts, and calls `purgeRoutineAudit` with a 90-day cutoff until it
+  returns fewer than `batch`. A second run returns zeros. With `enabled:false` the timers do
+  nothing.
+- [ ] **Step 4: batching test.** 12,001 routine operations at batch 5000 are deleted in 3 batches.
+  A dpm-wallet error is logged as `retention.failed` and the manager tables are still trimmed.
+- [ ] **Step 5:** implement the scheduler: 60 s, then 1 h, no overlap, cleared on destroy. Read
+  the settings at the start of each run.
+- [ ] **Step 6:** lint, typecheck and test all PASS. Commit
+  `retention: dashboard-configurable trimming of routine records in both services`.
 
 ### Task 3: Manager cursor paging, plus paged API keys and UI users
 
@@ -444,6 +471,9 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
   - the new `dpm-custody` is moved into place last, via `mv`, so the running script is not
     rewritten mid-run;
   - `rollback` shares the restore and health-gate functions.
+  - After a successful upgrade, remove this install's dpm images other than the current and
+    previous tags. Add test case 11: only those two remain referenced; the prune call lists
+    exactly the older ones.
 - [ ] **Step 4:** the tests pass, and `shellcheck deploy/dpm-custody deploy/test/upgrade.test.sh`
   is clean if `shellcheck` is installed.
 - [ ] **Step 5:** update the usage header and the README "Upgrading" and "Rolling back" sections,
@@ -469,9 +499,235 @@ Repos: `M` = `/home/yuvala/Documents/prediction-claude/dpm-wallet-manager`,
   - If either refuses, fix the check in scope (spec) with a test, and commit.
 - [ ] **Step 3:** commit `docs: migrations stay additive so a rollback needs no restore`.
 
-### Task 12: Local verification on the installs
+### Task 12: Settings API and the Storage page skeleton
 
-No code unless something fails. Ask the user before Steps 3–5 (they stop or upgrade a local
+**Files:**
+- Create: `M/src/settings/settings.controller.ts`, `M/src/settings/settings.module.ts`,
+  `M/src/settings/dto/*`
+- Create: `M/src/settings/storage-settings.service.ts` (+ spec)
+- Test: `M/test/settings.e2e-spec.ts`
+- Modify: `M/ui/src/api.ts`, `M/ui/src/App.tsx` / router, `M/ui/src/components/Layout.tsx`
+- Create: `M/ui/src/pages/Storage.tsx`, `M/ui/src/components/RetentionSettings.tsx`,
+  `M/ui/src/components/StorageSettings.tsx`
+
+**Interfaces:**
+- Consumes: Task 2's `RetentionSettingsService`.
+- Produces:
+  - `GET /v1/settings/retention` (readonly and up) and `PUT /v1/settings/retention` (admin).
+    The body is a partial of `{enabled, routineDays, routedOrderDays, archiveReminderDays}`, and
+    `null` clears a key. The response is the effective values plus `sources`, plus read-only
+    `fixed: {idempotencyHours: 24, logs: "5 × 20 MB per service"}`.
+  - `GET` and `PUT /v1/settings/storage`, the same shape for
+    `{warningPercent, warningDays, criticalPercent, criticalDays, alertWebhookUrl}`. The rules:
+    - percents are 1–99 and warning < critical;
+    - days are 1–365 and warning > critical;
+    - the URL is http(s) or null.
+    - The audit event is `settings.storage_update`.
+  - `StorageSettingsService.effective()`.
+  - The `/storage` route in the UI with three tabs: Overview (filled in Task 13), Archives (Task
+    15) and Settings (this task).
+
+- [ ] **Step 1: e2e tests:**
+  - a viewer can GET and is refused PUT (403);
+  - an admin PUT persists, and the source becomes `dashboard`;
+  - `null` reverts;
+  - each bound violation gets 400;
+  - each update writes one audit event with the old and new values.
+- [ ] **Step 2:** implement the endpoints. Retention changes take effect on the next run (no
+  restart).
+- [ ] **Step 3: UI Settings tab:**
+  - one form per group, each field showing its source badge ("default", "from environment",
+    "set here") and a "reset" link;
+  - the fixed values shown read-only;
+  - owners edit, and others see it disabled with a note.
+  - Saving shows a toast. A routine-days decrease asks for confirmation ("records older than N
+    days will be deleted within the hour").
+- [ ] **Step 4:** `npm --prefix ui run build`, lint, typecheck and test all PASS. Commit
+  `settings: retention and storage settings from the dashboard`.
+
+### Task 13: Storage monitor, alerts, tightening
+
+**Files:**
+- Create: `M/src/db/migrations/1793100000000-StorageSamples.ts`,
+  `M/src/db/entities/storage-sample.entity.ts`, `M/src/db/repositories/storage-sample.repo.ts`
+- Create: `M/src/storage/storage-monitor.service.ts` (+ spec), `M/src/storage/storage.controller.ts`,
+  `M/src/storage/storage.module.ts`, `M/src/storage/growth.ts` (+ spec)
+- Modify: `M/src/retention/retention.service.ts` (tightening and sample trimming),
+  `M/src/health/health.controller.ts` (`storage` field on `/ready`)
+- Modify: `M/deploy/compose.yml` (`pg-data:/storage/pg:ro` on the manager), `M/deploy/dpm-custody`
+  (`status` storage line)
+- Modify: `M/ui/src/components/Layout.tsx` (banner), `M/ui/src/pages/Storage.tsx` (Overview tab)
+
+**Interfaces:**
+- Produces:
+  - `growthPerDay(samples: {at: string; usedBytes: number}[]): number | null`. Least squares over
+    the last 7 days; null with under 24 h of samples.
+  - `levelFor(sample, growth, settings): "ok" | "warning" | "critical"`.
+  - `GET /v1/storage` (readonly and up) returns
+    `{at, disk: {totalBytes, freeBytes, usedPercent}, databases: {wallet, manager}, tables: [{db,
+    name, bytes, estRows}], growthBytesPerDay, daysToFull, level, tightened: null | {routineDays,
+    since}, oldestImportantAt, archiveSuggested}`.
+  - `/v1/health/ready` gains an optional `storage: {level, usedPercent, daysToFull}`. The status
+    code never depends on it.
+  - The disk path comes from `STORAGE_PATH` (default `/storage/pg`). When it is missing
+    (`statfs` throws), `disk` is null, the level is computed from the DB size alone (`ok`), and
+    `storage.unavailable` is logged once.
+
+- [ ] **Step 1: unit tests for `growth.ts`:**
+  - a linear 1 GB/day series gives 1e9 ±1%;
+  - a flat series gives 0, and `daysToFull` is null;
+  - a 12 h series gives null;
+  - `levelFor`: 80% gives warning; 50% with 20 days to full gives warning; 50% with 5 days gives
+    critical; 91% gives critical.
+- [ ] **Step 2: monitor tests** with `statfs` and the clock injected:
+  - a sample is written every 15 min;
+  - a level change logs `storage.level` and POSTs the webhook once;
+  - critical re-POSTs after 24 h, not before;
+  - a webhook 500 or timeout is logged and does not throw;
+  - samples older than 30 days are trimmed by the retention run.
+- [ ] **Step 3: tightening test.**
+  - With critical active, `runOnce` uses 30 days when the setting is 90, and logs
+    `retention.tightened`.
+  - After 24 h still critical, it uses 7.
+  - Back below warning, it returns to 90.
+  - A `withdraw` operation or important audit row is never deleted in any of these.
+- [ ] **Step 4: e2e test:** `/v1/storage` has the shape above, and `/v1/health/ready` includes
+  `storage` and stays 200 when critical.
+- [ ] **Step 5: UI:**
+  - **Banner:** shown on every page while the level isn't ok. Amber for warning, red for critical,
+    and blue for "archive suggested". The text names the actions from the spec, links to
+    `/storage`, and says when retention is tightened.
+  - **Overview tab:** the disk gauge, database sizes, a table-size table, growth per day, days to
+    full and a refresh button.
+- [ ] **Step 6: compose and CLI:**
+  - mount the `pg-data` volume read-only on the manager;
+  - `status` prints `Storage: <level> · <used>% used · ~<days> days to full`, from `/ready`
+    through `compose exec -T dpm-wallet-manager node -e`.
+  - Extend `upgrade.test.sh` for the status line.
+- [ ] **Step 7:** build, lint, typecheck and test all PASS. Commit
+  `storage: disk and database monitor with dashboard alerts, webhook and tightening`.
+
+### Task 14: Archive backend
+
+**Files:**
+- Create: `M/src/db/migrations/1793200000000-Archives.ts`, `M/src/db/entities/archive.entity.ts`,
+  `M/src/db/repositories/archive.repo.ts`
+- Create: `M/src/archive/archive.service.ts`, `M/src/archive/archive.controller.ts`,
+  `M/src/archive/archive.module.ts`, `M/src/archive/archive-writer.ts` (+ specs)
+- Modify: `M/src/errors.ts` (`ARCHIVE_IN_PROGRESS` 409, `ARCHIVE_NOT_READY` 409,
+  `ARCHIVE_CODE_MISMATCH` 400, `ARCHIVE_NOT_FOUND` 404)
+- Modify: `M/src/db/repositories/{operation,audit}.repo.ts` (important-row scope, export page,
+  delete batch)
+- Test: `M/test/archive.e2e-spec.ts`
+
+**Interfaces:**
+- Consumes: Task 1's dpm-wallet maintenance endpoints, through the Task 2 client.
+- Produces:
+  - Table `archives`: `id uuid`, `before`, `scope jsonb {table: {maxId, rows}}`, `status`
+    (`pending | downloaded | deleting | done`), `sha256`, `byte_size`, `row_count`,
+    `deleted jsonb`, `created_by_user_id`, `created_by_key_id`, `created_at`, `downloaded_at`,
+    `deleted_at`.
+  - `POST /v1/archives {before}` (admin) returns `{id, code, scope}`.
+    - `code` is the first 6 characters of the id, upper-cased.
+    - `before` must be at least 1 day old.
+    - Another archive not yet `done` gives 409 `ARCHIVE_IN_PROGRESS`.
+  - `GET /v1/archives/preview?before` (readonly) returns `{tables: {name: rows}}`.
+  - `GET /v1/archives` (readonly, paged) returns history.
+  - `GET /v1/archives/:id/download` (admin) streams gzip with `Content-Disposition` filename
+    `dpm-archive-<install>-<yyyymmdd>-<code>.ndjson.gz`. `<install>` is the manager's
+    `MANAGER_PUBLIC_URL` host, sanitised, or `install`.
+  - `POST /v1/archives/:id/delete {code}` (admin) returns `202 {status:"deleting"}`. The deletion
+    runs in the background in batches, then `VACUUM (ANALYZE)` on the touched tables, then
+    `done`.
+  - The file format is exactly the spec's: a manifest line, then `{table, row}` lines. The table
+    names are `manager.operations`, `manager.audit_events` and `wallet.audit_events`.
+  - The `archive.*` audit actions are excluded from scope.
+
+- [ ] **Step 1: e2e tests:**
+  1. **Create:** preview counts match the seeded important rows. Routine rows and `archive.*`
+     rows are excluded.
+  2. **Download:** gunzip and parse. The manifest is first, the rows match the scope across all
+     three tables, and the stored `sha256` equals the SHA-256 of the received bytes. Status is
+     `downloaded`.
+  3. **Broken download:** destroy the stream mid-way. Status stays `pending`, and delete gets 409
+     `ARCHIVE_NOT_READY` (Review Focus 6).
+  4. **Wrong code** gets 400 `ARCHIVE_CODE_MISMATCH` and nothing is deleted.
+  5. **Delete:** wait for `done`. The in-scope rows are gone in all three tables. A row inserted
+     after create with an old `created_at` survives (Review Focus 5), and `deleted` counts match.
+  6. A second create while one is `downloaded` gets 409.
+  7. A viewer gets 403 on create, download and delete, and 200 on list and preview.
+  8. Each step writes its `archive.*` audit event with the actor.
+- [ ] **Step 2: implement.**
+  - Export reads in pages of 1000 (keyset on `id`) from the manager tables, then dpm-wallet
+    through `auditExport`.
+  - The writer pipes through `zlib.createGzip()` and a hashing `Transform` to the response, and
+    the record is finalised on `finish` only.
+  - Delete resumes from the `deleting` state on restart: the startup service resumes it in the
+    background.
+- [ ] **Step 3:** lint, typecheck and test all PASS. Commit
+  `archive: export important records to a verified file and remove them on confirmation`.
+
+### Task 15: Archive UI and archived-records viewer
+
+**Files:**
+- Modify: `M/ui/src/pages/Storage.tsx` (Archives tab)
+- Create: `M/ui/src/components/ArchiveWizard.tsx`, `M/ui/src/components/ArchiveHistory.tsx`,
+  `M/ui/src/components/ArchiveViewer.tsx`
+- Create: `M/ui/src/archive/worker.ts`, `M/ui/src/archive/filter.ts` (+ tests if the UI has a test
+  runner; otherwise `filter.ts` is pure and tested with a node script in `M/ui/scripts/`)
+
+**Interfaces:**
+- Consumes: Task 14's endpoints.
+- Produces:
+  - `matches(line: {table: string; row: Record<string, unknown>}, f: ArchiveFilter): boolean`,
+    where `ArchiveFilter = {tables?: string[]; from?: string; to?: string; actionOrKind?: string;
+    outcome?: string; walletId?: string; actor?: string; text?: string}`.
+  - The worker protocol:
+    - in: `{type:"search", files: File[], filter, maxResults: 500}`, `{type:"export", files,
+      filter}` and `{type:"cancel"}`;
+    - out: `progress {bytesRead, totalBytes}`, `result {items, totalMatches, done}`,
+      `csvChunk`, `error`.
+
+- [ ] **Step 1: `filter.ts` tests:**
+  - each field alone and in combination;
+  - the date range is inclusive of `from` and exclusive of `to`;
+  - `text` is a case-insensitive search over the JSON string of the row;
+  - `actor` matches `actor_key_id`, `api_key_id`, `actor_username` or `ui_user_id`;
+  - `actionOrKind` matches `action` or `kind`.
+- [ ] **Step 2: Archive wizard** (owners only; others see history only):
+  - a date picker defaulting to `archive.reminder_days` ago;
+  - Preview shows the counts per table, then "Create and download", which starts the browser
+    download from `/v1/archives/:id/download`;
+  - the history row turns `downloaded` (poll `GET /v1/archives` every 3 s while `pending`);
+  - "Remove archived records from the database" opens a `Confirm` that repeats the counts, says
+    space is reused rather than returned, and asks for the 6-character code;
+  - progress until `done`.
+  - The note "Keep the file somewhere safe, off this machine" is visible throughout.
+- [ ] **Step 3: viewer:**
+  - pick one or more `.ndjson.gz` files;
+  - the worker streams `DecompressionStream("gzip")` and splits lines;
+  - per file, SHA-256 is computed with `crypto.subtle` over the streamed bytes. Web Crypto has no
+    incremental digest, so either use a small inline incremental SHA-256 (no new dependency, about
+    100 lines, tested against `crypto.subtle` on a small buffer), or hash in chunks only when the
+    file is under 512 MB and otherwise show "not verified (too large to hash in the browser)";
+  - match against `GET /v1/archives` by `sha256`, showing verified, unknown or damaged (a gunzip
+    or JSON error, with the line number) (Review Focus 7);
+  - filters as in `ArchiveFilter`;
+  - a results table using the Operations/Audit column layout, with row click opening the full
+    JSON in a `Modal`;
+  - "Export matches (CSV)" streams through the worker to a Blob download;
+  - progress bar and cancel.
+- [ ] **Step 4: manual check with `npm --prefix ui run dev`:**
+  - open a file produced by the Task 14 e2e test (save one to the scratchpad from the test);
+  - search by wallet id and by text;
+  - export CSV;
+  - flip one byte and see "damaged" or "unknown".
+- [ ] **Step 5:** build and lint PASS. Commit
+  `admin ui: archive wizard and archived-records viewer`.
+
+### Task 16: Local verification on the installs
+
+No code unless something fails. Ask the user before Steps 2b–5 (they stop or upgrade a local
 install).
 
 - [ ] **Step 1:** rebuild the `:local` images for both services from `ops-hardening`.
@@ -482,6 +738,13 @@ install).
     waiting for `stack_healthy` and retrying every request with its key;
   - asserts: no idempotency key yields two `operations` rows with different `result_summary`; the
     transfer has one relayer id and at most one mined tx; every service is healthy at the end.
+- [ ] **Step 2b: storage and archive on the segregated install** (after Step 3):
+  - `/storage` shows real figures;
+  - set the warning percent below the current use and check the banner, the `status` line and a
+    webhook to a local `nc -l` listener;
+  - put it back;
+  - archive with a cutoff of 1 day ago: download, open the file in the viewer (verified), search
+    it, confirm the delete, and check the rows are gone and history shows `done`.
 
   The on-chain transfer needs explicit user approval when run.
 - [ ] **Step 3:** with the user's go-ahead, recreate the segregated install on the new images:
