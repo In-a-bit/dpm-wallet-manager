@@ -16,7 +16,10 @@ export const RETENTION_KEYS = {
   archiveReminderDays: "archive.reminder_days",
 } as const;
 
-/** Important records older than this make the dashboard suggest an archive. */
+/**
+ * Important records older than this make the dashboard suggest an archive. Unset on the dashboard,
+ * the reminder is this or the routine retention days, whichever is longer.
+ */
 export const DEFAULT_ARCHIVE_REMINDER_DAYS = 730;
 
 type SettingName = keyof typeof RETENTION_KEYS;
@@ -81,7 +84,7 @@ export class RetentionSettingsService {
     const [archiveReminderDays, reminderSource] = pick(
       "archiveReminderDays",
       parseDays,
-      DEFAULT_ARCHIVE_REMINDER_DAYS,
+      reminderDefault(routineDays),
       "default",
     );
     return {
@@ -161,13 +164,27 @@ export class RetentionSettingsService {
       if (value === undefined) return before[name];
       return value === null ? fallback : value;
     };
+    const routineDays = resolve("routineDays", defaults.routineDays);
+    // A reminder the dashboard never set follows routine days, so it never blocks raising them.
+    const reminderPatch = patch.archiveReminderDays;
+    const reminderFromDashboard =
+      reminderPatch === undefined
+        ? before.sources.archiveReminderDays === "dashboard"
+          ? before.archiveReminderDays
+          : undefined
+        : (reminderPatch ?? undefined);
     return {
       enabled: resolve("enabled", defaults.enabled),
-      routineDays: resolve("routineDays", defaults.routineDays),
+      routineDays,
       routedOrderDays: resolve("routedOrderDays", defaults.routedOrderDays),
-      archiveReminderDays: resolve("archiveReminderDays", DEFAULT_ARCHIVE_REMINDER_DAYS),
+      archiveReminderDays: reminderFromDashboard ?? reminderDefault(routineDays),
     };
   }
+}
+
+/** The reminder when the dashboard has not set one: 730 days, or routine days when longer. */
+export function reminderDefault(routineDays: number): number {
+  return Math.max(DEFAULT_ARCHIVE_REMINDER_DAYS, routineDays);
 }
 
 function values(effective: EffectiveRetention): RetentionValues {

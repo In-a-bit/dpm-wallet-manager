@@ -52,8 +52,28 @@ describe("loadConfig retention defaults", () => {
     ).toThrow(/ROUTED_ORDER_RETENTION_DAYS/);
   });
 
-  it("rejects a routine default above the routed default", () => {
-    expect(() => load({ OPERATIONS_RETENTION_DAYS: "400" })).toThrow(/ROUTED_ORDER_RETENTION_DAYS/);
+  it("raises an unset routed default to a routine default above 365", () => {
+    expect(load({ OPERATIONS_RETENTION_DAYS: "400" }).retentionDefaults).toMatchObject({
+      routineDays: 400,
+      routedOrderDays: 400,
+    });
+    expect(
+      load({ OPERATIONS_RETENTION_DAYS: "400", ROUTED_ORDER_RETENTION_DAYS: " " })
+        .retentionDefaults,
+    ).toMatchObject({ routineDays: 400, routedOrderDays: 400 });
+  });
+
+  it("keeps the routed default at 365 when routine is at or below it", () => {
+    expect(load({ OPERATIONS_RETENTION_DAYS: "200" }).retentionDefaults).toMatchObject({
+      routineDays: 200,
+      routedOrderDays: 365,
+    });
+  });
+
+  it("still rejects an explicitly set routed below a routine above 365", () => {
+    expect(() =>
+      load({ OPERATIONS_RETENTION_DAYS: "400", ROUTED_ORDER_RETENTION_DAYS: "365" }),
+    ).toThrow(/ROUTED_ORDER_RETENTION_DAYS/);
   });
 });
 

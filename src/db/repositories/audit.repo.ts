@@ -7,18 +7,19 @@ import {
   FIRST_PAGE_CURSOR,
   invalidCursor,
 } from "../../common/dto/cursor";
+import { AuditAction } from "../../observability/audit-action";
 import { DB } from "../../tokens";
 import type { Db } from "../client";
 import { AuditEventEntity } from "../entities";
 
 /** Success rows of these actions are routine: retention trims them on a schedule. */
 export const ROUTINE_AUDIT_ACTIONS = [
-  "sign.order",
-  "sign.cancel",
-  "meta.allowance",
-  "meta.redeem",
-  "meta.split",
-  "meta.merge",
+  AuditAction.SignOrder,
+  AuditAction.SignCancel,
+  AuditAction.MetaAllowance,
+  AuditAction.MetaRedeem,
+  AuditAction.MetaSplit,
+  AuditAction.MetaMerge,
 ] as const;
 
 /** SQL over `audit_events` (unaliased) selecting the routine rows retention may delete. */

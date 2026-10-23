@@ -44,7 +44,11 @@ export type Config = {
     apiKey: string;
     timeoutMs: number;
   };
-  /** Prepended to every ref sent upstream, so one dpm-wallet can host more than one install. */
+  /**
+   * Prepended to every ref sent upstream, so one dpm-wallet can host more than one install for
+   * wallets and signing. Retention and archive do not split by prefix: they assume one manager
+   * per dpm-wallet, because dpm-wallet's maintenance endpoints act on its whole audit table.
+   */
   walletRefPrefix: string;
   /** Exact origins the backoffice UI may call from. Empty disables CORS entirely. */
   corsOrigins: string[];
@@ -107,10 +111,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
 function parseRetentionDefaults(env: NodeJS.ProcessEnv): RetentionDefaults {
   const routineDays = parseDays("OPERATIONS_RETENTION_DAYS", env.OPERATIONS_RETENTION_DAYS, 90);
+  // Unset, routed follows a routine default above 365 so raising only routine cannot fail boot.
   const routedOrderDays = parseDays(
     "ROUTED_ORDER_RETENTION_DAYS",
     env.ROUTED_ORDER_RETENTION_DAYS,
-    365,
+    Math.max(365, routineDays),
   );
   if (routedOrderDays < routineDays) {
     throw new Error("ROUTED_ORDER_RETENTION_DAYS must not be below OPERATIONS_RETENTION_DAYS");

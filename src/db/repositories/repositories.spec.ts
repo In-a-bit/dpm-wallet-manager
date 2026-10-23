@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { startDbFixture, type DbFixture } from "../../testing/db-fixture";
 import { ApiKeyRepository } from "./api-key.repo";
-import { AuditRepository } from "./audit.repo";
+import { AuditRepository, ROUTINE_AUDIT_SQL } from "./audit.repo";
 import { IdempotencyRepository } from "./idempotency.repo";
 import { OperationRepository } from "./operation.repo";
 import { PlatformSettingsRepository } from "./platform-settings.repo";
@@ -246,5 +246,14 @@ describe("repositories", () => {
       expect(await idempotency.find("k-old")).toBeUndefined();
       expect(await idempotency.find("k1")).toBeDefined();
     });
+  });
+});
+
+/** The spec's routine list (§ retention), pinned literally so a renamed constant cannot widen it. */
+describe("routine audit actions", () => {
+  it("are the six success-only signing and meta actions", () => {
+    expect(ROUTINE_AUDIT_SQL).toBe(
+      "(outcome = 'success' AND action IN ('sign.order', 'sign.cancel', 'meta.allowance', 'meta.redeem', 'meta.split', 'meta.merge'))",
+    );
   });
 });

@@ -78,7 +78,7 @@ function StorageBanner() {
       )}
       {status.archiveSuggested && (
         <div className="storage-banner notice">
-          Some important records are older than the archive reminder. <Link to="/storage">Consider archiving them</Link> to keep the
+          Some of the wallet manager's important records are older than the archive reminder. <Link to="/storage">Consider archiving them</Link> to keep the
           database small.
         </div>
       )}

@@ -84,11 +84,27 @@ check "re-run replaced dpm-custody, executable" 'cmp -s "$d1/dpm-custody" "$rel/
 check "re-run tells operator to upgrade" 'echo "$out" | grep -q "dpm-custody upgrade"'
 check "re-run leaves no temp file" '[ ! -e "$d1/.dpm-custody.new" ]'
 
-# 5. existing-install re-run with bad checksum keeps old dpm-custody
+# 5. existing-install re-run with bad checksum keeps old dpm-custody, warns, and carries on
 cp "$d1/dpm-custody" "$T/cust.before"
 echo "tampered" >>"$rel/dpm-custody"
 out="$(run "$d1" 2>&1)"; rc=$?
-check "re-run with mismatch aborts, dpm-custody untouched" '[ $rc -ne 0 ] && cmp -s "$d1/dpm-custody" "$T/cust.before"'
+check "re-run with mismatch keeps dpm-custody untouched" 'cmp -s "$d1/dpm-custody" "$T/cust.before"'
+check "re-run with mismatch warns and carries on" '[ $rc -eq 0 ] && echo "$out" | grep -q "kept the current dpm-custody"'
+check "re-run with mismatch leaves no temp file" '[ ! -e "$d1/.dpm-custody.new" ]'
+
+# 5b. a failed refresh still starts the stack, as before (stub script: setup must stay harmless)
+d9="$T/i9"; mkdir -p "$d9"
+cp "$d1/.env" "$d1/compose.yml" "$d1/versions.env" "$d9/"
+printf '#!/bin/sh\necho "stub-custody $*" >>"$DOCKER_LOG"\n' >"$d9/dpm-custody"; chmod +x "$d9/dpm-custody"
+cp "$d9/dpm-custody" "$T/stub.before"
+: >"$DOCKER_LOG"
+out="$(run "$d9" DPM_CUSTODY_NO_START= 2>&1)"; rc=$?
+check "mismatch on an existing install: stack started" 'grep -q "compose .* up -d" "$DOCKER_LOG"'
+check "mismatch on an existing install: exits 0, script untouched" '[ $rc -eq 0 ] && cmp -s "$d9/dpm-custody" "$T/stub.before"'
+: >"$DOCKER_LOG"
+out="$(run "$d9" DPM_CUSTODY_NO_START= DPM_CUSTODY_RELEASES_URL="file://$T/no-such-release" 2>&1)"; rc=$?
+check "download failure on an existing install: warns, starts the stack" '[ $rc -eq 0 ] && echo "$out" | grep -q "kept the current dpm-custody" && grep -q "compose .* up -d" "$DOCKER_LOG"'
+check "download failure on an existing install: script untouched" 'cmp -s "$d9/dpm-custody" "$T/stub.before"'
 
 # 6. SHA256SUMS fetch failures. Only "not found" skips verification; anything else aborts.
 resum

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiError, api, archiveDownloadUrl, errorMessage, type Archive } from "../api";
+import { formatTime } from "../format";
 import { Confirm } from "./Confirm";
 import { Field } from "./Field";
 import { useToast } from "./Toasts";
@@ -9,6 +10,13 @@ export const isOpen = (a: Archive) => a.status === "pending" || a.status === "do
 const DAY_MS = 86_400_000;
 const toDateInput = (d: Date) => d.toISOString().slice(0, 10);
 const NOTE = "Keep the file somewhere safe, off this machine.";
+/**
+ * The delete code is never shown: typing it from the downloaded file's name is the owner's evidence
+ * that they hold the file. An archive is named by its cutoff and creation time instead.
+ */
+const CODE_HINT = "Type the 6 characters at the end of the downloaded file's name, just before .ndjson.gz.";
+const archiveLabel = (a: Pick<Archive, "before" | "createdAt">) =>
+  `The archive of records before ${a.before.slice(0, 10)}, created ${formatTime(a.createdAt)}`;
 
 function Counts({ counts }: { counts: Record<string, number> }) {
   return (
@@ -111,9 +119,11 @@ export function ArchiveWizard({
       onChanged();
       try {
         await downloadArchive(created.id);
-        toast.ok(`Archive ${created.code} saved.`);
+        toast.ok(`Archive of records before ${shownDate} saved.`);
       } catch (e) {
-        toast.bad(`Archive ${created.code} was created but the download failed: ${errorMessage(e)} Use Download again.`);
+        toast.bad(
+          `The archive of records before ${shownDate} was created but the download failed: ${errorMessage(e)} Use Download again.`,
+        );
       }
       onChanged();
     });
@@ -218,8 +228,7 @@ export function ArchiveWizard({
       {open && (
         <div className="panel" style={{ display: "grid", gap: 8 }}>
           <p>
-            Archive <strong>{open.code}</strong> for records before {open.before.slice(0, 10)} is{" "}
-            <strong>{open.status}</strong>.
+            {archiveLabel(open)}, is <strong>{open.status}</strong>.
           </p>
           <Counts counts={counts} />
           {open.status === "pending" && (
@@ -234,6 +243,11 @@ export function ArchiveWizard({
                 </button>
               </div>
             </>
+          )}
+          {open.status === "downloaded" && (
+            <p className="muted">
+              Removing these records needs the downloaded file: you will type the 6 characters at the end of its name.
+            </p>
           )}
           {open.status === "downloaded" && (
             <div className="row-actions">
@@ -273,7 +287,7 @@ export function ArchiveWizard({
           <Counts counts={counts} />
           <p>Postgres reuses the freed space for new records; it does not return it to the disk.</p>
           <p>{NOTE}</p>
-          <Field label="Code" hint="The 6 characters at the end of the downloaded file name, before .ndjson.gz.">
+          <Field label="Code from the file name" hint={CODE_HINT}>
             <input value={code} maxLength={6} autoFocus onChange={(e) => setCode(e.target.value)} />
           </Field>
           {deleteError && (

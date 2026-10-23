@@ -1,6 +1,6 @@
-import { Controller, Get, Inject, Res } from "@nestjs/common";
+import { Controller, Get, Inject, Req, Res } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
-import type { Response } from "express";
+import type { Request, Response } from "express";
 
 import { Public } from "../common/decorators/public.decorator";
 import type { Db } from "../db/client";
@@ -12,6 +12,18 @@ import { HealthResponseDto, ReadyResponseDto } from "./dto/health.dto";
 const READY_TIMEOUT_MS = 3000;
 /** The storage field is a courtesy: it never holds the probe up. */
 const STORAGE_READ_TIMEOUT_MS = 1000;
+
+/**
+ * Loopback peers only see the storage field: `dpm-custody status` asks from inside the container
+ * on 127.0.0.1, while the probe is public and the disk level is nobody else's business. The
+ * socket's own address is used, never a forwarded header.
+ */
+const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+
+function isLoopback(req: Request): boolean {
+  const addr = req.socket?.remoteAddress;
+  return addr !== undefined && LOOPBACK.has(addr);
+}
 
 function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
@@ -51,7 +63,8 @@ export class HealthController {
 
   /**
    * Readiness: the database answers `SELECT 1`. The compose healthcheck uses this. The 503 body is
-   * `{status}` rather than the error envelope, since a probe reads only the status code.
+   * `{status}` rather than the error envelope, since a probe reads only the status code. The
+   * `storage` field is added only for a loopback caller.
    */
   @Public()
   @Get("ready")
@@ -62,13 +75,17 @@ export class HealthController {
       "Runs a trivial database query. Answers 200 with status ok, or 503 with status unavailable (a bare status body, not the error envelope) when the database does not answer.",
   })
   @ApiOkResponse({ type: ReadyResponseDto })
-  async ready(@Res({ passthrough: true }) res: Response): Promise<ReadyResponseDto> {
+  async ready(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<ReadyResponseDto> {
     try {
       await withTimeout(this.db.query("SELECT 1"), READY_TIMEOUT_MS);
     } catch {
       res.status(503);
       return { status: "unavailable" };
     }
+    if (!isLoopback(req)) return { status: "ok" };
     return { status: "ok", ...(await this.storage()) };
   }
 

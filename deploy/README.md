@@ -126,7 +126,7 @@ stops the upgrade with the install running as before:
    (readable only by you).
 7. Switches: puts the new files in place, sets the new image tags and `DPM_CUSTODY_VERSION` in
    `.env`, and restarts. Database changes run as each service starts.
-8. Waits up to 5 minutes for every service to be healthy. If they are, it removes this install's
+8. Waits up to 5 minutes (see below) for every service to be healthy. If they are, it removes this install's
    older images (other than the new and previous ones) and is done. If not, it rolls back by
    itself (below) and tells you where the backup is.
 
@@ -137,11 +137,19 @@ version (that removes the file), then check `upgrade.log`. Only one upgrade or r
 time. If one is refused because `upgrade.lock` exists although none is running, delete that
 folder.
 
-**Installs from before this command:** their `.env` has no `DPM_CUSTODY_VERSION` and their
-`dpm-custody` cannot fetch the new one. Run the installer again once (Step 1). On an existing
-install it only replaces the `dpm-custody` script and keeps your data and settings. Then run
-`dpm-custody upgrade`. It says "installed version unknown", skips the version checks this once,
-and records the new version.
+**A slow start after an upgrade:** on a large database, the first start of a new version can take
+longer while it builds new indexes. To wait longer than 5 minutes before rolling back, set
+`DPM_CUSTODY_HEALTH_TIMEOUT` (seconds, default 300) for that run, for example
+`DPM_CUSTODY_HEALTH_TIMEOUT=1800 ~/dpm-custody/dpm-custody upgrade`. Raise it when the release
+notes mention a database change and your tables hold millions of rows.
+
+**Installs from before this release:** run the installer again once (Step 1) before
+`dpm-custody upgrade`. On an existing install it only replaces the `dpm-custody` script and
+keeps your data and settings. The older `dpm-custody` either has no `upgrade` at all, or has one
+that takes no backup and does not wait for the services to be healthy (so it never rolls back by
+itself). If the installer cannot fetch the new script, it says so and keeps the old one. Then run
+`dpm-custody upgrade`. On an install whose `.env` has no `DPM_CUSTODY_VERSION` it says "installed
+version unknown", skips the version checks this once, and records the new version.
 
 ## Rolling back
 
@@ -271,12 +279,48 @@ ROUTED_ORDER_RETENTION_DAYS=365     # whole days, 1 to 3650, not below the line 
 RETENTION_ENABLED=true              # false turns automatic deletion off
 ```
 
-A bad value stops the manager from starting, and the log says which one.
+A bad value stops the manager from starting, and the log says which one. If you set only
+`OPERATIONS_RETENTION_DAYS` above 365, routed orders follow it (they are never kept for less time
+than other operations); setting `ROUTED_ORDER_RETENTION_DAYS` below it is a bad value.
+
+The manager also trims dpm-wallet's routine audit records (successful signing and meta
+transactions), with the same routine setting. dpm-wallet never trims them by itself, so a
+dpm-wallet without a manager keeps them for ever.
+
+**One manager per dpm-wallet.** Retention and archive need exactly one manager in front of each
+dpm-wallet. dpm-wallet's maintenance endpoints act on its whole audit table, whatever wallet the
+rows belong to, so `WALLET_REF_PREFIX` does not separate them: two managers sharing one
+dpm-wallet would trim and archive each other's dpm-wallet records. Give each manager its own
+dpm-wallet.
+
+### Storage and archive
+
+The admin UI's **Storage** page shows how full the disk is, how fast the databases grow and how
+many days are left. It warns (a banner, a log line, and the optional alert webhook) when the disk
+passes the warning or critical level; at critical, routine records are kept for less time until
+it recovers. `dpm-custody status` shows the same level.
+
+**Oldest important record** on that page, and the banner that suggests an archive, cover the
+manager's own records only (its operations and audit events that retention never trims).
+dpm-wallet's important audit records are archived with them, but their age is not counted there.
+The archive reminder is 730 days unless the dashboard sets it; when routine retention is longer,
+it follows that.
+
+**Archive:** an owner opens Storage, then Archives, picks a date, previews what would be saved,
+and creates and downloads the file. It is named `dpm-archive-<install>-<yyyymmdd>-<code>.ndjson.gz`.
+Only after the download finished can the records be removed from the database. To confirm, type
+the 6 characters at the end of the file's name (the `<code>`, before `.ndjson.gz`). The admin UI
+never shows them: typing them shows you hold the file. Keep the file off this machine. Read it
+with `gunzip -c <file> | head` (the first line is the manifest, then one `{table, row}` line per
+record), or `gunzip -c <file> | jq -c 'select(.table)'`. As with retention, this needs one
+manager per dpm-wallet.
 
 ### Health
 
 `GET /v1/health` answers whether the process is up. `GET /v1/health/ready` also runs a database
 query and answers `200 {"status":"ok"}` or `503 {"status":"unavailable"}`; neither needs a key.
+On the manager, a call from inside its own container (127.0.0.1) also gets a `storage` field with
+the disk level; that is what `dpm-custody status` reads. Other callers never see it.
 Compose runs the ready probe on dpm-wallet (port 8090, inside the stack) and the manager (port
 3000), every 10 seconds, with a 60 second start period. Check with `docker compose --env-file .env -f compose.yml ps`.
 

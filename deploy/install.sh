@@ -7,7 +7,8 @@
 # .env with a fresh database password, starts the stack, then runs setup in this terminal. Running
 # it again on an existing install starts it and finishes setup if it is not done. It refreshes
 # only the dpm-custody script (run `dpm-custody upgrade` to move to a new version); compose.yml,
-# versions.env and .env are never overwritten.
+# versions.env and .env are never overwritten. If that refresh fails (download or checksum), it
+# warns, keeps the current script and still starts the install.
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
 # DPM_CUSTODY_RELEASES_URL replaces the download base (…/releases/latest/download or
@@ -123,14 +124,20 @@ verify_files() {
   sha_check SHA256SUMS.use || fail "A downloaded file does not match SHA256SUMS. Nothing was installed. Try again; if it keeps failing, tell the platform team."
 }
 
-# refresh_custody replaces only the dpm-custody script in an existing install.
+# refresh_custody replaces only the dpm-custody script in an existing install. Run it in a
+# subshell: a failed download or checksum exits that subshell only, with the current script
+# untouched. Each step is checked by hand because errexit does not apply inside an `if`.
 refresh_custody() {
   fetch_file dpm-custody
   verify_files dpm-custody
   # Copy next to the target first so the final mv is an atomic rename on the same filesystem.
-  cp "$STAGE/dpm-custody" "$DIR/.dpm-custody.new"
-  chmod +x "$DIR/.dpm-custody.new"
-  mv -f "$DIR/.dpm-custody.new" "$DIR/dpm-custody"
+  if cp "$STAGE/dpm-custody" "$DIR/.dpm-custody.new" &&
+    chmod +x "$DIR/.dpm-custody.new" &&
+    mv -f "$DIR/.dpm-custody.new" "$DIR/dpm-custody"; then
+    return 0
+  fi
+  rm -f "$DIR/.dpm-custody.new"
+  return 1
 }
 
 random_password() { LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
@@ -194,8 +201,13 @@ main() {
   if [ -f "$DIR/.env" ]; then
     # Only the dpm-custody script is refreshed; compose.yml, versions.env and .env stay as they are.
     say "  Found an existing install in $DIR."
-    refresh_custody
-    say "  Updated $DIR/dpm-custody. To move this install to the new version, run:  $DIR/dpm-custody upgrade"
+    if (refresh_custody); then
+      say "  Updated $DIR/dpm-custody. To move this install to the new version, run:  $DIR/dpm-custody upgrade"
+    else
+      # Never install an unverified script, but do not stop a working install from starting.
+      say "  ! Could not refresh dpm-custody (see above); kept the current dpm-custody script."
+      say "    Run this installer again later to get the new one before running dpm-custody upgrade."
+    fi
     say "  Starting the install as it is ..."
   else
     check_name

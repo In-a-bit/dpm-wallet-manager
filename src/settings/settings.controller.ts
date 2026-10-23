@@ -5,7 +5,7 @@ import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
-import { RetentionSettingsService } from "./retention-settings.service";
+import { reminderDefault, RetentionSettingsService } from "./retention-settings.service";
 import {
   RetentionSettingsDto,
   StorageSettingsDto,
@@ -14,7 +14,6 @@ import {
 } from "./dto/settings.dto";
 import { CONFIG } from "../tokens";
 import type { Config } from "../config";
-import { DEFAULT_ARCHIVE_REMINDER_DAYS } from "./retention-settings.service";
 import {
   maskWebhookUrl,
   StorageSettingsService,
@@ -39,7 +38,8 @@ export class SettingsController {
   ) {}
 
   private defaults() {
-    return { ...this.config.retentionDefaults, archiveReminderDays: DEFAULT_ARCHIVE_REMINDER_DAYS };
+    const env = this.config.retentionDefaults;
+    return { ...env, archiveReminderDays: reminderDefault(env.routineDays) };
   }
 
   /** Admins see the webhook as stored; everyone else sees it masked. */

@@ -181,9 +181,9 @@ export interface StorageStatus {
 
 export type ArchiveStatus = "pending" | "downloaded" | "deleting" | "done" | "cancelled";
 
+/** The API also returns the delete `code`; the UI never reads it (the owner types it from the file name). */
 export interface Archive {
   id: string;
-  code: string;
   scope: Record<string, { maxId: number; rows: number }>;
   before: string;
   status: ArchiveStatus;
@@ -335,7 +335,7 @@ export const api = {
   previewArchive: (before: string) => get<{ tables: Record<string, number> }>("/v1/archives/preview", { before }),
   listArchives: (q: Query) => get<Page<Archive>>("/v1/archives", q),
   createArchive: (before: string) =>
-    post<{ id: string; code: string; scope: Archive["scope"] }>("/v1/archives", { before }),
+    post<{ id: string; scope: Archive["scope"] }>("/v1/archives", { before }),
   deleteArchive: (id: string, code: string) =>
     post<{ status: "deleting" }>(`/v1/archives/${encodeURIComponent(id)}/delete`, { code }),
   cancelArchive: (id: string) => post<{ status: "cancelled" }>(`/v1/archives/${encodeURIComponent(id)}/cancel`),

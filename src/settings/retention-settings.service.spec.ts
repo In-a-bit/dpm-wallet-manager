@@ -96,6 +96,33 @@ describe("RetentionSettingsService", () => {
     }
   });
 
+  it("raises an unset reminder to routine days above 730 instead of refusing", async () => {
+    const effective = await service.update({ routineDays: 800, routedOrderDays: 900 }, actor);
+    expect(effective).toMatchObject({ routineDays: 800, archiveReminderDays: 800 });
+    expect(effective.sources.archiveReminderDays).toBe("default");
+    expect((await service.effective()).archiveReminderDays).toBe(800);
+
+    await service.update({ routineDays: null, routedOrderDays: null }, actor);
+    expect((await service.effective()).archiveReminderDays).toBe(730);
+  });
+
+  it("still refuses routine above an explicitly set reminder", async () => {
+    await service.update({ archiveReminderDays: 750 }, actor);
+    const err = await service
+      .update({ routineDays: 800, routedOrderDays: 900 }, actor)
+      .catch((e: unknown) => e);
+    expect((err as ManagerError).code).toBe("VALIDATION_FAILED");
+    expect((await service.effective()).routineDays).toBe(90);
+
+    // Clearing the reminder in the same patch falls back to the raised default and is accepted.
+    const ok = await service.update(
+      { routineDays: 800, routedOrderDays: 900, archiveReminderDays: null },
+      actor,
+    );
+    expect(ok.archiveReminderDays).toBe(800);
+    await service.update({ routineDays: null, routedOrderDays: null }, actor);
+  });
+
   it("audits an update with the old and new values", async () => {
     await service.update({ routineDays: 45, archiveReminderDays: 1000 }, actor);
     const page = await auditRepo.query({ action: "settings.retention_update" }, 10, 0);

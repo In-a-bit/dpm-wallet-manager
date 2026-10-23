@@ -46,7 +46,7 @@ const ARCHIVE_ID = {
 
 /**
  * Important records out to a verified file, then out of the database on confirmation. Any key may
- * list and preview; creating, downloading and deleting are admin only.
+ * list; previewing, creating, downloading and deleting are admin only.
  */
 @ApiTags("archives")
 @ApiAuth()
@@ -82,6 +82,7 @@ export class ArchiveController {
    * day ago.
    */
   @Get("preview")
+  @Roles("admin")
   @ApiOperation({ operationId: "previewArchive", summary: "Count the rows an archive would cover" })
   @ApiOkResponse({ type: ArchivePreviewDto })
   @ApiErrors("VALIDATION_FAILED", "UPSTREAM_UNAVAILABLE", "UPSTREAM_REJECTED")

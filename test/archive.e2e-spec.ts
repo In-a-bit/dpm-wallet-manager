@@ -138,15 +138,13 @@ describe("archives", () => {
     await harness.close();
   });
 
-  it("previews the important rows only, for every role", async () => {
-    for (const apiKey of [harness.readonlyKey, harness.adminKey]) {
-      const preview = await harness.get("/v1/archives/preview", {
-        apiKey,
-        query: { before: BEFORE },
-      });
-      expect(preview.status).toBe(200);
-      expect(preview.body).toEqual({ tables: { [OPS]: 3, [AUDIT]: 3, [WALLET]: 4 } });
-    }
+  it("previews the important rows only, for an admin", async () => {
+    const preview = await harness.get("/v1/archives/preview", {
+      apiKey: harness.adminKey,
+      query: { before: BEFORE },
+    });
+    expect(preview.status).toBe(200);
+    expect(preview.body).toEqual({ tables: { [OPS]: 3, [AUDIT]: 3, [WALLET]: 4 } });
   });
 
   it("refuses a cutoff less than a day old", async () => {
@@ -172,7 +170,7 @@ describe("archives", () => {
     outOfScope[WALLET]!.push(6);
   });
 
-  it("refuses a viewer on create, download and delete, and serves list and preview", async () => {
+  it("refuses a viewer on preview, create, download and delete, and serves the list", async () => {
     const apiKey = harness.readonlyKey;
     expect((await harness.post("/v1/archives", { apiKey, body: { before: BEFORE } })).status).toBe(
       403,
@@ -188,7 +186,7 @@ describe("archives", () => {
       apiKey,
       query: { before: BEFORE },
     });
-    expect(preview.status).toBe(200);
+    expect(preview.status).toBe(403);
   });
 
   it("404s an unknown archive", async () => {

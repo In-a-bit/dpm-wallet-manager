@@ -42,16 +42,18 @@ describe("admin UI access", () => {
 
   describe("readonly API key", () => {
     // Walks the whole OpenAPI document, so a route added later is covered without editing this.
-    it("reads everything but keys, users and archive files, and changes nothing", async () => {
+    it("reads everything but keys, users, archive files and previews, and changes nothing", async () => {
       const doc = buildOpenApiDocument(harness.app);
       for (const [route, path] of routes(doc.paths)) {
         const [method] = route.split(" ") as [string];
         if (route.includes("/session/")) continue;
         const response = await send(harness, method, fillParams(path), harness.readonlyKey);
-        // An archive file carries the raw important records, so downloading one is admin only.
+        // An archive file carries the raw important records, so downloading one is admin only;
+        // the preview is the first step of the owner-only archive flow.
         const adminOnlyRead =
           (route.startsWith("GET /v1/api-keys") && route !== "GET /v1/api-keys/self") ||
-          route === "GET /v1/archives/{id}/download";
+          route === "GET /v1/archives/{id}/download" ||
+          route === "GET /v1/archives/preview";
         // The balances lookup is a POST only because its ids travel in the body.
         const readLikePost = route === "POST /v1/wallets/balances";
         const refused =

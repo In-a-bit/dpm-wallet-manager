@@ -54,7 +54,10 @@ export function StorageOverview() {
                 : "As configured"}
             </dd>
             <dt>Oldest important record</dt>
-            <dd>{formatTime(s.oldestImportantAt)}</dd>
+            <dd>
+              {formatTime(s.oldestImportantAt)}
+              <div className="muted">The wallet manager's records only; dpm-wallet's are not counted here.</div>
+            </dd>
             <dt>Sampled</dt>
             <dd>{formatTime(s.at)}</dd>
           </dl>

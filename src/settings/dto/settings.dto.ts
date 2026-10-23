@@ -87,7 +87,7 @@ export class UpdateRetentionSettingsDto {
   @IsOptional()
   routedOrderDays?: number | null;
 
-  /** `null` reverts to the default (730). */
+  /** `null` reverts to the default: 730, or the routine days when longer. */
   @ApiPropertyOptional({ type: Number, nullable: true, example: 730 })
   @IsOptional()
   archiveReminderDays?: number | null;

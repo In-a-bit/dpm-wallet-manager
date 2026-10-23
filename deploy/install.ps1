@@ -15,7 +15,12 @@ $Releases = "https://github.com/In-a-bit/dpm-wallet-manager/releases"
 
 function Remove-Stage { if ($script:Stage) { Remove-Item $script:Stage -Recurse -Force -ErrorAction SilentlyContinue } }
 
+# While $FailSoft is set (refreshing dpm-custody on an existing install), Fail throws instead of
+# exiting, so the caller can keep the current script and carry on.
+$FailSoft = $false
+
 function Fail($message) {
+  if ($script:FailSoft) { throw $message }
   Remove-Stage
   Write-Host ""
   Write-Host "  X $message" -ForegroundColor Red
@@ -53,7 +58,7 @@ function Get-ReleasesBase {
 }
 
 function Get-InstallFile($name) {
-  if ($env:DPM_CUSTODY_SOURCE) { Copy-Item (Join-Path $env:DPM_CUSTODY_SOURCE $name) (Join-Path $Stage $name); return }
+  if ($env:DPM_CUSTODY_SOURCE) { Copy-Item (Join-Path $env:DPM_CUSTODY_SOURCE $name) (Join-Path $Stage $name) -ErrorAction Stop; return }
   Get-Remote "$(Get-ReleasesBase)/$name" (Join-Path $Stage $name)
 }
 
@@ -128,11 +133,21 @@ if (Test-Path (Join-Path $Dir ".env")) {
   Write-Host "  Found an existing install in $Dir."
   $custody = Join-Path $Dir "dpm-custody"
   if (Test-Path $custody) {
-    Get-InstallFile "dpm-custody"
-    Test-InstallFiles @("dpm-custody")
-    Copy-Item (Join-Path $Stage "dpm-custody") "$custody.new" -Force
-    Move-Item "$custody.new" $custody -Force
-    Write-Host "  Updated $custody. To move this install to the new version, run: dpm-custody upgrade"
+    # Never install an unverified script, but do not stop a working install from starting.
+    $script:FailSoft = $true
+    try {
+      Get-InstallFile "dpm-custody"
+      Test-InstallFiles @("dpm-custody")
+      Copy-Item (Join-Path $Stage "dpm-custody") "$custody.new" -Force -ErrorAction Stop
+      Move-Item "$custody.new" $custody -Force -ErrorAction Stop
+      Write-Host "  Updated $custody. To move this install to the new version, run: dpm-custody upgrade"
+    } catch {
+      Remove-Item "$custody.new" -Force -ErrorAction SilentlyContinue
+      Write-Host "  ! Could not refresh dpm-custody: $($_.Exception.Message)" -ForegroundColor Yellow
+      Write-Host "    Kept the current dpm-custody script. Run this installer again later to get the new one before running dpm-custody upgrade."
+    } finally {
+      $script:FailSoft = $false
+    }
   }
   Write-Host "  Starting the install as it is ..."
 } else {
