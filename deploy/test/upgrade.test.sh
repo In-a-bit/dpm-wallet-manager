@@ -211,6 +211,20 @@ out="$(HEALTH_BY_UP="healthy unhealthy unhealthy" TIMEOUT=5 run "$d" upgrade --y
 check "8c rollback also unhealthy: prints restore steps, no psql restore" '[ $rc -ne 0 ] && echo "$out" | grep -qi "restor" && echo "$out" | grep -q "backups/[0-9]" && ! grep -q "psql.*<\|DROP DATABASE" "$d.events"'
 check "8c rollback also unhealthy: marker stays" '[ -f "$d/upgrade.inprogress" ]'
 
+# 8d. a good upgrade, then a failed one that rolls back by itself: `rollback` still undoes the
+# good one (its *.prev files are put back, not lost)
+make_release "$T/rel-bad120" 1.2.0 "" "0.3.0" "1.2.0"
+d="$T/c8d"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" upgrade --yes)"; rc=$?
+check "8d first upgrade to 1.1.0 succeeds" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTODY_VERSION=1.1.0" "$d/.env"'
+out="$(REL_URL="file://$T/rel-bad120" HEALTH_BY_UP="healthy unhealthy healthy" TIMEOUT=5 run "$d" upgrade --yes)"; rc=$?
+check "8d failed 1.2.0 rolled back to 1.1.0" '[ $rc -ne 0 ] && grep -qx "DPM_CUSTODY_VERSION=1.1.0" "$d/.env" && cmp -s "$d/compose.yml" "$T/rel/compose.yml"'
+check "8d the 1.0.0 *.prev files are back (600), no stash left" 'cmp -s "$d/compose.yml.prev" "$d.orig.compose.yml" && cmp -s "$d/.env.prev" "$d.orig..env" && cmp -s "$d/dpm-custody.prev" "$d.orig.dpm-custody" && [ "$(mode_of "$d/.env.prev")" = "-rw-------" ] && [ -z "$(ls "$d" | grep "\.last$")" ]'
+out="$(run "$d" rollback)"; rc=$?
+check "8d rollback then returns to 1.0.0" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTODY_VERSION=1.0.0" "$d/.env" && grep -qx "DPM_WALLET_MANAGER_TAG=1.0.0" "$d/.env" && cmp -s "$d/compose.yml" "$d.orig.compose.yml" && [ ! -e "$d/.env.prev" ]'
+out="$(run "$d" upgrade --yes)"; rc=$?
+check "8d a good upgrade leaves no stash" '[ $rc -eq 0 ] && [ -z "$(ls -a "$d" | grep "\.last$")" ]'
+
 # 17. SIGHUP (dropped SSH session) during the health gate: the run still completes its rollback
 d="$T/c17"; make_install "$d" 1.0.0 0.1.0 1.0.0
 : >"$d.events"

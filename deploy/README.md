@@ -162,6 +162,9 @@ files. In `.env` it resets only the image tags and `DPM_CUSTODY_VERSION`, so any
 made to `.env` since the upgrade stays. Then it restarts and waits for every service to be healthy,
 like an upgrade does. Without `*.prev` files there is nothing to undo, and it says so.
 
+An upgrade that failed and rolled back by itself keeps the `*.prev` files of the upgrade before
+it, so `rollback` still undoes that earlier upgrade.
+
 A rollback never touches the databases. That is safe because a release's database changes only
 add (new tables, new optional columns, new indexes), so the previous version runs on them. A
 release that cannot keep that promise raises `MIN_UPGRADE_FROM` and says so in its notes. Undoing

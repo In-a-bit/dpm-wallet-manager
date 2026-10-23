@@ -388,6 +388,31 @@ prev_value_ok() {
 have_prev() { [ -f compose.yml.prev ] && [ -f .env.prev ] && [ -f dpm-custody.prev ]; }
 remove_prev() { rm -f compose.yml.prev versions.env.prev .env.prev dpm-custody.prev; }
 
+# An upgrade overwrites the *.prev files of the upgrade before it. stash_prev copies them to
+# *.prev.last first (mode 600), so that when this upgrade fails and rolls back by itself,
+# unstash_prev can put them back and `rollback` still undoes the earlier, good upgrade.
+PREV_FILES="compose.yml.prev versions.env.prev .env.prev dpm-custody.prev"
+drop_stash() { rm -f compose.yml.prev.last versions.env.prev.last .env.prev.last dpm-custody.prev.last; }
+stash_prev() {
+  local f
+  drop_stash
+  have_prev || return 0
+  for f in $PREV_FILES; do
+    [ -e "$f" ] || continue
+    (umask 077 && cp "$f" "$f.last") && chmod 600 "$f.last" || { drop_stash; return 1; }
+  done
+}
+# unstash_prev replaces the *.prev files with the stashed ones, or just removes them when there is
+# no stash (the usual case: nothing older to go back to).
+unstash_prev() {
+  local f
+  remove_prev
+  [ -f .env.prev.last ] || { drop_stash; return 0; }
+  for f in $PREV_FILES; do
+    if [ -e "$f.last" ]; then mv -f "$f.last" "$f" || return 1; fi
+  done
+}
+
 # restore_prev puts the *.prev files back. In .env only the image tags and DPM_CUSTODY_VERSION
 # go back to their .env.prev values (a key .env.prev did not have is removed); any other edit to
 # .env since the upgrade is kept. dpm-custody goes back last.
@@ -656,7 +681,8 @@ cmd_upgrade() {
   fi
 
   # 6. Keep the old files, and mark the switch as started.
-  keep_prev || stop_unchanged "Could not save the current files as *.prev (is the disk full?)."
+  stash_prev || stop_unchanged "Could not save the previous upgrade's *.prev files (is the disk full?)."
+  keep_prev || { drop_stash; stop_unchanged "Could not save the current files as *.prev (is the disk full?)."; }
   printf 'from=%s\nto=%s\nstarted=%s\n' "$installed" "$target" "$(date '+%Y-%m-%d %H:%M:%S %z')" >"$MARKER" ||
     stop_unchanged "Could not write $MARKER (is the disk full?)."
 
@@ -674,6 +700,7 @@ cmd_upgrade() {
     # 8. Healthy.
     UPGRADE_PHASE=done
     rm -f "$MARKER"
+    drop_stash
     prune_images
     say ""
     say "  ✓ Upgraded to $target. Every service is healthy."
@@ -689,7 +716,8 @@ cmd_upgrade() {
   say "  ✕ $target did not come up healthy. Putting $installed back ..."
   if rollback_now; then
     UPGRADE_PHASE=done
-    remove_prev
+    # Back to the files of the upgrade before this one, so `rollback` can still undo it.
+    unstash_prev || say "  ! Could not put back the *.prev files of the upgrade before this one."
     rm -f "$MARKER"
     say ""
     say "  ✕ The upgrade to $target failed and was rolled back: the install runs $installed again."
@@ -727,7 +755,8 @@ cmd_rollback() {
   to="$(env_value DPM_CUSTODY_VERSION .env.prev)"
   say "Rolling back from ${from:-unknown} to ${to:-the previous version} (images and files; the databases stay as they are) ..."
   if rollback_now; then
-    remove_prev
+    # After an unfinished upgrade the stash holds the upgrade before it; otherwise there is none.
+    unstash_prev || say "  ! Could not put back the *.prev files of the upgrade before this one."
     rm -f "$MARKER"
     say ""
     say "  ✓ Rolled back to ${to:-the previous version}. Every service is healthy."
