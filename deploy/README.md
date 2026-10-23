@@ -103,6 +103,11 @@ machine. It contains secrets, so keep it private.
 ~/dpm-custody/dpm-custody upgrade --yes      # without the question (for scripts)
 ```
 
+On a remote machine, run it inside `tmux` or `screen`, so you can reconnect and watch it if the
+connection drops. Once you have confirmed, it keeps running even if the terminal or SSH session
+closes, rollback included. Every message, plus Docker's output, goes to `upgrade.log` in the
+install folder. Read that file to see how it ended.
+
 It runs these steps in order. Until the switch, nothing in the install changes, and any problem
 stops the upgrade with the install running as before:
 
@@ -124,6 +129,13 @@ stops the upgrade with the install running as before:
 8. Waits up to 5 minutes for every service to be healthy. If they are, it removes this install's
    older images (other than the new and previous ones) and is done. If not, it rolls back by
    itself (below) and tells you where the backup is.
+
+**An upgrade that did not finish:** a file `upgrade.inprogress` marks an upgrade that switched
+files but did not finish, for example because the machine restarted during it. While it is there,
+`upgrade` refuses and `status` says so. Run `dpm-custody rollback` to return to the previous
+version (that removes the file), then check `upgrade.log`. Only one upgrade or rollback runs at a
+time. If one is refused because `upgrade.lock` exists although none is running, delete that
+folder.
 
 **Installs from before this command:** their `.env` has no `DPM_CUSTODY_VERSION` and their
 `dpm-custody` cannot fetch the new one. Run the installer again once (Step 1). On an existing
