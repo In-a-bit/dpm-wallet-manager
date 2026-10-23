@@ -2,16 +2,31 @@
 #
 #   irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 #
-# Same steps as install.sh: check Docker, put the files in %USERPROFILE%\dpm-custody, write .env
-# with a fresh database password, start the stack, then run setup in this window.
-# DPM_CUSTODY_RELEASES_URL replaces the download base; downloads are checked against the release's
-# SHA256SUMS. DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
-# Day-to-day commands afterwards: docker compose in that folder (see README).
+# Same steps and options as install.sh: check Docker, put the files in %USERPROFILE%\dpm-custody
+# (override with DPM_CUSTODY_DIR), write .env with a fresh database password, start the stack,
+# then run setup in this window. Running it again on an existing install starts it and refreshes
+# only the dpm-custody script; compose.yml, versions.env and .env are never overwritten.
+#
+# Options are environment variables, set before running it ($env:NAME = "value"):
+# DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
+# DPM_CUSTODY_RELEASES_URL replaces the download base; file:// works. Downloads are checked
+# against the release's SHA256SUMS. DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
+# DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (default 3000). A new install checks
+# the port first and stops, naming a free one, when another program or container has it.
+# DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
+# are all prefixed with it, so two installs with different names run side by side.
+# DPM_CUSTODY_SOURCE=C:\path\to\deploy copies the files from a local folder (for testing).
+# SETUP_PLATFORM_URL / SETUP_BUILDER_KEY answer setup's first two questions (still checked).
+#
+# Day-to-day commands afterwards: dpm-custody (needs Git Bash or WSL) or docker compose in that
+# folder (see README).
 $ErrorActionPreference = "Stop"
 
 $Dir = if ($env:DPM_CUSTODY_DIR) { $env:DPM_CUSTODY_DIR } else { Join-Path $HOME "dpm-custody" }
 $Release = if ($env:DPM_CUSTODY_RELEASE) { $env:DPM_CUSTODY_RELEASE } else { "latest" }
 $Releases = "https://github.com/In-a-bit/dpm-wallet-manager/releases"
+$ManagerPort = if ($env:DPM_CUSTODY_MANAGER_PORT) { $env:DPM_CUSTODY_MANAGER_PORT } else { "3000" }
+$Name = if ($env:DPM_CUSTODY_NAME) { $env:DPM_CUSTODY_NAME } else { "dpm-custody" }
 
 function Remove-Stage { if ($script:Stage) { Remove-Item $script:Stage -Recurse -Force -ErrorAction SilentlyContinue } }
 
@@ -112,14 +127,55 @@ function Write-InstallEnv {
   if (-not $version) { $version = "unknown" }
   $lines = @(
     "# Written by the installer. Keep this file private: it holds the database password.",
+    # Overrides compose.yml's `name:`, which is what keeps this install apart from any other.
+    "COMPOSE_PROJECT_NAME=$Name",
     "POSTGRES_USER=dpm",
     "POSTGRES_PASSWORD=$(New-Secret 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789' 32)",
     "MANAGER_BIND=127.0.0.1",
-    "MANAGER_PORT=3000",
-    "MANAGER_PUBLIC_URL=http://localhost:3000"
+    "MANAGER_PORT=$ManagerPort",
+    "MANAGER_PUBLIC_URL=http://localhost:$ManagerPort"
   ) + $versions + "DPM_CUSTODY_VERSION=$version"
   # UTF-8 without a BOM: Compose would read a BOM as part of the first variable's name.
   [System.IO.File]::WriteAllLines((Join-Path $Dir ".env"), $lines, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# Refuses a name another install on this machine already uses: Docker would treat the two as one,
+# and the new install would take over the other's containers and data.
+function Test-InstallName {
+  if ($Name -cnotmatch '^[a-z0-9]') { Fail "DPM_CUSTODY_NAME must start with a lowercase letter or digit." }
+  if ($Name -cnotmatch '^[a-z0-9_-]+$') { Fail "DPM_CUSTODY_NAME may only use lowercase letters, digits, '-' and '_'." }
+  $names = docker compose ls -a -q 2>$null
+  if ($names -contains $Name) { Fail "Another install on this machine is already named `"$Name`". Choose another name with DPM_CUSTODY_NAME." }
+}
+
+# True when $port is unusable for a new install: something on this machine accepts connections
+# on it, or a container (running or stopped) already publishes it. A stopped install's port is
+# free right now, but taking it would clash once both are started.
+function Test-PortTaken([int]$port) {
+  $client = New-Object System.Net.Sockets.TcpClient
+  try {
+    if ($client.ConnectAsync("127.0.0.1", $port).Wait(1000) -and $client.Connected) { return $true }
+  } catch {
+    # Refused: nothing listens there.
+  } finally {
+    $client.Dispose()
+  }
+  $ids = docker ps -aq 2>$null
+  if (-not $ids) { return $false }
+  $published = docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' @ids 2>$null
+  return (($published -join " ") -split "\s+") -contains "$port"
+}
+
+# Refuses a port that is not a number or is already taken, before anything is written, and names
+# the next free one.
+function Test-ManagerPort {
+  if ($ManagerPort -notmatch '^[0-9]+$') { Fail "DPM_CUSTODY_MANAGER_PORT must be a port number, e.g. 3001." }
+  $port = [int]$ManagerPort
+  if ($port -lt 1 -or $port -gt 65535) { Fail "DPM_CUSTODY_MANAGER_PORT must be between 1 and 65535." }
+  if (-not (Test-PortTaken $port)) { return }
+  $free = $port + 1
+  while ($free -le 65535 -and (Test-PortTaken $free)) { $free++ }
+  Fail "Port $port is already in use on this machine. Nothing was installed. Run the installer again with a free port, e.g. `$env:DPM_CUSTODY_MANAGER_PORT = `"$free`" first."
 }
 
 $InstallStart = Get-Date
@@ -151,8 +207,10 @@ if (Test-Path (Join-Path $Dir ".env")) {
   }
   Write-Host "  Starting the install as it is ..."
 } else {
+  Test-InstallName
+  Test-ManagerPort
   Write-Host "  Installing into $Dir ..."
-  $files = "compose.yml", "versions.env"
+  $files = "compose.yml", "versions.env", "dpm-custody"
   foreach ($f in $files) { Get-InstallFile $f }
   Test-InstallFiles $files
   New-Item -ItemType Directory -Force -Path $Dir | Out-Null
@@ -184,7 +242,12 @@ if (-not $ready) { Pop-Location; Fail "The setup service did not start. In $Dir 
 # Shown in setup's checklist as the time the installation took.
 $env:SETUP_INSTALL_SECONDS = [int]((Get-Date) - $InstallStart).TotalSeconds
 Write-Host ""
-docker @Compose exec -e SETUP_INSTALL_SECONDS setup node dist/setup/main setup
+# The two answers, when given, go to setup the way dpm-custody passes them: by name, from this
+# process's environment, so the key never appears on a command line.
+$SetupEnv = @("-e", "SETUP_INSTALL_SECONDS")
+if ($env:SETUP_PLATFORM_URL) { $SetupEnv += @("-e", "SETUP_PLATFORM_URL") }
+if ($env:SETUP_BUILDER_KEY) { $SetupEnv += @("-e", "SETUP_BUILDER_KEY") }
+docker @Compose exec @SetupEnv setup node dist/setup/main setup
 $finished = $LASTEXITCODE -eq 0
 Pop-Location
 if (-not $finished) {
@@ -195,4 +258,7 @@ if (-not $finished) {
   # Not exit: under irm | iex that would close the window, and the message with it.
   return
 }
+Write-Host ""
+Write-Host "  Later, in $Dir : dpm-custody start, stop, status, backup, upgrade, ... (from Git Bash or WSL),"
+Write-Host "  or docker compose --env-file .env -f compose.yml followed by up -d, stop, ps or logs."
 Write-Host ""

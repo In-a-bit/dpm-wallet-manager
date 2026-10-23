@@ -1,6 +1,38 @@
-# Install your DPM custody service
+# DPM custody service: install, run, upgrade
 
-This guide sets up the service that holds your users' wallets. You don't need to be technical.
+This folder holds everything a builder installs: the installers (`install.sh` for Mac and Linux,
+`install.ps1` for Windows), `compose.yml`, `versions.env` and the `dpm-custody` command.
+
+**Part 1** is for builders: install, check, use, upgrade. You don't need to be technical.
+**Part 2** is for the platform team: preparing a platform, trying the install locally (one install
+or two side by side), on dev and on production, and testing these scripts.
+
+- [Part 1: For builders](#part-1-for-builders)
+  - [Before you start](#before-you-start)
+  - [Step 1: Run the installer](#step-1-run-the-installer)
+  - [Installer options](#installer-options)
+  - [Step 2: Follow the setup dashboard](#step-2-follow-the-setup-dashboard)
+  - [Step 3: Check it works](#step-3-check-it-works)
+  - [Everyday use](#everyday-use)
+  - [Settings in .env](#settings-in-env)
+  - [Two installs on one machine](#two-installs-on-one-machine)
+  - [Upgrading](#upgrading)
+  - [Rolling back](#rolling-back)
+  - [Restoring a backup](#restoring-a-backup)
+  - [Removing an install](#removing-an-install)
+  - [If something goes wrong](#if-something-goes-wrong)
+  - [For administrators](#for-administrators)
+- [Part 2: For the platform team](#part-2-for-the-platform-team)
+  - [What every environment needs first](#what-every-environment-needs-first)
+  - [Local environment](#local-environment)
+  - [Dev](#dev)
+  - [Production (dpm.network)](#production-dpmnetwork)
+  - [Testing the deploy scripts](#testing-the-deploy-scripts)
+
+---
+
+# Part 1: For builders
+
 Plan for about 15 minutes, most of it waiting for downloads.
 
 ## Before you start
@@ -13,6 +45,10 @@ You need two things:
    - **Windows or Mac:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
      and open it once. Wait until it says it's running.
    - **Linux server:** install [Docker Engine](https://docs.docker.com/engine/install/).
+
+The wallet manager uses port **3000** on this machine. If another program already uses it, the
+installer stops before changing anything and tells you a free port to use instead (see
+[Installer options](#installer-options)).
 
 ## Step 1: Run the installer
 
@@ -31,7 +67,55 @@ curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/downlo
 irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
 ```
 
-It downloads and starts the service, then opens the **setup dashboard** in the same window.
+It puts the files in the `dpm-custody` folder in your home folder, downloads and starts the
+service, then opens the **setup dashboard** in the same window.
+
+Running the installer again is always safe. On an existing install it only refreshes the
+`dpm-custody` command (checked against the release's `SHA256SUMS`) and starts the service. It
+never changes `compose.yml`, `versions.env` or `.env`, so the name and port options below
+apply only to a new install.
+
+## Installer options
+
+Every option is an environment variable. Both installers accept the same ones, and none is
+needed for a normal install.
+
+| Variable                   | Default            | What it does                                                                                             |
+| -------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `DPM_CUSTODY_MANAGER_PORT` | `3000`             | The wallet manager's port. A taken port stops the install before anything is written, naming a free one. |
+| `DPM_CUSTODY_DIR`          | `~/dpm-custody`    | Where the install goes.                                                                                  |
+| `DPM_CUSTODY_NAME`         | `dpm-custody`      | The install's name. Its containers, volumes and network all start with it. Needed for two installs.      |
+| `DPM_CUSTODY_RELEASE`      | `latest`           | Install this release instead, e.g. `v1.2.3`.                                                             |
+| `SETUP_PLATFORM_URL`       | (asked)            | Answers setup's first question, the platform address. Still checked.                                     |
+| `SETUP_BUILDER_KEY`        | (asked)            | Answers setup's second question, your builder key. Still checked. Prefer pasting it when asked.          |
+| `DPM_CUSTODY_NO_START`     | (unset)            | `1` writes the files and `.env`, then stops before starting anything.                                    |
+| `DPM_CUSTODY_RELEASES_URL` | the GitHub release | Download the installer files from here instead (`file://` works). For testing.                           |
+| `DPM_CUSTODY_SOURCE`       | (unset)            | Copy the installer files from this local folder instead of downloading them. For testing.                |
+
+The name may use lowercase letters, digits, `-` and `_`, and must start with a letter or digit.
+A name another install on this machine already uses, running or stopped, is refused.
+
+**Mac or Linux:** put the variables just before `sh`:
+
+```sh
+# another port
+curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh \
+  | DPM_CUSTODY_MANAGER_PORT=3001 sh
+
+# a given release, in another folder
+curl -fsSL https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh \
+  | DPM_CUSTODY_RELEASE=v1.2.3 DPM_CUSTODY_DIR=/opt/dpm-custody sh
+```
+
+**Windows (PowerShell):** set them first, in the same window:
+
+```powershell
+$env:DPM_CUSTODY_MANAGER_PORT = "3001"
+irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
+```
+
+A variable set with `$env:` stays set until you close that window. Remove one with
+`Remove-Item Env:DPM_CUSTODY_MANAGER_PORT`.
 
 ## Step 2: Follow the setup dashboard
 
@@ -61,8 +145,8 @@ Sign in there with the login you just created to see your wallets, manage API ke
 audit log, and add more people.
 
 You can close the window at any time, even halfway through: setup carries on in the
-background. Run `~/dpm-custody/dpm-custody setup` to see it again. On Windows, use the command
-the installer printed.
+background. To see it again, run `~/dpm-custody/dpm-custody setup` (Windows: see
+[Everyday use](#everyday-use)).
 
 ### If setup stops
 
@@ -74,26 +158,129 @@ everything support needs: the checklist, what each step did and when, the state 
 and their recent logs. Keys in it are masked, so it's safe to email. Send that file to the
 platform team, with the **reference** shown on the dashboard.
 
+## Step 3: Check it works
+
+Replace `3000` with your port if you changed it.
+
+```sh
+~/dpm-custody/dpm-custody status                  # every service "Up", the manager and dpm-wallet "(healthy)"
+curl -s http://localhost:3000/v1/health/ready     # {"status":"ok"}
+```
+
+Then open `http://localhost:3000/admin` in a browser and sign in. The overview shows the master
+and operations wallets.
+
+The `setup` service stays running after setup is done. That is on purpose: the `dpm-custody`
+commands (`setup`, `backup`, `support`, `backup-kit`) run inside it, and it would finish an
+interrupted setup after a restart. It uses about 20 MB of memory.
+
 ## Everyday use
 
-Everything lives in the `dpm-custody` folder in your home folder. On Mac and Linux:
+Everything lives in the install folder (`~/dpm-custody` unless you chose another).
 
-| To…                          | Run                                  |
-| ---------------------------- | ------------------------------------ |
-| start it (e.g. after reboot) | `~/dpm-custody/dpm-custody start`    |
-| stop it                      | `~/dpm-custody/dpm-custody stop`     |
-| see what's running           | `~/dpm-custody/dpm-custody status`   |
-| make a backup                | `~/dpm-custody/dpm-custody backup`   |
-| update to the newest version | `~/dpm-custody/dpm-custody upgrade`  |
-| undo the last update         | `~/dpm-custody/dpm-custody rollback` |
-| get help from support        | `~/dpm-custody/dpm-custody support`  |
-| see setup again              | `~/dpm-custody/dpm-custody setup`    |
+**Mac and Linux**
 
-On Windows, open PowerShell in `%USERPROFILE%\dpm-custody` and use
-`docker compose --env-file .env -f compose.yml` followed by `up -d`, `stop`, `ps` or `logs`.
+| To…                          | Run                                        |
+| ---------------------------- | ------------------------------------------ |
+| start it (e.g. after reboot) | `~/dpm-custody/dpm-custody start`          |
+| stop it (nothing is deleted) | `~/dpm-custody/dpm-custody stop`           |
+| see what's running           | `~/dpm-custody/dpm-custody status`         |
+| read recent logs             | `~/dpm-custody/dpm-custody logs [service]` |
+| make a backup                | `~/dpm-custody/dpm-custody backup`         |
+| print the backup kit again   | `~/dpm-custody/dpm-custody backup-kit`     |
+| update to the newest version | `~/dpm-custody/dpm-custody upgrade`        |
+| undo the last update         | `~/dpm-custody/dpm-custody rollback`       |
+| get help from support        | `~/dpm-custody/dpm-custody support`        |
+| see setup again              | `~/dpm-custody/dpm-custody setup`          |
+
+The services are `postgres`, `dpm-wallet`, `dpm-wallet-manager` and `setup`.
+
+**Windows.** `dpm-custody` is a bash script. The installer puts it in the install folder; run it
+from **Git Bash** or **WSL**, e.g. `bash ~/dpm-custody/dpm-custody status`. Without bash, open
+PowerShell in the install folder and use Docker Compose directly:
+
+```powershell
+cd $HOME\dpm-custody
+docker compose --env-file .env -f compose.yml up -d        # start
+docker compose --env-file .env -f compose.yml stop         # stop
+docker compose --env-file .env -f compose.yml ps           # status
+docker compose --env-file .env -f compose.yml logs --tail 200 dpm-wallet-manager
+docker compose --env-file .env -f compose.yml exec setup node dist/setup/main setup   # setup again
+docker compose --env-file .env -f compose.yml exec setup node dist/setup/main kit     # backup kit
+```
+
+`backup`, `upgrade`, `rollback` and `support` exist only in `dpm-custody`, so on Windows they
+need Git Bash or WSL. They have not been tested on Windows yet; tell the platform team if one
+fails there.
 
 **Back up regularly.** A backup lands in the `backups` folder. Copy it somewhere off this
 machine. It contains secrets, so keep it private.
+
+## Settings in .env
+
+The installer writes `.env` in the install folder. Edit it with any text editor, then run
+`dpm-custody start` (or `docker compose --env-file .env -f compose.yml up -d`) to apply it: only
+the services whose settings changed restart.
+
+| Setting                       | Default                 | What it does                                                                           |
+| ----------------------------- | ----------------------- | -------------------------------------------------------------------------------------- |
+| `MANAGER_PORT`                | `3000`                  | The wallet manager's port on this machine. Change `MANAGER_PUBLIC_URL` with it.        |
+| `MANAGER_PUBLIC_URL`          | `http://localhost:3000` | Where your backend and browser reach the manager. Shown by setup; used in alert links. |
+| `MANAGER_BIND`                | `127.0.0.1`             | `0.0.0.0` lets other machines reach the manager. Put TLS in front of it first.         |
+| `OPERATIONS_RETENTION_DAYS`   | `90`                    | See [Retention](#retention).                                                           |
+| `ROUTED_ORDER_RETENTION_DAYS` | `365`                   | See [Retention](#retention).                                                           |
+| `RETENTION_ENABLED`           | `true`                  | See [Retention](#retention).                                                           |
+| `DPM_IMAGE_REGISTRY`          | `ghcr.io/in-a-bit`      | Where the images come from. Only for testing.                                          |
+
+Leave `COMPOSE_PROJECT_NAME`, `POSTGRES_*`, `DPM_WALLET_TAG`, `DPM_WALLET_MANAGER_TAG` and
+`DPM_CUSTODY_VERSION` alone: the installer and `upgrade` own them.
+
+## Two installs on one machine
+
+Two installs can run side by side, for example one **segregated** and one **shared**. Each needs
+its own **name**, **folder**, **port** and **builder key** (a key can be installed only once).
+
+**Mac or Linux**
+
+```sh
+URL=https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.sh
+
+curl -fsSL $URL | DPM_CUSTODY_NAME=dpm-custody-segregated DPM_CUSTODY_DIR=~/dpm-custody-segregated \
+  DPM_CUSTODY_MANAGER_PORT=3000 sh
+#   setup asks for the mode: choose Segregated
+
+curl -fsSL $URL | DPM_CUSTODY_NAME=dpm-custody-shared DPM_CUSTODY_DIR=~/dpm-custody-shared \
+  DPM_CUSTODY_MANAGER_PORT=3001 sh
+#   setup asks for the mode: choose Shared
+```
+
+**Windows (PowerShell)**
+
+```powershell
+$env:DPM_CUSTODY_NAME = "dpm-custody-segregated"; $env:DPM_CUSTODY_DIR = "$HOME\dpm-custody-segregated"; $env:DPM_CUSTODY_MANAGER_PORT = "3000"
+irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
+
+$env:DPM_CUSTODY_NAME = "dpm-custody-shared"; $env:DPM_CUSTODY_DIR = "$HOME\dpm-custody-shared"; $env:DPM_CUSTODY_MANAGER_PORT = "3001"
+irm https://github.com/In-a-bit/dpm-wallet-manager/releases/latest/download/install.ps1 | iex
+```
+
+How they stay apart:
+
+- **Containers, volumes and network** start with the name, which the installer writes into the
+  install's `.env` as `COMPOSE_PROJECT_NAME`. The two never share anything.
+- **Ports:** the manager's port is the only one an install publishes. A port another install
+  already has, even a stopped one, is refused.
+- **Commands** work on the install whose folder they're in, so use each install's own command:
+
+```sh
+~/dpm-custody-segregated/dpm-custody status
+~/dpm-custody-shared/dpm-custody status
+~/dpm-custody-shared/dpm-custody upgrade
+curl -s http://localhost:3000/v1/health/ready     # segregated
+curl -s http://localhost:3001/v1/health/ready     # shared
+```
+
+Upgrade, roll back and back up each install on its own.
 
 ## Upgrading
 
@@ -101,6 +288,7 @@ machine. It contains secrets, so keep it private.
 ~/dpm-custody/dpm-custody upgrade            # the newest release
 ~/dpm-custody/dpm-custody upgrade 1.4.0      # a given release
 ~/dpm-custody/dpm-custody upgrade --yes      # without the question (for scripts)
+DPM_CUSTODY_HEALTH_TIMEOUT=1800 ~/dpm-custody/dpm-custody upgrade   # wait up to 30 min (see below)
 ```
 
 On a remote machine, run it inside `tmux` or `screen`, so you can reconnect and watch it if the
@@ -126,9 +314,9 @@ stops the upgrade with the install running as before:
    (readable only by you).
 7. Switches: puts the new files in place, sets the new image tags and `DPM_CUSTODY_VERSION` in
    `.env`, and restarts. Database changes run as each service starts.
-8. Waits up to 5 minutes (see below) for every service to be healthy. If they are, it removes this install's
-   older images (other than the new and previous ones) and is done. If not, it rolls back by
-   itself (below) and tells you where the backup is.
+8. Waits up to 5 minutes (see below) for every service to be healthy. If they are, it removes
+   this install's older images (other than the new and previous ones) and is done. If not, it
+   rolls back by itself (below) and tells you where the backup is.
 
 **An upgrade that did not finish:** a file `upgrade.inprogress` marks an upgrade that switched
 files but did not finish, for example because the machine restarted during it. While it is there,
@@ -139,17 +327,17 @@ folder.
 
 **A slow start after an upgrade:** on a large database, the first start of a new version can take
 longer while it builds new indexes. To wait longer than 5 minutes before rolling back, set
-`DPM_CUSTODY_HEALTH_TIMEOUT` (seconds, default 300) for that run, for example
-`DPM_CUSTODY_HEALTH_TIMEOUT=1800 ~/dpm-custody/dpm-custody upgrade`. Raise it when the release
-notes mention a database change and your tables hold millions of rows.
+`DPM_CUSTODY_HEALTH_TIMEOUT` (seconds, default 300) for that run, as in the last example above.
+Raise it when the release notes mention a database change and your tables hold millions of rows.
 
-**Installs from before this release:** run the installer again once (Step 1) before
-`dpm-custody upgrade`. On an existing install it only replaces the `dpm-custody` script and
-keeps your data and settings. The older `dpm-custody` either has no `upgrade` at all, or has one
-that takes no backup and does not wait for the services to be healthy (so it never rolls back by
-itself). If the installer cannot fetch the new script, it says so and keeps the old one. Then run
-`dpm-custody upgrade`. On an install whose `.env` has no `DPM_CUSTODY_VERSION` it says "installed
-version unknown", skips the version checks this once, and records the new version.
+**Installs from before this release:** run the installer again once (Step 1, with the same
+`DPM_CUSTODY_DIR` if you used one) before `dpm-custody upgrade`. On an existing install it only
+replaces the `dpm-custody` script and keeps your data and settings. The older `dpm-custody`
+either has no `upgrade` at all, or has one that takes no backup and does not wait for the
+services to be healthy (so it never rolls back by itself). If the installer cannot fetch the new
+script, it says so and keeps the old one. Then run `dpm-custody upgrade`. On an install whose
+`.env` has no `DPM_CUSTODY_VERSION` it says "installed version unknown", skips the version checks
+this once, and records the new version.
 
 ## Rolling back
 
@@ -194,47 +382,51 @@ configuration (`config.tar.gz`) and the wallet keys (`wallet-data.tar.gz`). An u
 rollback never changes them, so you do not restore them here. If they are lost, for example on a
 new machine, ask the platform team.
 
+## Removing an install
+
+**This deletes the wallet keys and both databases.** Without a backup of `wallet-data`, the funds
+in the install's wallets can no longer be moved. Take a backup and copy it off the machine first.
+
+```sh
+cd ~/dpm-custody
+./dpm-custody backup                                      # then copy backups/ somewhere safe
+docker compose --env-file .env -f compose.yml down -v     # containers, network and volumes
+cd .. && rm -rf ~/dpm-custody
+```
+
+A builder key can be installed only once, so a new install needs a new key from the platform
+team.
+
 ## If something goes wrong
 
 - **"Docker is not running":** open Docker Desktop, wait a minute, and run the installer again.
-  Running it again is always safe: on an existing install it only refreshes the `dpm-custody`
-  script (checked against the release's `SHA256SUMS`) and starts the stack. It never touches
-  `compose.yml`, `versions.env` or `.env`. To move to the new version, run
-  `./dpm-custody upgrade`.
+- **"Port 3000 is already in use":** another program, or another install, has that port. Nothing
+  was installed. Run the installer again with the free port it names, e.g.
+  `DPM_CUSTODY_MANAGER_PORT=3001` (see [Installer options](#installer-options)). To move an
+  existing install to another port, see [Settings in .env](#settings-in-env).
+- **"Another install on this machine is already named …":** pick another `DPM_CUSTODY_NAME`, or
+  use that install's folder.
 - **"This key was not accepted":** copy the whole key again, and check you chose the right
   platform.
 - **Setup stopped with an error:** fix what the dashboard says, then press **r**. Finished steps
   are kept.
-- **Port already in use:** another program uses port 3000. Rerun the installer with another
-  port, e.g. `DPM_CUSTODY_MANAGER_PORT=3001` before `sh`.
 
 For anything else, run `dpm-custody support` and send the file it writes to the platform team.
-
-## Release files and checks
-
-Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody` and
-a `SHA256SUMS` file. The installer checks every file it downloads against `SHA256SUMS` and stops
-without writing anything if one differs; a release without `SHA256SUMS` (the download answers "not found") installs with a warning, while any other failure to fetch it stops the install. `SHA256SUMS` protects against corrupt or mixed downloads, not against a compromised release.
-`versions.env` pins both images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`,
-which the installer writes to `.env` as `DPM_CUSTODY_VERSION`.
-
-Installer variables: `DPM_CUSTODY_RELEASES_URL` replaces the download base (`file://` works),
-`DPM_CUSTODY_NO_START=1` stops after the files and `.env` are written, and `DPM_IMAGE_REGISTRY`
-(default `ghcr.io/in-a-bit`) names the registry the images are pulled from. Run
-`bash deploy/test/install.test.sh` to check the installer without Docker.
 
 ## For administrators
 
 - **Services:** Postgres, dpm-wallet, dpm-wallet-manager and a setup service. All come from the
   public images `ghcr.io/in-a-bit/dpm-wallet` and `ghcr.io/in-a-bit/dpm-wallet-manager`. See
   `compose.yml`.
-- **Network exposure:** only the manager API (3000) is published, on `127.0.0.1`. Setup has no
-  port: it runs in a terminal, inside its container. To reach the manager from another host, set `MANAGER_BIND=0.0.0.0` in
-  `.env` and put TLS in front of it.
+- **Network exposure:** only the manager API is published, on `127.0.0.1:$MANAGER_PORT`. Setup
+  has no port: it runs in a terminal, inside its container. To reach the manager from another
+  host, set `MANAGER_BIND=0.0.0.0` in `.env` and put TLS in front of it. dpm-wallet and Postgres
+  are reachable only inside the stack.
 - **Configuration:** setup writes both services' configuration into the `config` volume. It
   also keeps its state there, plus `setup-journal.jsonl`, a masked log of every step, which the
-  support report includes. It gets the platform values from dpm-api `GET /wallet-install/config`, authenticated
-  with the builder key, and generates every other secret itself.
+  support report includes. It gets the platform values from dpm-api
+  `GET /wallet-install/config`, authenticated with the builder key, and generates every other
+  secret itself.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
   platform credential, so no platform-wide `APP_API_KEY` is handed out or configured. The
   platform accepts it without the app key only where an install needs it:
@@ -246,6 +438,7 @@ Installer variables: `DPM_CUSTODY_RELEASES_URL` replaces the download base (`fil
     `POST /submit` with the builder key and the wallet's EOA in `X-Builder-Address`.
 
   Anything else, such as the CLOB, needs the app key as well. Your backend sends it.
+
 - **Balances unavailable after an upgrade:** balances are read from the platform's data-api,
   whose address setup takes from the platform when it saves the configuration. An install set
   up before its platform published one (`PUBLIC_DATA_API_URL` on the platform side) has no
@@ -267,7 +460,8 @@ Installer variables: `DPM_CUSTODY_RELEASES_URL` replaces the download base (`fil
 ### Logs
 
 Every service keeps at most five container log files of 20 MB each (100 MB per service), then
-discards the oldest. Read them with `docker compose --env-file .env -f compose.yml logs <service>`.
+discards the oldest. Read them with `dpm-custody logs <service>` or
+`docker compose --env-file .env -f compose.yml logs <service>`.
 
 ### Retention
 
@@ -294,7 +488,7 @@ dpm-wallet without a manager keeps them for ever.
 dpm-wallet. dpm-wallet's maintenance endpoints act on its whole audit table, whatever wallet the
 rows belong to, so `WALLET_REF_PREFIX` does not separate them: two managers sharing one
 dpm-wallet would trim and archive each other's dpm-wallet records. Give each manager its own
-dpm-wallet.
+dpm-wallet. Every install already does: two installs side by side never share one.
 
 ### Storage and archive
 
@@ -325,21 +519,32 @@ query and answers `200 {"status":"ok"}` or `503 {"status":"unavailable"}`; neith
 On the manager, a call from inside its own container (127.0.0.1) also gets a `storage` field with
 the disk level; that is what `dpm-custody status` reads. Other callers never see it.
 Compose runs the ready probe on dpm-wallet (port 8090, inside the stack) and the manager (port
-3000), every 10 seconds, with a 60 second start period. Check with `docker compose --env-file .env -f compose.yml ps`.
+3000 inside its container), every 10 seconds, with a 60 second start period. Check with
+`dpm-custody status`.
 
 On a fresh install both services wait for setup to write their configuration, so they show
 `starting` and then `unhealthy` until setup finishes. That is expected, and they turn `healthy`
 by themselves afterwards. The manager starts after dpm-wallet has started, not after it is healthy,
 so a fresh install can come up and reach setup.
 
+### Release files and checks
+
+Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody` and
+a `SHA256SUMS` file. The installer checks every file it downloads against `SHA256SUMS` and stops
+without writing anything if one differs. A release without `SHA256SUMS` (the download answers
+"not found") installs with a warning; any other failure to fetch it stops the install.
+`SHA256SUMS` protects against corrupt or mixed downloads, not against a compromised release.
+`versions.env` pins both images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`,
+which the installer writes to `.env` as `DPM_CUSTODY_VERSION`.
+
 ---
 
-# Running it per environment (platform team)
+# Part 2: For the platform team
 
-The steps above are what a builder does. This part is for the platform team: what a platform
-needs before builders can install against it, how to try the install yourself (local or dev),
-and how to release it for production. Setup offers Production, Development and Custom (any
-dpm-api address); add an environment in `src/setup/environments.ts`.
+Part 1 is what a builder does. This part covers what a platform needs before builders can
+install against it, how to try the install yourself (locally, on dev, on production), and how to
+test these scripts. Setup offers Production, Development and Custom (any dpm-api address); add an
+environment in `src/setup/environments.ts`.
 
 ## What every environment needs first
 
@@ -355,9 +560,11 @@ check below tells you which one is missing; `deploy/try-install.sh` runs it for 
 2. **dpm-api's env sets the three public URLs**
    - `PUBLIC_DPM_API_URL`, `PUBLIC_GAMMA_API_URL`, `PUBLIC_RELAYER_API_URL`.
    - Without them, the endpoint answers 503.
+   - Optional: `PUBLIC_DATA_API_URL`. Without it, installs show "Balances unavailable".
 3. **Both images are published on GHCR and public**
    - `ghcr.io/in-a-bit/dpm-wallet` and `ghcr.io/in-a-bit/dpm-wallet-manager`.
    - They must include these changes. For dpm-wallet, that means `APP_API_KEY` is optional.
+   - Locally you build them instead (`--build`, below).
 4. **A custody builder with a private key**
    - Issued in that environment's backoffice, under **Custody builders**.
    - **One install per builder.** Each install creates the builder's Turnkey sub-organization.
@@ -379,135 +586,197 @@ curl -s -w '\nHTTP %{http_code}\n' <dpm-api URL>/wallet-install/config \
 | `401`                                                  | wrong key, or a key from another environment (4)          |
 | `409`                                                  | the key belongs to an embedded builder, not a custody one |
 
-## Try it yourself: local or dev
+## Local environment
 
-`deploy/try-install.sh` installs on your machine exactly what a builder installs. It works
-against any platform you can reach: one running on your computer, or a shared one such as dev.
-Run it from your dpm-wallet-manager checkout. It doesn't depend on where your folders are or
-what else runs on the machine.
+Everything below runs from your dpm-wallet-manager checkout, with a dpm-wallet checkout next to
+it (`../dpm-wallet`). `deploy/try-install.sh` installs exactly what a builder installs; only
+where the images come from and which platform to join are yours to choose.
 
-### What you need
-
-1. **Docker, curl and python3.**
-2. **A platform that meets the four requirements above**, reachable from this machine. You give
-   the script its dpm-api address.
-3. **A new custody builder and its private key**, from that platform's backoffice:
-   1. Go to **Custody Builders**.
-   2. Under **Onboard custody builder**, type a name and click **Create custody builder**.
-   3. On the builder's row, click **New key**, confirm, and click **Copy**.
-
-   Use a builder that has never been installed: each builder can be installed only once.
-
-4. **Images**, from one of two places:
-   - **Published:** `--images TAG`. For example, `dev` is published once changes are merged to
-     `dev`, and a version number after a release.
-   - **Built from source:** `--build`. This uses your dpm-wallet-manager checkout plus a
-     dpm-wallet checkout, given with `--wallet-src`. By default it looks for a `dpm-wallet`
-     folder next to this one.
-
-### Run it
-
-| Trying against                                        | Command                                                                      |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
-| A platform on your computer, images built from source | `./deploy/try-install.sh --build --wallet-src ../dpm-wallet`                 |
-| Dev, with the published dev images                    | `./deploy/try-install.sh --platform https://dpm-api.inabit.dev --images dev` |
-
-Everything happens in the terminal; no browser is needed. The script asks for the platform
-address (suggesting `http://localhost:8086`) unless you pass `--platform`, and for the builder key
-unless you pass it as the last argument. `--images` defaults to `main`. It then:
-
-1. **Checks** Docker, then each answer as soon as you give it: that the platform answers and
-   supports self-install, then that it accepts your key (and names your builder). A wrong answer
-   is asked for again; a problem on the platform's side stops the run and says what to fix.
-2. **Prepares the images:** it pulls or builds them.
-3. **Installs** into `~/dpm-custody-try` (`--dir` to change). It uses port 3000, or the next
-   free one if that's taken.
-4. **Sets up** with the install's own terminal setup (`dpm-custody setup`). That setup checks the
-   platform and key again, from inside the install, without asking for them again. Then it asks
-   for the custody mode, creates your admin login, and shows the backup kit.
-5. **Offers the smoke test** (`verify`, below).
-
-```sh
-./deploy/try-install.sh verify   # services, platform status, and scripts/smoke.sh
-./deploy/try-install.sh clean    # remove the install to start over (then use a new builder)
-```
-
-If you used `--dir`, pass the same `--dir` to both.
-
-### Two installs side by side: one segregated, one shared
-
-Each install needs its own **name**, its own **folder** and its own **builder**: create two
-custody builders in the backoffice and issue a key for each. Name each install after its mode,
-so you can always tell them apart:
-
-```sh
-./deploy/try-install.sh --build --name dpm-custody-segregated --dir ~/dpm-custody-segregated
-#   setup asks for the mode: choose Segregated
-./deploy/try-install.sh --build --name dpm-custody-shared --dir ~/dpm-custody-shared
-#   setup asks for the mode: choose Shared
-```
-
-`--build` is only needed once: the second run reuses the images the first built, unless the
-source changed in between.
-
-How they stay apart:
-
-- **Containers, volumes and network** are all prefixed with the name, which is written into the
-  install's `.env` as `COMPOSE_PROJECT_NAME`. The two never share anything.
-- **Ports:** the only port an install publishes is its wallet manager's. Each gets the first free
-  port from 3000 that no other container has claimed, even a stopped one. It's in the install's
-  `.env` as `MANAGER_PORT`, and the setup dashboard shows it at the end.
-- **A name already used** by another install, running or stopped, is refused.
-
-Everything else finds the install by its folder:
-
-```sh
-./deploy/try-install.sh verify --dir ~/dpm-custody-shared   # smoke test one install
-~/dpm-custody-shared/dpm-custody status                      # or any everyday command
-./deploy/try-install.sh clean --dir ~/dpm-custody-shared     # remove one install only
-```
-
-A builder installing for real can do the same with `DPM_CUSTODY_NAME=… DPM_CUSTODY_DIR=…` before
-`sh`.
-
-### Preparing a platform on your own computer
+### 1. Prepare the platform on your computer
 
 Any way you run prediction-go works, as long as:
 
-- **Version:** dpm-api and gamma-api run a version with the self-install changes (see
-  requirement 1).
-- **Public URLs:** dpm-api's env has the three `PUBLIC_*` URLs, set to where this machine reaches
-  those services. With prediction-go's default ports:
+- **Version:** dpm-api, gamma-api and relayer-api run a version with the self-install changes
+  (requirement 1 above).
+- **Public URLs:** dpm-api's env (prediction-go's root `.env`) has the `PUBLIC_*` URLs, set to
+  where this machine reaches those services. With prediction-go's default ports:
 
   ```sh
   PUBLIC_DPM_API_URL=http://localhost:8086
   PUBLIC_GAMMA_API_URL=http://localhost:8084
   PUBLIC_RELAYER_API_URL=http://localhost:8085
+  PUBLIC_DATA_API_URL=http://localhost:8091
   ```
 
   `localhost` is fine: setup rewrites it so its containers can reach your computer.
   Restart dpm-api after changing them.
 
 - **Backoffice:** the backoffice is running (the prediction-backoffice UI and its backend), so
-  you can issue the key.
+  you can issue keys.
 
-### Preparing dev
+Check it: `curl -s -o /dev/null -w '%{http_code}\n' http://localhost:8086/wallet-install/config`
+prints `401` (the endpoint exists and wants a key).
 
-In prediction-env, `dev/prediction.env` for dpm-api:
+### 2. Get a builder key
 
-```sh
-PUBLIC_DPM_API_URL=https://dpm-api.inabit.dev
-PUBLIC_GAMMA_API_URL=https://gamma-api.inabit.dev
-PUBLIC_RELAYER_API_URL=https://relayer-api.inabit.dev
+In the backoffice: **Custody Builders** → **Onboard custody builder** → type a name → **Create
+custody builder** → on its row **New key** → confirm → **Copy**. Use a new builder for every
+install.
+
+### 3. Options of try-install.sh
+
+```text
+deploy/try-install.sh [options] [bld_sk_…]   check, then install and set up as a builder does
+deploy/try-install.sh verify [--dir DIR]      check a finished install (runs scripts/smoke.sh)
+deploy/try-install.sh clean  [--dir DIR]      remove the install, to start over
 ```
 
-Deploy prediction-go to `dev` with **Manage ENV Deployments**, gamma-api first, then dpm-api.
-Merge dpm-wallet and dpm-wallet-manager to `dev` so the `:dev` images exist. Then get a key from
-the dev backoffice and run the dev command above.
+| Option             | Default                         | What it does                                                                |
+| ------------------ | ------------------------------- | --------------------------------------------------------------------------- |
+| `--platform URL`   | asked (`http://localhost:8086`) | The platform's dpm-api address.                                             |
+| `--build`          | off                             | Build both images from your checkouts (tagged `:local`) instead of pulling. |
+| `--wallet-src DIR` | `../dpm-wallet`                 | The dpm-wallet checkout `--build` uses.                                     |
+| `--images TAG`     | `main`                          | Use `ghcr.io/in-a-bit/*:TAG`: pulled, or the copy already on this machine.  |
+| `--dir DIR`        | `~/dpm-custody-try`             | Where to install. `verify` and `clean` need the same `--dir`.               |
+| `--name NAME`      | `dpm-custody`                   | The install's name (Docker project). Needed for two installs.               |
+| `bld_sk_…`         | asked (hidden)                  | The builder key, as the last argument. Prefer pasting it when asked.        |
+
+The port is picked for you: 3000, or the next one that is free and not published by any other
+container. The setup dashboard shows it at the end, and it's `MANAGER_PORT` in the install's
+`.env`. Every answer is checked as soon as it is given (the platform answers and supports
+self-install, the key is accepted, gamma-api and relayer-api accept the key) and asked for again
+if it does not pass.
+
+Using `install.sh` directly instead, with your own release folder and env, is described in
+[The same, by hand](#the-same-by-hand).
+
+### 4. One install
+
+```sh
+cd ~/Documents/prediction-claude/dpm-wallet-manager      # your checkout
+./deploy/try-install.sh --build --wallet-src ../dpm-wallet --platform http://localhost:8086
+```
+
+It builds the images (a few minutes the first time), asks for the key, installs into
+`~/dpm-custody-try` and opens setup. In setup: check it says "Connecting as <your builder>",
+choose the mode and type `yes`, wait for every ✔, create the admin login, save the backup kit
+and type `saved`. Then it offers the smoke test.
+
+```sh
+./deploy/try-install.sh verify                       # services, platform status, scripts/smoke.sh
+~/dpm-custody-try/dpm-custody status                 # everyday commands work as in Part 1
+grep MANAGER_PORT ~/dpm-custody-try/.env             # the port; admin UI at http://localhost:<port>/admin
+./deploy/try-install.sh clean                        # remove it (asks you to type yes)
+```
+
+The smoke test creates a wallet and signs an order; it ends with every line ✓.
+
+### 5. Two installs side by side
+
+Create two builders and a key for each. Give each install its own name and folder:
+
+```sh
+./deploy/try-install.sh --build --wallet-src ../dpm-wallet --platform http://localhost:8086 \
+  --name dpm-custody-segregated --dir ~/dpm-custody-segregated
+#   setup asks for the mode: choose Segregated
+
+./deploy/try-install.sh --images local --platform http://localhost:8086 \
+  --name dpm-custody-shared --dir ~/dpm-custody-shared
+#   setup asks for the mode: choose Shared
+```
+
+The second run uses `--images local` to reuse the images the first one built: they are not
+published, so it uses the copy already on this machine. Use `--build` again only if the source
+changed in between.
+
+Each gets the next free port (for example 3001 and 3002 when 3000 is the backoffice). Everything
+else finds the install by its folder:
+
+```sh
+./deploy/try-install.sh verify --dir ~/dpm-custody-segregated
+./deploy/try-install.sh verify --dir ~/dpm-custody-shared
+~/dpm-custody-shared/dpm-custody status
+grep MANAGER_PORT ~/dpm-custody-segregated/.env ~/dpm-custody-shared/.env
+./deploy/try-install.sh clean --dir ~/dpm-custody-shared      # remove one install only
+```
+
+### 6. A new build of an existing local install
+
+To put changed code into a running local install without a release:
+
+```sh
+docker build -t ghcr.io/in-a-bit/dpm-wallet-manager:local .
+docker build -t ghcr.io/in-a-bit/dpm-wallet:local ../dpm-wallet
+~/dpm-custody-try/dpm-custody backup
+~/dpm-custody-try/dpm-custody start          # recreates the services whose image changed
+~/dpm-custody-try/dpm-custody status
+```
+
+Database migrations run as each service starts. This skips the upgrade's checks and rollback, so
+to rehearse a real upgrade use the next section.
+
+### 7. Rehearse an upgrade and rollback locally
+
+`dpm-custody upgrade` pulls images and reads release files, so give it a local registry and
+local release folders. Start from a finished local install (here `~/dpm-custody-try`):
+
+```sh
+# a local registry
+docker run -d --name dpm-registry -p 127.0.0.1:5000:5000 registry:2
+R=localhost:5000/in-a-bit
+
+# the version the install runs now becomes 1.0.0
+docker tag ghcr.io/in-a-bit/dpm-wallet:local         $R/dpm-wallet:1.0.0
+docker tag ghcr.io/in-a-bit/dpm-wallet-manager:local $R/dpm-wallet-manager:1.0.0
+# change the code, then build 1.1.0
+docker build -t $R/dpm-wallet:1.1.0 ../dpm-wallet
+docker build -t $R/dpm-wallet-manager:1.1.0 .
+for ref in dpm-wallet:1.0.0 dpm-wallet-manager:1.0.0 dpm-wallet:1.1.0 dpm-wallet-manager:1.1.0; do
+  docker push $R/$ref
+done
+
+# one release folder per version, as CI would publish it
+make_release() {
+  D=/tmp/dpm-releases/$1; mkdir -p "$D"
+  cp deploy/compose.yml deploy/dpm-custody deploy/install.sh deploy/install.ps1 "$D/"
+  printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\nRELEASE_VERSION=%s\nMIN_UPGRADE_FROM=\n' "$1" "$1" "$1" >"$D/versions.env"
+  (cd "$D" && sha256sum compose.yml versions.env dpm-custody install.sh install.ps1 >SHA256SUMS)
+}
+make_release 1.0.0
+make_release 1.1.0
+
+# point the install at the registry, move it onto 1.0.0, then upgrade and roll back
+echo 'DPM_IMAGE_REGISTRY=localhost:5000/in-a-bit' >>~/dpm-custody-try/.env
+DPM_CUSTODY_RELEASES_URL=file:///tmp/dpm-releases/1.0.0 ~/dpm-custody-try/dpm-custody upgrade 1.0.0 --yes
+DPM_CUSTODY_RELEASES_URL=file:///tmp/dpm-releases/1.1.0 ~/dpm-custody-try/dpm-custody upgrade 1.1.0 --yes
+~/dpm-custody-try/dpm-custody rollback        # back to 1.0.0
+cat ~/dpm-custody-try/upgrade.log
+```
+
+The first `upgrade 1.0.0` says "installed version unknown" (a try install has none) and records
+1.0.0. To see the automatic rollback, build a 1.2.0 whose manager exits at boot, push it, make
+its release folder and upgrade to it with `DPM_CUSTODY_HEALTH_TIMEOUT=120`: it rolls back to
+1.1.0 by itself. On macOS use `shasum -a 256` for `sha256sum`. When done:
+`docker rm -f dpm-registry`, and remove the `DPM_IMAGE_REGISTRY` line from the install's `.env`.
+
+### 8. Crash test (optional)
+
+`deploy/test/crash.sh` kills dpm-wallet, the manager and Postgres while requests are in flight,
+retries each request with its `Idempotency-Key`, and checks nothing was done twice. With
+`CRASH_SKIP_TRANSFER=1` it only signs (nothing on chain):
+
+```sh
+MANAGER_URL=http://localhost:3001 MANAGER_API_KEY=<an operator or admin key> \
+  INSTALL_DIR=~/dpm-custody-try CRASH_SKIP_TRANSFER=1 bash deploy/test/crash.sh
+```
+
+Without `CRASH_SKIP_TRANSFER` it also sends one real 0.01 USDC.e transfer from the master wallet
+to the operations wallet, so the master wallet must hold at least that. The admin key is in the
+backup kit (`dpm-custody backup-kit`).
 
 ### The same, by hand
 
-These are the script's steps, if you want to see or run each one. Run them from your
+These are try-install.sh's steps, if you want to see or run each one. Run them from your
 dpm-wallet-manager checkout, in one terminal. Set the first line to your platform.
 
 **1. The platform to join.**
@@ -519,24 +788,16 @@ PLATFORM=http://localhost:8086
 **2. Your builder private key.**
 
 ```sh
-read -rp "Builder private key: " BUILDER_KEY
+read -rsp 'Builder key: ' BUILDER_KEY; echo
 ```
 
 **3. Pre-flight.**
 
 ```sh
-curl -s -w '\nHTTP %{http_code}\n' "$PLATFORM/wallet-install/config" \
-  -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
-```
-
-This should print your builder's name, `chain_id`, `contracts` and `services`, ending
-`HTTP 200`. Any other code is explained in the pre-flight table above. Then check gamma-api and
-relayer-api at the addresses the platform just reported. Neither request changes anything:
-
-```sh
-SERVICES=$(curl -s "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")
-GAMMA=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gamma_api"])' <<<"$SERVICES")
-RELAYER=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["relayer_api"])' <<<"$SERVICES")
+CONFIG=$(curl -s "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")
+echo "$CONFIG" | python3 -m json.tool
+GAMMA=$(echo "$CONFIG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gamma_api"])')
+RELAYER=$(echo "$CONFIG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["relayer_api"])')
 curl -s -o /dev/null -w 'gamma-api: HTTP %{http_code}\n' -X POST "$GAMMA/custody/users" \
   -H "X-Builder-Api-Private-Key: $BUILDER_KEY" -H 'Content-Type: application/json' -d '{}'
 curl -s -o /dev/null -w 'relayer-api: HTTP %{http_code}\n' "$RELAYER/contract-info" \
@@ -566,15 +827,19 @@ docker build -t "ghcr.io/in-a-bit/dpm-wallet:$TAG" "$WALLET_SRC"
 docker build -t "ghcr.io/in-a-bit/dpm-wallet-manager:$TAG" .
 ```
 
-**5. Install.** If 3000 is taken on your machine, change the port variable.
+**5. Install.** Pick a free port; the installer refuses a taken one and names a free one. Add
+`DPM_CUSTODY_NAME=…` for a second install.
 
 ```sh
 SRC=$(mktemp -d)
 cp deploy/compose.yml deploy/dpm-custody "$SRC/"
 printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$TAG" "$TAG" > "$SRC/versions.env"
 DPM_CUSTODY_DIR=~/dpm-custody-try DPM_CUSTODY_SOURCE="$SRC" \
-  DPM_CUSTODY_MANAGER_PORT=3000 SETUP_PLATFORM_URL="$PLATFORM" sh deploy/install.sh
+  DPM_CUSTODY_MANAGER_PORT=3001 SETUP_PLATFORM_URL="$PLATFORM" sh deploy/install.sh
 ```
+
+Without a `SHA256SUMS` in `$SRC` the installer warns that the files could not be checked. That is
+expected here.
 
 **6. Setup.** The installer goes straight on to the setup dashboard. `SETUP_PLATFORM_URL` has
 already answered the platform question, so:
@@ -592,17 +857,39 @@ already answered the platform question, so:
 This checks the services and the platform status, then runs `scripts/smoke.sh`, which ends
 with every line ✓.
 
-**8. Start over.** Only one install can run on a machine at a time, because they share the
-Docker project name `dpm-custody`.
+**8. Start over.**
 
 ```sh
 ./deploy/try-install.sh clean
 ```
 
-## Production (`dpm.network`)
+Then use a new builder: the old one already has its Turnkey sub-organization.
 
-This is exactly what a builder runs (Step 1 at the top of this guide), so it's the final check
-before telling builders about it.
+## Dev
+
+In prediction-env, `dev/prediction.env` for dpm-api:
+
+```sh
+PUBLIC_DPM_API_URL=https://dpm-api.inabit.dev
+PUBLIC_GAMMA_API_URL=https://gamma-api.inabit.dev
+PUBLIC_RELAYER_API_URL=https://relayer-api.inabit.dev
+```
+
+Deploy prediction-go to `dev` with **Manage ENV Deployments**, gamma-api first, then dpm-api.
+Merge dpm-wallet and dpm-wallet-manager to `dev` so the `:dev` images exist. Then get a key from
+the dev backoffice and run:
+
+```sh
+./deploy/try-install.sh --platform https://dpm-api.inabit.dev --images dev
+./deploy/try-install.sh verify
+```
+
+Side by side on dev works the same as locally: add `--name` and `--dir` to each run.
+
+## Production (dpm.network)
+
+This is exactly what a builder runs (Part 1), so it's the final check before telling builders
+about it.
 
 **1. Platform.** In prediction-env, `prod/prediction.env` for dpm-api:
 
@@ -638,3 +925,22 @@ When the setup dashboard asks, choose **Production**, paste the key and choose a
 **5. Verify.** From your dpm-wallet-manager checkout, run
 `./deploy/try-install.sh verify --dir ~/dpm-custody`. This is real production: use small
 amounts, and revoke the test builder's key in the backoffice when done.
+
+**6. Upgrade.** After the next release, run `~/dpm-custody/dpm-custody upgrade` on that test
+install before announcing the release.
+
+## Testing the deploy scripts
+
+None of these start real containers or touch a platform.
+
+```sh
+bash deploy/test/install.test.sh     # install.sh: checksums, options (name, port), re-runs
+bash deploy/test/upgrade.test.sh     # dpm-custody upgrade and rollback, every failure path
+
+# install.ps1, under PowerShell 7 in a container (or `pwsh -File …` where PowerShell is installed)
+docker run --rm -v "$PWD/deploy:/deploy:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \
+  pwsh -NoProfile -File /deploy/test/install.test.ps1
+```
+
+Each prints one `ok` or `FAIL` line per check and ends with `all passed`. For a real install,
+use [Local environment](#local-environment) steps 4 to 8.

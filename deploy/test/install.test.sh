@@ -22,8 +22,11 @@ cat >"$T/bin/docker" <<'S'
 #!/bin/sh
 echo "$*" >>"$DOCKER_LOG"
 case "$1 $2" in
-  "compose ls") exit 0 ;;
+  "compose ls") [ -n "${EXISTING_NAME:-}" ] && echo "$EXISTING_NAME"; exit 0 ;;
+  # A container publishing $CLAIMED_PORT, when set (stopped or running: install.sh must not care).
+  "ps -aq") [ -n "${CLAIMED_PORT:-}" ] && echo c0ffee; exit 0 ;;
 esac
+[ "$1" = inspect ] && [ -n "${CLAIMED_PORT:-}" ] && echo "$CLAIMED_PORT "
 exit 0
 S
 chmod +x "$T/bin/docker"
@@ -36,9 +39,14 @@ set_version "$rel/versions.env" 9.9.9
 echo "echo custody-v2" >>"$rel/dpm-custody"
 resum
 
+# free_port prints a port nothing listens on, so the installer's port check passes.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+PORT="$(free_port)"
+
 run() { # dir, extra env...
   local d="$1"; shift
-  env DPM_CUSTODY_DIR="$d" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_NO_START=1 "$@" \
+  env DPM_CUSTODY_DIR="$d" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_NO_START=1 \
+    DPM_CUSTODY_MANAGER_PORT="$PORT" "$@" \
     sh "$HERE/install.sh" </dev/null
 }
 
@@ -121,6 +129,8 @@ while [ $# -gt 0 ]; do
   case "$1" in -o) out="$2"; shift ;; -w) wcode=1; shift ;; -*) ;; *) url="$1" ;; esac
   shift
 done
+# The installer's port check: nothing answers on loopback (curl's "could not connect").
+case "$url" in http://127.0.0.1:*) exit 7 ;; esac
 name="${url##*/}"
 code=200
 [ "$name" = SHA256SUMS ] && code="$SUMS_CODE"
@@ -136,6 +146,36 @@ check "HTTP 404 SHA256SUMS: warns and proceeds" '[ $rc -eq 0 ] && [ -f "$d7/.env
 d8="$T/i8"
 out="$(PATH="$T/curlbin:$PATH" REL="$rel" SUMS_CODE=500 run "$d8" DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
 check "HTTP 500 SHA256SUMS: aborts, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not download SHA256SUMS" && [ -z "$(ls -A "$d8" 2>/dev/null)" ]'
+
+# 8. name and port: written to .env; a taken, claimed or malformed port stops before anything
+# is written and names a free one; a name in use is refused.
+d10="$T/i10"
+out="$(run "$d10" DPM_CUSTODY_NAME=dpm-custody-shared 2>&1)"; rc=$?
+check "name and port: exits 0" '[ $rc -eq 0 ]'
+check "name and port: .env has the project name" 'grep -qx "COMPOSE_PROJECT_NAME=dpm-custody-shared" "$d10/.env"'
+check "name and port: .env has the port and public URL" 'grep -qx "MANAGER_PORT=$PORT" "$d10/.env" && grep -qx "MANAGER_PUBLIC_URL=http://localhost:$PORT" "$d10/.env"'
+python3 -c 'import socket,sys,time
+s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", 0)); s.listen(8)
+print(s.getsockname()[1], flush=True); time.sleep(60)' >"$T/listener.port" &
+listener=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/listener.port" ] && break; sleep 0.2; done
+busy="$(cat "$T/listener.port")"
+d11="$T/i11"
+out="$(run "$d11" DPM_CUSTODY_MANAGER_PORT="$busy" 2>&1)"; rc=$?
+kill "$listener" 2>/dev/null
+check "port in use: exits non-zero, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d11" 2>/dev/null)" ]'
+check "port in use: names the port and a free one" 'echo "$out" | grep -q "Port $busy is already in use" && echo "$out" | grep -q "DPM_CUSTODY_MANAGER_PORT=[0-9]"'
+d12="$T/i12"
+out="$(run "$d12" CLAIMED_PORT="$PORT" 2>&1)"; rc=$?
+check "port claimed by a stopped container: refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d12" 2>/dev/null)" ] && echo "$out" | grep -q "Port $PORT is already in use"'
+d13="$T/i13"
+out="$(run "$d13" DPM_CUSTODY_MANAGER_PORT=30x1 2>&1)"; rc=$?
+check "malformed port: refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d13" 2>/dev/null)" ] && echo "$out" | grep -q "must be a port number"'
+d14="$T/i14"
+out="$(run "$d14" DPM_CUSTODY_NAME=dpm-custody-shared EXISTING_NAME=dpm-custody-shared 2>&1)"; rc=$?
+check "name in use: refused, nothing written" '[ $rc -ne 0 ] && [ -z "$(ls -A "$d14" 2>/dev/null)" ] && echo "$out" | grep -q "already named"'
+out="$(run "$T/i15" DPM_CUSTODY_NAME=Bad.Name 2>&1)"; rc=$?
+check "malformed name: refused" '[ $rc -ne 0 ] && echo "$out" | grep -q "DPM_CUSTODY_NAME"'
 
 # 7. compose validates (needs a real docker; skipped when absent)
 if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/docker ]; then

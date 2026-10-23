@@ -9,7 +9,7 @@
 #
 # Options:
 #   --platform URL      the platform's dpm-api address      (asked for; suggests http://localhost:8086)
-#   --images TAG        use the published images ghcr.io/in-a-bit/*:TAG   (default main)
+#   --images TAG        use ghcr.io/in-a-bit/*:TAG: pulled, or already on this machine (default main)
 #   --build             build the images from source instead, from this checkout and
 #   --wallet-src DIR    a dpm-wallet checkout             (default: ../dpm-wallet, if it exists)
 #   --dir DIR           where to install                          (default ~/dpm-custody-try)
@@ -273,10 +273,15 @@ pull_images() {
   step "Images: published, tag :$IMAGE_TAG"
   local image
   for image in dpm-wallet dpm-wallet-manager; do
-    docker pull -q "ghcr.io/in-a-bit/$image:$IMAGE_TAG" >/dev/null 2>&1 ||
+    if docker pull -q "ghcr.io/in-a-bit/$image:$IMAGE_TAG" >/dev/null 2>&1; then
+      ok "ghcr.io/in-a-bit/$image:$IMAGE_TAG"
+    # Not published, but on this machine: e.g. --images local after an earlier --build.
+    elif docker image inspect "ghcr.io/in-a-bit/$image:$IMAGE_TAG" >/dev/null 2>&1; then
+      ok "ghcr.io/in-a-bit/$image:$IMAGE_TAG (already on this machine)"
+    else
       fail "Could not pull ghcr.io/in-a-bit/$image:$IMAGE_TAG." \
         "Not published yet, or the package is still private? Use another --images tag, or --build."
-    ok "ghcr.io/in-a-bit/$image:$IMAGE_TAG"
+    fi
   done
 }
 

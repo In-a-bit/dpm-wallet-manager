@@ -14,7 +14,8 @@
 # DPM_CUSTODY_RELEASES_URL replaces the download base (…/releases/latest/download or
 # …/releases/download/<tag>); file:// works. Downloads are checked against the release's
 # SHA256SUMS. DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
-# DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (3000) when it is taken.
+# DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (default 3000). A new install checks
+# the port first and stops, naming a free one, when another program or container has it.
 # DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
 # are all prefixed with it, so two installs with different names run side by side.
 # DPM_CUSTODY_SOURCE=/path/to/deploy copies the files from a local folder (for testing).
@@ -174,6 +175,34 @@ check_name() {
   fi
 }
 
+# port_taken PORT succeeds when PORT is unusable for a new install: something on this machine
+# answers on it, or a container (running or stopped) already publishes it. A stopped install's
+# port is free right now, but taking it would clash once both are started. curl's exit code 7
+# means nothing answered.
+port_taken() {
+  curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/" >/dev/null 2>&1
+  [ $? -ne 7 ] && return 0
+  ids="$(docker ps -aq 2>/dev/null)" || return 1
+  [ -n "$ids" ] || return 1
+  # shellcheck disable=SC2086 # one id per word
+  docker inspect --format '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{.HostPort}} {{end}}{{end}}' $ids 2>/dev/null |
+    tr ' ' '\n' | grep -qx "$1"
+}
+
+# check_port refuses a port that is not a number or is already taken, before anything is written,
+# and names the next free one.
+check_port() {
+  case "$MANAGER_PORT" in
+    '' | *[!0-9]*) fail "DPM_CUSTODY_MANAGER_PORT must be a port number, e.g. 3001." ;;
+  esac
+  [ "$MANAGER_PORT" -ge 1 ] && [ "$MANAGER_PORT" -le 65535 ] ||
+    fail "DPM_CUSTODY_MANAGER_PORT must be between 1 and 65535."
+  port_taken "$MANAGER_PORT" || return 0
+  free=$((MANAGER_PORT + 1))
+  while [ "$free" -le 65535 ] && port_taken "$free"; do free=$((free + 1)); done
+  fail "Port $MANAGER_PORT is already in use on this machine. Nothing was installed. Run the installer again with a free port, e.g. DPM_CUSTODY_MANAGER_PORT=$free (before sh)."
+}
+
 # wait_for_setup waits until the setup container can run a command, which is what setup needs.
 wait_for_setup() {
   i=0
@@ -211,6 +240,7 @@ main() {
     say "  Starting the install as it is ..."
   else
     check_name
+    check_port
     say "  Installing into $DIR ..."
     for f in compose.yml versions.env dpm-custody; do fetch_file "$f"; done
     verify_files compose.yml versions.env dpm-custody

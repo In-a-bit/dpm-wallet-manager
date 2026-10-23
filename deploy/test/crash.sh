@@ -19,8 +19,8 @@
 # After each kill the script waits for the container to come back and for every service to be
 # healthy, then retries any failed request with the same key.
 #
-# Signings of one wallet with the same relayer nonce are one operation by design (the manager's
-# insertOrGet), so the 20 allowances share one operations row until a nonce moves on chain.
+# Each signing has its own Idempotency-Key, so each gets its own operations row; a retry with the
+# same key reuses that row (the manager's insertOrGet matches on the key).
 #
 # Checks at the end:
 #   - every key, replayed once more, returns exactly the response it returned before;
