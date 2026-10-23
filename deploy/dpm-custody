@@ -9,14 +9,18 @@
 #   ./dpm-custody logs [svc]   recent logs (all services, or one)
 #   ./dpm-custody backup       save the databases and keys into ./backups
 #   ./dpm-custody backup-kit   print the backup kit again
-#   ./dpm-custody upgrade [v]  move to a newer version (or to v)
+#   ./dpm-custody upgrade [version] [--yes]
+#                              move to the newest version (or to that version): checks the
+#                              download, backs up, and rolls back by itself if it does not come up
+#   ./dpm-custody rollback     undo the last upgrade (images and files; never the databases)
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
 compose() { docker compose --env-file .env -f compose.yml "$@"; }
 
-env_value() { sed -n "s/^$1=//p" .env | tail -n 1; }
+# env_value KEY [FILE] prints KEY's value from .env (or FILE); the last one wins, as in compose.
+env_value() { sed -n "s/^$1=//p" "${2:-.env}" | tail -n 1; }
 
 # cmd_support writes everything support needs into one file, with keys masked: setup's own report
 # (checklist, journal, service checks) plus what only the host knows (Docker, containers, logs).
@@ -57,39 +61,531 @@ mask_keys() {
     -e 's/dpmw_[a-f0-9]*([a-f0-9]{4})/dpmw_…\1/g'
 }
 
+# cmd_backup saves the databases, the configuration and the wallet keys into backups/<stamp>/ and
+# sets BACKUP_DIR. Each step is checked, so it also fails cleanly inside `if` (where set -e is off).
+BACKUP_DIR=""
 cmd_backup() {
   local stamp dir user
   stamp="$(date +%Y%m%d-%H%M%S)"
   user="$(env_value POSTGRES_USER)"
   dir="backups/$stamp"
-  mkdir -p "$dir"
-  chmod 700 backups "$dir"
+  mkdir -p "$dir" && chmod 700 backups "$dir" || { echo "Could not create $(pwd)/$dir." >&2; return 1; }
   echo "Saving databases..."
-  compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql"
+  compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql" && [ -s "$dir/databases.sql" ] ||
+    { backup_failed "$dir" "the databases"; return 1; }
   echo "Saving configuration and keys..."
-  compose exec -T setup tar -C / -czf - config >"$dir/config.tar.gz"
-  compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz"
-  cp .env "$dir/installer.env"
-  chmod 600 "$dir"/*
+  compose exec -T setup tar -C / -czf - config >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
+    { backup_failed "$dir" "the configuration"; return 1; }
+  compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz" && [ -s "$dir/wallet-data.tar.gz" ] ||
+    { backup_failed "$dir" "the wallet keys"; return 1; }
+  cp .env "$dir/installer.env" && chmod 600 "$dir"/* || { backup_failed "$dir" ".env"; return 1; }
+  BACKUP_DIR="$dir"
   echo "Backup saved in $(pwd)/$dir"
   echo "Copy that folder somewhere off this machine. It contains secrets: keep it private."
 }
 
+# backup_failed DIR WHAT marks a half-written backup so it is never mistaken for a good one.
+backup_failed() {
+  chmod 600 "$1"/* 2>/dev/null || true
+  mv "$1" "$1-incomplete" 2>/dev/null || true
+  echo "The backup failed while saving $2. The incomplete files are in $(pwd)/$1-incomplete." >&2
+}
+
+# ---- upgrade and rollback --------------------------------------------------------------------
+#
+# upgrade, in order (every step before "switch" changes nothing in the install):
+#   download the release into upgrade.tmp/ and check it against SHA256SUMS; check the versions,
+#   that the stack is healthy now and that there is room on disk; ask; back up; pull the new
+#   images while the old ones keep running; keep the old files as *.prev (mode 600); switch the
+#   files and .env, `up -d`; wait for health. If it does not come up, roll back by itself.
+# rollback puts back compose.yml and dpm-custody from *.prev, and in .env only the image tags and
+# DPM_CUSTODY_VERSION, then `up -d` and the same health wait. It never restores a database.
+
+REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
+STAGE="upgrade.tmp"
+# The .env keys an upgrade changes, and the only ones a rollback puts back.
+VERSION_KEYS="DPM_WALLET_TAG DPM_WALLET_MANAGER_TAG DPM_CUSTODY_VERSION"
+UPGRADE_PHASE=""
+
+say() { printf '%s\n' "$*"; }
+
+# stop_unchanged MESSAGE... ends an upgrade before anything in the install was changed.
+stop_unchanged() {
+  local line
+  say ""
+  say "  ✕ $1"
+  shift
+  for line in "$@"; do say "    $line"; done
+  say "    Nothing was changed: the install keeps running as it was."
+  say ""
+  exit 1
+}
+
+health_timeout() {
+  local t="${DPM_CUSTODY_HEALTH_TIMEOUT:-300}"
+  case "$t" in '' | *[!0-9]*) t=300 ;; esac
+  printf '%s' "$t"
+}
+
+# duration SECONDS prints "5 minutes" or "90 seconds".
+duration() {
+  if [ "$1" -ge 60 ] && [ $(($1 % 60)) -eq 0 ]; then printf '%s minutes' $(($1 / 60)); else printf '%s seconds' "$1"; fi
+}
+
+# ver_core V prints the x.y.z of V (a leading v and a -suffix / +suffix are ignored).
+ver_core() {
+  local v="${1#v}"
+  v="${v%%[-+]*}"
+  [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  printf '%s' "$v"
+}
+
+# ver_cmp A B prints -1, 0 or 1 comparing two x.y.z numerically.
+ver_cmp() {
+  local a b i x y
+  IFS=. read -r -a a <<<"$1"
+  IFS=. read -r -a b <<<"$2"
+  for i in 0 1 2; do
+    x=$((10#${a[$i]}))
+    y=$((10#${b[$i]}))
+    if [ "$x" -lt "$y" ]; then echo -1; return; fi
+    if [ "$x" -gt "$y" ]; then echo 1; return; fi
+  done
+  echo 0
+}
+
+valid_tag() { [[ "$1" =~ ^[A-Za-z0-9._-]+(@sha256:[a-f0-9]{64})?$ ]]; }
+valid_version() { [[ "$1" =~ ^v?[0-9A-Za-z.+-]+$ ]] && ver_core "$1" >/dev/null; }
+
+# ps_states reads `docker compose ps --format json` (one object per line, or one array,
+# depending on the Compose version) and prints "service state health" per container, with "-"
+# for no healthcheck. Pure shell tools: it must work when every container is down.
+ps_states() {
+  tr -d '\n' | grep -oE '"(Service|State|Health)":"[^"]*"' | awk -F'"' '
+    function flush() {
+      if (n) print (s == "" ? "?" : s), (st == "" ? "?" : st), (h == "" ? "-" : h)
+      s = ""; st = ""; h = ""; hs = 0; ss = 0; sts = 0; n = 0
+    }
+    {
+      k = $2; v = $4
+      if ((k == "Service" && ss) || (k == "State" && sts) || (k == "Health" && hs)) flush()
+      if (k == "Service") { s = v; ss = 1 } else if (k == "State") { st = v; sts = 1 } else { h = v; hs = 1 }
+      n = 1
+    }
+    END { flush() }'
+}
+
+# stack_healthy is true when every service in compose.yml has a container, every container with
+# a healthcheck is healthy and every other one is running. The health gate uses the same test.
+stack_healthy() {
+  local services states svc lines svc_ state health
+  services="$(compose config --services 2>/dev/null)" || return 1
+  [ -n "$services" ] || return 1
+  states="$(compose ps -a --format json 2>/dev/null | ps_states)" || return 1
+  for svc in $services; do
+    lines="$(printf '%s\n' "$states" | awk -v s="$svc" '$1 == s')"
+    [ -n "$lines" ] || return 1
+    while read -r svc_ state health; do
+      [ "$state" = running ] || return 1
+      case "$health" in - | healthy) ;; *) return 1 ;; esac
+    done <<<"$lines"
+  done
+  return 0
+}
+
+# not_healthy_list prints the services that are not healthy, for messages.
+not_healthy_list() {
+  compose ps -a --format json 2>/dev/null | ps_states |
+    awk '$2 != "running" || ($3 != "-" && $3 != "healthy") { printf "%s%s (%s%s)", sep, $1, $2, ($3 == "-" ? "" : ", " $3); sep = ", " }'
+}
+
+# health_gate waits up to the health timeout (DPM_CUSTODY_HEALTH_TIMEOUT, default 300 s) for
+# stack_healthy, checking every 5 seconds.
+health_gate() {
+  local timeout waited=0
+  timeout="$(health_timeout)"
+  say "Waiting for every service to be healthy (up to $(duration "$timeout")) ..."
+  while :; do
+    if stack_healthy; then return 0; fi
+    if [ "$waited" -ge "$timeout" ]; then
+      say "  Still not healthy after ${timeout} s: $(not_healthy_list)"
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+    if [ $((waited % 30)) -eq 0 ]; then say "  ... ${waited} s"; fi
+  done
+}
+
+releases_base() {
+  if [ -n "${DPM_CUSTODY_RELEASES_URL:-}" ]; then
+    printf '%s' "${DPM_CUSTODY_RELEASES_URL%/}"
+  elif [ "$1" = latest ]; then
+    printf '%s' "$REPO_RELEASES/latest/download"
+  else
+    printf '%s' "$REPO_RELEASES/download/$1"
+  fi
+}
+
+# sha_check runs the available checksum tool over a sums file, in the staging folder.
+sha_check() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    (cd "$STAGE" && sha256sum -c "$1") >/dev/null 2>&1
+  elif command -v shasum >/dev/null 2>&1; then
+    (cd "$STAGE" && shasum -a 256 -c "$1") >/dev/null 2>&1
+  else
+    stop_unchanged "Neither sha256sum nor shasum is available to check the download."
+  fi
+}
+
+# fetch_release BASE downloads the release files into upgrade.tmp/ and checks them against the
+# release's SHA256SUMS. Unlike the installer, an upgrade requires SHA256SUMS: every release that
+# has this command also has one.
+fetch_release() {
+  local base="$1" f code line
+  rm -rf "$STAGE"
+  (umask 077 && mkdir "$STAGE") || stop_unchanged "Could not create $(pwd)/$STAGE."
+  for f in compose.yml versions.env dpm-custody; do
+    curl -fsSL "$base/$f" -o "$STAGE/$f" 2>/dev/null ||
+      stop_unchanged "Could not download $f from $base." "Check the internet connection and the version name, then try again."
+  done
+  case "$base" in
+    file://*)
+      curl -fsS "$base/SHA256SUMS" -o "$STAGE/SHA256SUMS" 2>/dev/null ||
+        stop_unchanged "This release has no readable SHA256SUMS ($base/SHA256SUMS), so the download cannot be checked."
+      ;;
+    *)
+      code="$(curl -sSL -o "$STAGE/SHA256SUMS" -w '%{http_code}' "$base/SHA256SUMS")" ||
+        stop_unchanged "Could not download SHA256SUMS ($base/SHA256SUMS)." "Check the internet connection, then try again."
+      case "$code" in
+        200) ;;
+        404) stop_unchanged "This release has no SHA256SUMS, so the download cannot be checked and the upgrade stops." \
+          "Ask the platform team for a release that has one." ;;
+        *) stop_unchanged "Could not download SHA256SUMS ($base/SHA256SUMS): HTTP $code." "Try again later." ;;
+      esac
+      ;;
+  esac
+  [ -s "$STAGE/SHA256SUMS" ] || stop_unchanged "SHA256SUMS was downloaded but is empty."
+  : >"$STAGE/SHA256SUMS.use"
+  for f in compose.yml versions.env dpm-custody; do
+    line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"
+    [ -n "$line" ] || stop_unchanged "SHA256SUMS has no entry for $f."
+    printf '%s\n' "$line" >>"$STAGE/SHA256SUMS.use"
+  done
+  sha_check SHA256SUMS.use ||
+    stop_unchanged "A downloaded file does not match SHA256SUMS." "Try again; if it keeps failing, tell the platform team."
+  bash -n "$STAGE/dpm-custody" 2>/dev/null || stop_unchanged "The downloaded dpm-custody script is not valid."
+}
+
+# check_disk refuses when free disk is below twice the databases' size plus 1 GB.
+check_disk() {
+  local user bytes free_kb need_kb
+  user="$(env_value POSTGRES_USER)"
+  bytes="$(compose exec -T postgres psql -U "${user:-dpm}" -d postgres -Atc \
+    "SELECT COALESCE(SUM(pg_database_size(datname)), 0) FROM pg_database WHERE NOT datistemplate" 2>/dev/null |
+    tr -d '[:space:]')" || bytes=""
+  case "$bytes" in '' | *[!0-9]*) stop_unchanged "Could not read the database size from postgres." "Run ./dpm-custody status and ./dpm-custody support." ;; esac
+  free_kb="$(df -Pk . | awk 'NR == 2 { print $4 }')"
+  case "$free_kb" in '' | *[!0-9]*) stop_unchanged "Could not read the free disk space here." ;; esac
+  need_kb=$((bytes / 1024 * 2 + 1048576))
+  if [ "$free_kb" -lt "$need_kb" ]; then
+    stop_unchanged "Not enough free disk space: $((free_kb / 1024)) MB free, $((need_kb / 1024)) MB needed (twice the databases plus 1 GB)." \
+      "Free up disk space on this machine, then try again."
+  fi
+}
+
+# install_file SRC DST MODE puts SRC in place of DST with one rename, so DST is never half-written
+# and a running dpm-custody keeps reading its own (old) file.
+install_file() {
+  cp "$1" ".$2.new" && chmod "$3" ".$2.new" && mv -f ".$2.new" "$2"
+}
+
+# keep_prev saves compose.yml, versions.env, .env and dpm-custody as *.prev, mode 600.
+keep_prev() {
+  local f
+  for f in compose.yml versions.env .env dpm-custody; do
+    [ -e "$f" ] || continue
+    (umask 077 && cp "$f" ".$f.prev.new") && chmod 600 ".$f.prev.new" && mv -f ".$f.prev.new" "$f.prev" || return 1
+  done
+  # A versions.env.prev from an earlier upgrade must not be restored over a folder without one.
+  [ -e versions.env ] || rm -f versions.env.prev
+}
+
+have_prev() { [ -f compose.yml.prev ] && [ -f .env.prev ] && [ -f dpm-custody.prev ]; }
+remove_prev() { rm -f compose.yml.prev versions.env.prev .env.prev dpm-custody.prev; }
+
+# restore_prev puts the *.prev files back. In .env only the image tags and DPM_CUSTODY_VERSION
+# go back to their .env.prev values (a key .env.prev did not have is removed); any other edit to
+# .env since the upgrade is kept. dpm-custody goes back last.
+restore_prev() {
+  local k
+  install_file compose.yml.prev compose.yml 644 || return 1
+  if [ -f versions.env.prev ]; then install_file versions.env.prev versions.env 644 || return 1; fi
+  for k in $VERSION_KEYS; do
+    if grep -q "^$k=" .env.prev; then
+      set_env "$k" "$(env_value "$k" .env.prev)" || return 1
+    else
+      unset_env "$k" || return 1
+    fi
+  done
+  install_file dpm-custody.prev dpm-custody 755 || return 1
+}
+
+latest_backup() { ls -1d backups/[0-9]*/ 2>/dev/null | grep -v -- '-incomplete/$' | tail -n 1 | sed 's|/$||'; }
+
+# print_restore_steps is what to do when even the previous version does not come up. It never
+# restores anything itself: restoring a database is the operator's decision.
+print_restore_steps() {
+  local b="${1:-$(latest_backup)}"
+  b="${b:-backups/<stamp>}"
+  say ""
+  say "  ✕ The previous version did not come up healthy either. Nothing more is done automatically:"
+  say "    the databases were not touched by the rollback."
+  say "    1. Run ./dpm-custody support and send the file it writes to the platform team."
+  say "    2. If the platform team asks you to restore the backup taken before the upgrade"
+  say "       ($(pwd)/$b), follow \"Restoring a backup\" in the deploy README:"
+  say "       stop the stack, start postgres alone, drop and re-create the two databases from"
+  say "       $b/databases.sql, then ./dpm-custody start."
+  say ""
+}
+
+# rollback_now restores the *.prev files, starts the stack and waits for health. Shared by
+# `upgrade` (after a failed health gate) and `rollback`.
+rollback_now() {
+  if ! restore_prev; then
+    say "  ✕ Could not put the previous files back (see the message above)."
+    return 1
+  fi
+  if ! compose up -d; then
+    say "  ✕ Docker could not start the previous version."
+    return 1
+  fi
+  health_gate
+}
+
+on_upgrade_exit() {
+  local rc=$?
+  rm -rf "$STAGE" 2>/dev/null || true
+  if [ "$rc" -ne 0 ]; then
+    case "$UPGRADE_PHASE" in
+      switched | rolling-back)
+        say ""
+        say "  ✕ The upgrade stopped part-way. The previous files are kept as *.prev."
+        say "    Run ./dpm-custody rollback to go back to the previous version, then ./dpm-custody support."
+        say ""
+        ;;
+    esac
+  fi
+}
+
+prune_one_kept() { # TAG DIGEST REF... : true when the image is one of the REFs (tag or digest)
+  local t="$1" d="$2" ref rt rd
+  shift 2
+  for ref in "$@"; do
+    [ -n "$ref" ] || continue
+    rt="${ref%%@*}"
+    rd=""
+    case "$ref" in *@*) rd="${ref#*@}" ;; esac
+    if [ "$t" != "<none>" ] && [ "$t" = "$rt" ]; then return 0; fi
+    if [ -n "$rd" ] && [ "$d" = "$rd" ]; then return 0; fi
+  done
+  return 1
+}
+
+# prune_images removes this install's dpm images other than the current and previous tags. It
+# only names images of its own two repositories, never prunes anything else, and ignores failures
+# (an image still used by a container is simply kept).
+prune_images() {
+  local reg repo key cur prev list keep_ids r t d id
+  local -a remove=()
+  reg="${DPM_IMAGE_REGISTRY:-$(env_value DPM_IMAGE_REGISTRY)}"
+  reg="${reg:-ghcr.io/in-a-bit}"
+  for repo in dpm-wallet:DPM_WALLET_TAG dpm-wallet-manager:DPM_WALLET_MANAGER_TAG; do
+    key="${repo#*:}"
+    repo="$reg/${repo%%:*}"
+    cur="$(env_value "$key")"
+    prev="$(env_value "$key" .env.prev 2>/dev/null || true)"
+    [ -n "$cur" ] && [ -n "$prev" ] || continue
+    list="$(docker image ls --digests --format '{{.Repository}} {{.Tag}} {{.Digest}} {{.ID}}' "$repo" 2>/dev/null)" || continue
+    keep_ids=" "
+    while read -r r t d id; do
+      [ "$r" = "$repo" ] || continue
+      if prune_one_kept "$t" "$d" "$cur" "$prev"; then keep_ids="$keep_ids$id "; fi
+    done <<<"$list"
+    while read -r r t d id; do
+      [ "$r" = "$repo" ] || continue
+      prune_one_kept "$t" "$d" "$cur" "$prev" && continue
+      case "$keep_ids" in *" $id "*) continue ;; esac
+      if [ "$t" != "<none>" ]; then
+        remove+=("$r:$t")
+      elif [ "$d" != "<none>" ]; then
+        remove+=("$r@$d")
+      fi
+    done <<<"$list"
+  done
+  [ "${#remove[@]}" -gt 0 ] || return 0
+  say "Removing older images of this install: ${remove[*]}"
+  docker image rm "${remove[@]}" >/dev/null 2>&1 ||
+    say "  Some older images could not be removed (perhaps still in use). That is harmless."
+}
+
 cmd_upgrade() {
-  local version="${1:-latest}" base
-  base="https://github.com/In-a-bit/dpm-wallet-manager/releases"
-  if [ "$version" = latest ]; then base="$base/latest/download"; else base="$base/download/$version"; fi
-  echo "Downloading $version..."
-  curl -fsSL "$base/compose.yml" -o compose.yml.new
-  curl -fsSL "$base/versions.env" -o versions.env.new
-  mv compose.yml.new compose.yml
-  while IFS='=' read -r name value; do
-    case "$name" in DPM_WALLET_TAG | DPM_WALLET_MANAGER_TAG) set_env "$name" "$value" ;; esac
-  done <versions.env.new
-  rm -f versions.env.new
-  compose pull
-  compose up -d
-  echo "Upgraded. Run ./dpm-custody status to check."
+  local want="" yes=0 arg installed tag base target min new_wallet new_manager answer
+  for arg in "$@"; do
+    case "$arg" in
+      --yes | -y) yes=1 ;;
+      -*) stop_unchanged "Unknown option $arg." "Usage: ./dpm-custody upgrade [version] [--yes]" ;;
+      *)
+        [ -z "$want" ] || stop_unchanged "Give at most one version." "Usage: ./dpm-custody upgrade [version] [--yes]"
+        want="$arg"
+        ;;
+    esac
+  done
+  [ -f .env ] && [ -f compose.yml ] || stop_unchanged "This folder has no .env or compose.yml; is it a DPM custody install?"
+  if [ -n "$want" ]; then
+    valid_version "$want" || stop_unchanged "\"$want\" is not a version (expected something like 1.4.0)."
+    tag="v${want#v}"
+  else
+    tag=latest
+  fi
+  installed="$(env_value DPM_CUSTODY_VERSION)"
+  [ -n "$installed" ] || installed=unknown
+
+  trap on_upgrade_exit EXIT
+  trap 'exit 130' INT TERM
+  UPGRADE_PHASE=checking
+
+  # 1. Download and check.
+  base="$(releases_base "$tag")"
+  say "Downloading the release files ($base) ..."
+  fetch_release "$base"
+  target="$(env_value RELEASE_VERSION "$STAGE/versions.env")"
+  min="$(env_value MIN_UPGRADE_FROM "$STAGE/versions.env")"
+  new_wallet="$(env_value DPM_WALLET_TAG "$STAGE/versions.env")"
+  new_manager="$(env_value DPM_WALLET_MANAGER_TAG "$STAGE/versions.env")"
+  valid_version "$target" || stop_unchanged "The release's versions.env has no valid RELEASE_VERSION (\"$target\")."
+  valid_tag "$new_wallet" && valid_tag "$new_manager" ||
+    stop_unchanged "The release's versions.env has invalid image tags (\"$new_wallet\", \"$new_manager\")."
+  [ -z "$min" ] || valid_version "$min" || stop_unchanged "The release's versions.env has an invalid MIN_UPGRADE_FROM (\"$min\")."
+  if [ -n "$want" ] && [ "${want#v}" != "${target#v}" ]; then
+    stop_unchanged "Asked for $want, but the release found at $base is $target."
+  fi
+
+  # 2. Check.
+  if [ "$installed" = unknown ]; then
+    say "Note: installed version unknown (this install predates version tracking). The version checks"
+    say "      are skipped this once, and $target is recorded as the installed version."
+  else
+    valid_version "$installed" ||
+      stop_unchanged "DPM_CUSTODY_VERSION in .env is not a version (\"$installed\")." \
+        "Set it to the version you run, or to \"unknown\" to skip the version checks once."
+    case "$(ver_cmp "$(ver_core "$target")" "$(ver_core "$installed")")" in
+      0) stop_unchanged "This install already runs $installed (the release is $target)." ;;
+      -1) stop_unchanged "The release ($target) is older than this install ($installed)." "To go back after an upgrade, use ./dpm-custody rollback." ;;
+    esac
+    if [ -n "$min" ] && [ "$(ver_cmp "$(ver_core "$installed")" "$(ver_core "$min")")" = -1 ]; then
+      stop_unchanged "$target cannot be installed straight from $installed: upgrade to $min first." \
+        "Run: ./dpm-custody upgrade $min   then: ./dpm-custody upgrade $target"
+    fi
+  fi
+  if ! stack_healthy; then
+    stop_unchanged "The install is not healthy right now: $(not_healthy_list)." \
+      "An upgrade needs a healthy install to compare against. Check ./dpm-custody status, fix it" \
+      "(or run ./dpm-custody support and send the file to the platform team), then try again."
+  fi
+  check_disk
+
+  # 3. Confirm.
+  say ""
+  say "  Installed version: $installed"
+  say "  Upgrade to:        $target"
+  say "  Release notes:     $REPO_RELEASES/tag/v${target#v}"
+  say "  A backup is taken first. If the new version does not come up healthy within"
+  say "  $(duration "$(health_timeout)"), the previous version is put back automatically."
+  say ""
+  if [ "$yes" != 1 ]; then
+    [ -t 0 ] || stop_unchanged "No terminal to ask in. Run it again with --yes to upgrade without the question."
+    read -r -p "  Upgrade now? [y/N] " answer || answer=""
+    case "$answer" in y | Y | yes | YES | Yes) ;; *) stop_unchanged "Upgrade cancelled." ;; esac
+  fi
+
+  # 4. Back up.
+  if ! cmd_backup; then
+    stop_unchanged "The backup failed, so the upgrade stopped." "Check ./dpm-custody status and the free disk space, then try again."
+  fi
+
+  # 5. Pull the new images while the old ones keep running.
+  say "Downloading the new images ..."
+  if ! DPM_WALLET_TAG="$new_wallet" DPM_WALLET_MANAGER_TAG="$new_manager" \
+    docker compose --env-file .env -f "$STAGE/compose.yml" --project-directory . pull; then
+    stop_unchanged "Could not download the new images." "Check the internet connection, then try again. The backup is in $(pwd)/$BACKUP_DIR."
+  fi
+
+  # 6. Keep the old files.
+  keep_prev || stop_unchanged "Could not save the current files as *.prev (is the disk full?)."
+
+  # 7. Switch. dpm-custody is moved in last, by rename: this run keeps reading its own old file.
+  UPGRADE_PHASE=switched
+  say "Switching to $target ..."
+  if install_file "$STAGE/compose.yml" compose.yml 644 &&
+    install_file "$STAGE/versions.env" versions.env 644 &&
+    set_env DPM_WALLET_TAG "$new_wallet" &&
+    set_env DPM_WALLET_MANAGER_TAG "$new_manager" &&
+    set_env DPM_CUSTODY_VERSION "$target" &&
+    install_file "$STAGE/dpm-custody" dpm-custody 755 &&
+    compose up -d &&
+    health_gate; then
+    # 8. Healthy.
+    UPGRADE_PHASE=done
+    prune_images
+    say ""
+    say "  ✓ Upgraded to $target. Every service is healthy."
+    say "    If something is not right, ./dpm-custody rollback goes back to $installed"
+    say "    (images and files; the databases stay as they are). The backup is in $(pwd)/$BACKUP_DIR."
+    say ""
+    return 0
+  fi
+
+  # 8. Not healthy: roll back by itself.
+  UPGRADE_PHASE=rolling-back
+  say ""
+  say "  ✕ $target did not come up healthy. Putting $installed back ..."
+  if rollback_now; then
+    UPGRADE_PHASE=done
+    remove_prev
+    say ""
+    say "  ✕ The upgrade to $target failed and was rolled back: the install runs $installed again."
+    say "    The images and files are the previous ones; the databases were not restored (they do not"
+    say "    need to be: a release's database changes only add)."
+    say "    The backup taken before the upgrade is in $(pwd)/$BACKUP_DIR."
+    say "    Run ./dpm-custody support and send the file it writes to the platform team."
+    say ""
+  else
+    UPGRADE_PHASE=done
+    print_restore_steps "$BACKUP_DIR"
+  fi
+  exit 1
+}
+
+cmd_rollback() {
+  local from to
+  have_prev || {
+    say "There is nothing to roll back: compose.yml.prev, .env.prev and dpm-custody.prev are written"
+    say "by an upgrade and are not all here. Nothing was changed."
+    exit 1
+  }
+  from="$(env_value DPM_CUSTODY_VERSION)"
+  to="$(env_value DPM_CUSTODY_VERSION .env.prev)"
+  say "Rolling back from ${from:-unknown} to ${to:-the previous version} (images and files; the databases stay as they are) ..."
+  if rollback_now; then
+    remove_prev
+    say ""
+    say "  ✓ Rolled back to ${to:-the previous version}. Every service is healthy."
+    say ""
+  else
+    print_restore_steps
+    exit 1
+  fi
 }
 
 set_env() {
@@ -100,20 +596,35 @@ set_env() {
   fi
 }
 
-case "${1:-help}" in
-  start) compose up -d ;;
-  stop) compose stop ;;
-  status) compose ps ;;
-  # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still
-  # checked); SETUP_INSTALL_SECONDS is how long the installer took, for the checklist.
-  setup)
-    compose exec ${SETUP_PLATFORM_URL:+-e SETUP_PLATFORM_URL} ${SETUP_BUILDER_KEY:+-e SETUP_BUILDER_KEY} \
-      ${SETUP_INSTALL_SECONDS:+-e SETUP_INSTALL_SECONDS} setup node dist/setup/main setup
-    ;;
-  support) cmd_support ;;
-  logs) shift; compose logs --tail 200 "$@" ;;
-  backup) cmd_backup ;;
-  backup-kit) compose exec -T setup node dist/setup/main kit ;;
-  upgrade) shift; cmd_upgrade "$@" ;;
-  *) sed -n '2,12p' "$(basename "$0")" | sed 's/^# \{0,1\}//' ;;
-esac
+unset_env() {
+  if grep -q "^$1=" .env; then
+    sed -i.bak "/^$1=/d" .env && rm -f .env.bak
+  fi
+}
+
+usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$(basename "$0")"; }
+
+# Everything runs from main, called on the last line: an upgrade replaces this file, and bash
+# reads a script as it goes, so nothing may be left to read from the file once main has started.
+main() {
+  case "${1:-help}" in
+    start) compose up -d ;;
+    stop) compose stop ;;
+    status) compose ps ;;
+    # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still
+    # checked); SETUP_INSTALL_SECONDS is how long the installer took, for the checklist.
+    setup)
+      compose exec ${SETUP_PLATFORM_URL:+-e SETUP_PLATFORM_URL} ${SETUP_BUILDER_KEY:+-e SETUP_BUILDER_KEY} \
+        ${SETUP_INSTALL_SECONDS:+-e SETUP_INSTALL_SECONDS} setup node dist/setup/main setup
+      ;;
+    support) cmd_support ;;
+    logs) shift; compose logs --tail 200 "$@" ;;
+    backup) cmd_backup ;;
+    backup-kit) compose exec -T setup node dist/setup/main kit ;;
+    upgrade) shift; cmd_upgrade "$@" ;;
+    rollback) cmd_rollback ;;
+    *) usage ;;
+  esac
+}
+
+main "$@"; exit

@@ -78,21 +78,98 @@ platform team, with the **reference** shown on the dashboard.
 
 Everything lives in the `dpm-custody` folder in your home folder. On Mac and Linux:
 
-| To…                          | Run                                 |
-| ---------------------------- | ----------------------------------- |
-| start it (e.g. after reboot) | `~/dpm-custody/dpm-custody start`   |
-| stop it                      | `~/dpm-custody/dpm-custody stop`    |
-| see what's running           | `~/dpm-custody/dpm-custody status`  |
-| make a backup                | `~/dpm-custody/dpm-custody backup`  |
-| update to the newest version | `~/dpm-custody/dpm-custody upgrade` |
-| get help from support        | `~/dpm-custody/dpm-custody support` |
-| see setup again              | `~/dpm-custody/dpm-custody setup`   |
+| To…                          | Run                                  |
+| ---------------------------- | ------------------------------------ |
+| start it (e.g. after reboot) | `~/dpm-custody/dpm-custody start`    |
+| stop it                      | `~/dpm-custody/dpm-custody stop`     |
+| see what's running           | `~/dpm-custody/dpm-custody status`   |
+| make a backup                | `~/dpm-custody/dpm-custody backup`   |
+| update to the newest version | `~/dpm-custody/dpm-custody upgrade`  |
+| undo the last update         | `~/dpm-custody/dpm-custody rollback` |
+| get help from support        | `~/dpm-custody/dpm-custody support`  |
+| see setup again              | `~/dpm-custody/dpm-custody setup`    |
 
 On Windows, open PowerShell in `%USERPROFILE%\dpm-custody` and use
 `docker compose --env-file .env -f compose.yml` followed by `up -d`, `stop`, `ps` or `logs`.
 
 **Back up regularly.** A backup lands in the `backups` folder. Copy it somewhere off this
 machine. It contains secrets, so keep it private.
+
+## Upgrading
+
+```sh
+~/dpm-custody/dpm-custody upgrade            # the newest release
+~/dpm-custody/dpm-custody upgrade 1.4.0      # a given release
+~/dpm-custody/dpm-custody upgrade --yes      # without the question (for scripts)
+```
+
+It runs these steps in order. Until the switch, nothing in the install changes, and any problem
+stops the upgrade with the install running as before:
+
+1. Downloads the release's `compose.yml`, `versions.env` and `dpm-custody` into `upgrade.tmp/`
+   and checks them against its `SHA256SUMS`. A release without `SHA256SUMS`, or a file that does
+   not match, stops the upgrade.
+2. Checks that the release is newer than the installed version (`DPM_CUSTODY_VERSION` in `.env`)
+   and that the install is not below the release's `MIN_UPGRADE_FROM`. If it is, the message
+   names the version to upgrade to first. It also checks that every service is healthy now, and
+   that free disk is at least twice the size of the databases plus 1 GB.
+3. Shows the installed and new versions and the release notes, and asks. Without a terminal it
+   needs `--yes`.
+4. Takes a backup (`dpm-custody backup`). A failed backup stops the upgrade.
+5. Downloads the new images while the old ones keep running.
+6. Keeps the current `compose.yml`, `versions.env`, `.env` and `dpm-custody` as `*.prev`
+   (readable only by you).
+7. Switches: puts the new files in place, sets the new image tags and `DPM_CUSTODY_VERSION` in
+   `.env`, and restarts. Database changes run as each service starts.
+8. Waits up to 5 minutes for every service to be healthy. If they are, it removes this install's
+   older images (other than the new and previous ones) and is done. If not, it rolls back by
+   itself (below) and tells you where the backup is.
+
+**Installs from before this command:** their `.env` has no `DPM_CUSTODY_VERSION` and their
+`dpm-custody` cannot fetch the new one. Run the installer again once (Step 1). On an existing
+install it only replaces the `dpm-custody` script and keeps your data and settings. Then run
+`dpm-custody upgrade`. It says "installed version unknown", skips the version checks this once,
+and records the new version.
+
+## Rolling back
+
+```sh
+~/dpm-custody/dpm-custody rollback
+```
+
+This undoes the last upgrade. It puts back `compose.yml` and `dpm-custody` from the `*.prev`
+files. In `.env` it resets only the image tags and `DPM_CUSTODY_VERSION`, so any other change you
+made to `.env` since the upgrade stays. Then it restarts and waits for every service to be healthy,
+like an upgrade does. Without `*.prev` files there is nothing to undo, and it says so.
+
+A rollback never touches the databases. That is safe because a release's database changes only
+add (new tables, new optional columns, new indexes), so the previous version runs on them. A
+release that cannot keep that promise raises `MIN_UPGRADE_FROM` and says so in its notes. Undoing
+it means restoring the backup.
+
+## Restoring a backup
+
+Only do this when the platform team asks you to, for example when even the previous version does
+not come up after a rollback. It replaces both databases with the backup's copy. Anything done
+since that backup is lost.
+
+```sh
+cd ~/dpm-custody
+B=backups/20261023-101500        # the backup folder to restore
+DB_USER=dpm                      # POSTGRES_USER in .env
+./dpm-custody stop
+docker compose --env-file .env -f compose.yml up -d postgres
+docker compose --env-file .env -f compose.yml exec -T postgres \
+  psql -U "$DB_USER" -d postgres -c 'DROP DATABASE dpm_wallet_manager' -c 'DROP DATABASE dpm_wallet'
+docker compose --env-file .env -f compose.yml exec -T postgres \
+  psql -U "$DB_USER" -d postgres <"$B/databases.sql"
+./dpm-custody start
+```
+
+The restore prints `role "dpm" already exists`. That is expected. The backup also holds the
+configuration (`config.tar.gz`) and the wallet keys (`wallet-data.tar.gz`). An upgrade or a
+rollback never changes them, so you do not restore them here. If they are lost, for example on a
+new machine, ask the platform team.
 
 ## If something goes wrong
 
