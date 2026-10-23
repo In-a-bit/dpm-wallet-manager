@@ -10,7 +10,8 @@ export type InstallConfig = {
   owner: { type: string; id: number; name: string; builder_type?: string };
   chain_id: number;
   contracts: { ctf_exchange: string; proxy_factory: string; proxy_impl: string };
-  services: { dpm_api: string; gamma_api: string; relayer_api: string };
+  /** `data_api` is optional: a platform that does not offer one still installs. */
+  services: { dpm_api: string; gamma_api: string; relayer_api: string; data_api?: string };
 };
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
@@ -111,12 +112,14 @@ async function jsonDetail(response: Response): Promise<string | undefined> {
 
 /** Every service URL the install is handed must be reachable from inside its containers. */
 function withContainerUrls(config: InstallConfig): InstallConfig {
+  const { data_api: dataApi, ...services } = config.services;
   return {
     ...config,
     services: {
-      dpm_api: toContainerUrl(config.services.dpm_api),
-      gamma_api: toContainerUrl(config.services.gamma_api),
-      relayer_api: toContainerUrl(config.services.relayer_api),
+      dpm_api: toContainerUrl(services.dpm_api),
+      gamma_api: toContainerUrl(services.gamma_api),
+      relayer_api: toContainerUrl(services.relayer_api),
+      ...(dataApi ? { data_api: toContainerUrl(dataApi) } : {}),
     },
   };
 }

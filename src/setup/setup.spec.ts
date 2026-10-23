@@ -136,6 +136,21 @@ describe("config writer", () => {
     expect(env.DATABASE_URL).toBe("postgres://dpm:p%40ss%2Fword@postgres:5432/dpm_wallet");
   });
 
+  it("hands dpm-wallet the data-api URL when the platform has one", () => {
+    const withDataApi = {
+      ...inputs,
+      platform: {
+        ...PLATFORM,
+        services: { ...PLATFORM.services, data_api: "http://localhost:8091" },
+      },
+    };
+    expect(walletEnv(withDataApi).DATA_API_URL).toBe("http://localhost:8091");
+  });
+
+  it("leaves DATA_API_URL out when the platform does not offer one", () => {
+    expect(walletEnv(inputs)).not.toHaveProperty("DATA_API_URL");
+  });
+
   it("writes both env files, then the ready marker", () => {
     const dir = tempDir();
     writeInstallConfig(dir, inputs);
@@ -221,6 +236,25 @@ describe("fetchInstallConfig", () => {
     await expect(fetchInstallConfig("https://x", "bld_sk_a", offline)).rejects.toThrow(
       /Could not reach/,
     );
+  });
+
+  it("accepts a platform config without a data-api URL", async () => {
+    const config = await fetchInstallConfig("https://x", "bld_sk_a", answering(200, PLATFORM));
+    expect(config.services).not.toHaveProperty("data_api");
+    expect(config.services.dpm_api).toBe("https://dpm-api.example");
+  });
+
+  it("hands back the data-api URL reachable from inside the containers", async () => {
+    const local = {
+      ...PLATFORM,
+      services: { ...PLATFORM.services, data_api: "http://localhost:8091/" },
+    };
+    const config = await fetchInstallConfig(
+      "http://localhost:8086",
+      "bld_sk_a",
+      answering(200, local),
+    );
+    expect(config.services.data_api).toBe("http://host.docker.internal:8091");
   });
 
   it("hands back service URLs reachable from inside the containers", async () => {
