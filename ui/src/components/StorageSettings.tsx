@@ -39,6 +39,10 @@ export function StorageSettingsForm() {
     setUrl(current.alertWebhookUrl ?? "");
   }, [current]);
 
+  const dirty =
+    !!current &&
+    (NUM_FIELDS.some(({ key }) => form[key] !== String(current[key])) || url.trim() !== (current.alertWebhookUrl ?? ""));
+
   const save = async (patch: StoragePatch) => {
     setBusy(true);
     setError(null);
@@ -88,12 +92,12 @@ export function StorageSettingsForm() {
                 value={form[key]}
                 onChange={(e) => setForm({ ...form, [key]: e.target.value })}
               />
-              <SourceBadge source={current.sources[key]} onReset={() => void save({ [key]: null })} disabled={!canEdit} />
+              <SourceBadge source={current.sources[key]} onReset={() => void save({ [key]: null })} disabled={!canEdit || dirty} />
             </Field>
           ))}
-          <Field label="Alert webhook URL" hint="An http or https URL; leave empty for none.">
-            <input type="url" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" />
-            <SourceBadge source={current.sources.alertWebhookUrl} onReset={() => void save({ alertWebhookUrl: null })} disabled={!canEdit} />
+          <Field label="Alert webhook URL" hint={canEdit ? "An http or https URL; leave empty for none." : "Shown masked; only owners see the full URL."}>
+            <input type={canEdit ? "url" : "text"} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://" />
+            <SourceBadge source={current.sources.alertWebhookUrl} onReset={() => void save({ alertWebhookUrl: null })} disabled={!canEdit || dirty} />
           </Field>
         </fieldset>
       )}

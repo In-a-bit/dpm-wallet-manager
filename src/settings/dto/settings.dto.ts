@@ -32,6 +32,17 @@ export class RetentionFixedDto {
   logs!: string;
 }
 
+export class RetentionValuesDto {
+  @ApiProperty({ example: true })
+  enabled!: boolean;
+  @ApiProperty({ example: 90 })
+  routineDays!: number;
+  @ApiProperty({ example: 365 })
+  routedOrderDays!: number;
+  @ApiProperty({ example: 730 })
+  archiveReminderDays!: number;
+}
+
 export class RetentionSettingsDto {
   /** Whether the hourly trimming runs at all. */
   @ApiProperty({ example: true })
@@ -51,6 +62,10 @@ export class RetentionSettingsDto {
 
   @ApiProperty({ type: RetentionSourcesDto })
   sources!: RetentionSourcesDto;
+
+  /** What each key reverts to when cleared. */
+  @ApiProperty({ type: RetentionValuesDto })
+  defaults!: RetentionValuesDto;
 
   @ApiProperty({ type: RetentionFixedDto })
   fixed!: RetentionFixedDto;
@@ -108,13 +123,20 @@ export class StorageSettingsDto {
   @ApiProperty({ example: 7 })
   criticalDays!: number;
 
-  /** Where storage alerts are posted; `null` when none is set. */
+  /**
+   * Where storage alerts are posted; `null` when none is set. Admins get the full URL; every
+   * other role gets only its origin followed by `/…`, because the path often holds a secret.
+   */
   @ApiProperty({
     type: String,
     nullable: true,
     example: "https://hooks.example.com/storage",
   })
   alertWebhookUrl!: string | null;
+
+  /** Whether a webhook is set. The only webhook information a non-admin caller gets besides the masked URL. */
+  @ApiProperty({ example: true })
+  alertWebhookConfigured!: boolean;
 
   @ApiProperty({ type: StorageSourcesDto })
   sources!: StorageSourcesDto;

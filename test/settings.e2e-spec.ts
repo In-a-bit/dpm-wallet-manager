@@ -31,6 +31,7 @@ describe("settings", () => {
           routedOrderDays: 365,
           archiveReminderDays: 730,
           sources: { routineDays: "environment", archiveReminderDays: "default" },
+          defaults: { routineDays: 90, routedOrderDays: 365, archiveReminderDays: 730 },
           fixed: { idempotencyHours: 24, logs: "5 × 20 MB per service" },
         });
       }
@@ -132,6 +133,7 @@ describe("settings", () => {
         criticalPercent: 90,
         criticalDays: 7,
         alertWebhookUrl: null,
+        alertWebhookConfigured: false,
         sources: {
           warningPercent: "default",
           warningDays: "default",
@@ -179,6 +181,52 @@ describe("settings", () => {
       expect(revert.body).toMatchObject({ warningPercent: 75, alertWebhookUrl: null });
       expect(revert.body.sources.warningPercent).toBe("default");
       expect((await audited("settings.storage_update")).length).toBe(before + 2);
+    });
+
+    it("shows the full webhook URL to admins only, masked and flagged to everyone else", async () => {
+      await harness.put("/v1/settings/storage", {
+        body: { alertWebhookUrl: "https://hooks.example/secret-token" },
+      });
+      const login = async (username: string, role: string) => {
+        await harness.post("/v1/ui-users", { body: { username, password: PASSWORD, role } });
+        const res = await harness.post("/v1/session/login", {
+          apiKey: null,
+          body: { username, password: PASSWORD },
+        });
+        const line = (res.headers["set-cookie"] as string[]).find((h) =>
+          h.startsWith("dpmm_session="),
+        );
+        return (line as string).split(";")[0] as string;
+      };
+      const viewer = await login("hook-viewer", "viewer");
+      const operatorUser = await login("hook-operator", "operator");
+      const owner = await login("hook-owner", "owner");
+
+      const admin = await harness.get("/v1/settings/storage");
+      expect(admin.body).toMatchObject({
+        alertWebhookUrl: "https://hooks.example/secret-token",
+        alertWebhookConfigured: true,
+      });
+      expect(
+        (await harness.get("/v1/settings/storage", { cookie: owner })).body.alertWebhookUrl,
+      ).toBe("https://hooks.example/secret-token");
+
+      const others = [
+        await harness.get("/v1/settings/storage", { apiKey: harness.readonlyKey }),
+        await harness.get("/v1/settings/storage", { apiKey: harness.operatorKey }),
+        await harness.get("/v1/settings/storage", { cookie: viewer }),
+        await harness.get("/v1/settings/storage", { cookie: operatorUser }),
+      ];
+      for (const response of others) {
+        expect(JSON.stringify(response.body)).not.toContain("secret-token");
+        expect(response.body).toMatchObject({
+          alertWebhookUrl: "https://hooks.example/…",
+          alertWebhookConfigured: true,
+        });
+      }
+      await harness.put("/v1/settings/storage", { body: { alertWebhookUrl: null } });
+      const none = await harness.get("/v1/settings/storage", { apiKey: harness.readonlyKey });
+      expect(none.body).toMatchObject({ alertWebhookUrl: null, alertWebhookConfigured: false });
     });
 
     it("rejects each bound violation with 400, judged against the values after the patch", async () => {

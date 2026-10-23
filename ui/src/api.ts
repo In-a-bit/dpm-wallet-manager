@@ -147,6 +147,7 @@ export interface RetentionSettings {
   routedOrderDays: number;
   archiveReminderDays: number;
   sources: Record<"enabled" | "routineDays" | "routedOrderDays" | "archiveReminderDays", SettingSource>;
+  defaults: { enabled: boolean; routineDays: number; routedOrderDays: number; archiveReminderDays: number };
   fixed: { idempotencyHours: number; logs: string };
 }
 export type RetentionPatch = Partial<{ [K in "enabled" | "routineDays" | "routedOrderDays" | "archiveReminderDays"]: RetentionSettings[K] | null }>;
@@ -156,10 +157,12 @@ export interface StorageSettings {
   warningDays: number;
   criticalPercent: number;
   criticalDays: number;
+  /** Full for owners; masked to the origin for everyone else. */
   alertWebhookUrl: string | null;
+  alertWebhookConfigured: boolean;
   sources: Record<"warningPercent" | "warningDays" | "criticalPercent" | "criticalDays" | "alertWebhookUrl", SettingSource>;
 }
-export type StoragePatch = Partial<{ [K in Exclude<keyof StorageSettings, "sources">]: StorageSettings[K] | null }>;
+export type StoragePatch = Partial<{ [K in Exclude<keyof StorageSettings, "sources" | "alertWebhookConfigured">]: StorageSettings[K] | null }>;
 
 export interface Page<T> {
   items: T[];

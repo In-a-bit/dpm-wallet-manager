@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put } from "@nestjs/common";
+import { Body, Controller, Get, Inject, Put } from "@nestjs/common";
 import { ApiOkResponse, ApiOperation, ApiTags } from "@nestjs/swagger";
 
 import { CurrentActor, type Actor } from "../common/actor";
@@ -12,7 +12,14 @@ import {
   UpdateRetentionSettingsDto,
   UpdateStorageSettingsDto,
 } from "./dto/settings.dto";
-import { StorageSettingsService } from "./storage-settings.service";
+import { CONFIG } from "../tokens";
+import type { Config } from "../config";
+import { DEFAULT_ARCHIVE_REMINDER_DAYS } from "./retention-settings.service";
+import {
+  maskWebhookUrl,
+  StorageSettingsService,
+  type EffectiveStorage,
+} from "./storage-settings.service";
 
 /** Read-only values shown beside the editable retention settings. */
 const FIXED = { idempotencyHours: 24, logs: "5 × 20 MB per service" } as const;
@@ -28,7 +35,22 @@ export class SettingsController {
   constructor(
     private readonly retention: RetentionSettingsService,
     private readonly storage: StorageSettingsService,
+    @Inject(CONFIG) private readonly config: Config,
   ) {}
+
+  private defaults() {
+    return { ...this.config.retentionDefaults, archiveReminderDays: DEFAULT_ARCHIVE_REMINDER_DAYS };
+  }
+
+  /** Admins see the webhook as stored; everyone else sees it masked. */
+  private storageView(effective: EffectiveStorage, actor: Actor): StorageSettingsDto {
+    const full = actor.role === "admin";
+    return {
+      ...effective,
+      alertWebhookUrl: full ? effective.alertWebhookUrl : maskWebhookUrl(effective.alertWebhookUrl),
+      alertWebhookConfigured: effective.alertWebhookUrl !== null,
+    };
+  }
 
   /**
    * Read the retention settings.
@@ -40,7 +62,11 @@ export class SettingsController {
   @ApiOperation({ operationId: "getRetentionSettings", summary: "Read the retention settings" })
   @ApiOkResponse({ type: RetentionSettingsDto })
   async getRetention(): Promise<RetentionSettingsDto> {
-    return { ...(await this.retention.effective()), fixed: { ...FIXED } };
+    return {
+      ...(await this.retention.effective()),
+      defaults: this.defaults(),
+      fixed: { ...FIXED },
+    };
   }
 
   /**
@@ -62,20 +88,25 @@ export class SettingsController {
     @Body() body: UpdateRetentionSettingsDto,
     @CurrentActor() actor: Actor,
   ): Promise<RetentionSettingsDto> {
-    return { ...(await this.retention.update(body, actor)), fixed: { ...FIXED } };
+    return {
+      ...(await this.retention.update(body, actor)),
+      defaults: this.defaults(),
+      fixed: { ...FIXED },
+    };
   }
 
   /**
    * Read the storage settings.
    *
    * The warning and critical thresholds for disk usage and days of disk left, and the alert
-   * webhook, each with where it comes from.
+   * webhook, each with where it comes from. Only admins see the full webhook URL; other roles
+   * get it masked to its origin.
    */
   @Get("storage")
   @ApiOperation({ operationId: "getStorageSettings", summary: "Read the storage settings" })
   @ApiOkResponse({ type: StorageSettingsDto })
-  getStorage(): Promise<StorageSettingsDto> {
-    return this.storage.effective();
+  async getStorage(@CurrentActor() actor: Actor): Promise<StorageSettingsDto> {
+    return this.storageView(await this.storage.effective(), actor);
   }
 
   /**
@@ -90,10 +121,10 @@ export class SettingsController {
   @ApiOperation({ operationId: "updateStorageSettings", summary: "Change the storage settings" })
   @ApiOkResponse({ type: StorageSettingsDto })
   @ApiErrors("VALIDATION_FAILED", "CSRF_HEADER_REQUIRED")
-  updateStorage(
+  async updateStorage(
     @Body() body: UpdateStorageSettingsDto,
     @CurrentActor() actor: Actor,
   ): Promise<StorageSettingsDto> {
-    return this.storage.update(body, actor);
+    return this.storageView(await this.storage.update(body, actor), actor);
   }
 }

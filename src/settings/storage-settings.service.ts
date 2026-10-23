@@ -150,7 +150,11 @@ export class StorageSettingsService {
   }
 }
 
-/** A webhook URL often carries a secret in its path, so the trail keeps only where it points. */
+/** A webhook URL often carries a secret in its path, so only where it points is shown or kept. */
+export function maskWebhookUrl(url: string | null): string | null {
+  return url === null ? null : `${new URL(url).origin}/…`;
+}
+
 function auditValues(effective: EffectiveStorage): StorageValues {
   const { warningPercent, warningDays, criticalPercent, criticalDays, alertWebhookUrl } = effective;
   return {
@@ -158,7 +162,7 @@ function auditValues(effective: EffectiveStorage): StorageValues {
     warningDays,
     criticalPercent,
     criticalDays,
-    alertWebhookUrl: alertWebhookUrl === null ? null : `${new URL(alertWebhookUrl).origin}/…`,
+    alertWebhookUrl: maskWebhookUrl(alertWebhookUrl),
   };
 }
 

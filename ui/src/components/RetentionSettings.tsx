@@ -98,7 +98,19 @@ export function RetentionSettingsForm() {
     void save(patch);
   };
 
-  const resetKey = (key: Key | "enabled") => void save({ [key]: null });
+  // Reset applies at once, so it is offered only while the form has no unsaved edits to lose.
+  const dirty =
+    !!current &&
+    (enabled !== current.enabled || DAY_FIELDS.some(({ key }) => form[key] !== String(current[key])));
+
+  const resetKey = (key: Key | "enabled") => {
+    // Resetting routine days to a lower environment default shortens retention like a manual cut.
+    if (key === "routineDays" && current && current.defaults.routineDays < current.routineDays) {
+      setPending({ routineDays: null });
+      return;
+    }
+    void save({ [key]: null });
+  };
 
   return (
     <form onSubmit={submit} className="settings-group" style={{ display: "grid", gap: 12, maxWidth: 520 }}>
@@ -110,7 +122,7 @@ export function RetentionSettingsForm() {
             <span className="field-label">Automatic trimming</span>
             <span className="row-actions">
               <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} /> Enabled
-              <SourceBadge source={current.sources.enabled} onReset={() => resetKey("enabled")} disabled={!canEdit} />
+              <SourceBadge source={current.sources.enabled} onReset={() => resetKey("enabled")} disabled={!canEdit || dirty} />
             </span>
           </label>
           {DAY_FIELDS.map(({ key, label, hint }) => (
@@ -123,7 +135,7 @@ export function RetentionSettingsForm() {
                 value={form[key]}
                 onChange={(e) => setForm({ ...form, [key]: e.target.value })}
               />
-              <SourceBadge source={current.sources[key]} onReset={() => resetKey(key)} disabled={!canEdit} />
+              <SourceBadge source={current.sources[key]} onReset={() => resetKey(key)} disabled={!canEdit || dirty} />
             </Field>
           ))}
           <dl className="muted">
@@ -155,7 +167,10 @@ export function RetentionSettingsForm() {
           onConfirm={() => save(pending)}
           onClose={() => setPending(null)}
         >
-          <p>Records older than {pending.routineDays} days will be deleted within the hour.</p>
+          <p>
+            Records older than {pending.routineDays ?? current.defaults.routineDays} days will be deleted within
+            the hour.
+          </p>
         </Confirm>
       )}
     </form>
