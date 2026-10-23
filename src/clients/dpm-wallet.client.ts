@@ -157,8 +157,11 @@ export class DpmWalletClient {
    * Submits a signed meta-transaction to relayer-api through dpm-wallet, which answers 201. A
    * relayer refusal comes back as dpm-wallet's 502 `RELAYER_REQUEST_FAILED`, left to the fallback.
    */
-  relay(request: UpstreamSubmitTransactionRequest): Promise<UpstreamRelayTransaction> {
-    return this.request("POST", "/v1/relay", { body: request });
+  relay(
+    request: UpstreamSubmitTransactionRequest,
+    options: UpstreamCallOptions = {},
+  ): Promise<UpstreamRelayTransaction> {
+    return this.request("POST", "/v1/relay", { body: request, ...options });
   }
 
   /** The relayer's view of a transaction; `from` is the EOA that signed it. */

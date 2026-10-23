@@ -39,7 +39,13 @@ export class TransfersService {
     // Ours, not the relayer's: everything else is its own request shape, sent as signed.
     const { walletId: _walletId, operationId, external, ...signed } = built;
 
-    const relayed = await this.upstream.relay(signed);
+    // Keyed apart from the signing call (`:withdraw`): dpm-wallet stores one response per key, so
+    // the same key on /relay would be a different body under a key already taken. With it, a
+    // retry after a crash replays both the signature and the relay instead of submitting twice.
+    const relayed = await this.upstream.relay(
+      signed,
+      idempotencyKey ? { idempotencyKey: `${idempotencyKey}:relay` } : {},
+    );
     const relayerTransactionId = transactionId(relayed);
     if (!relayerTransactionId) {
       throw new ManagerError("UPSTREAM_REJECTED", "The relayer accepted no transaction id", {
