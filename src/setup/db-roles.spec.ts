@@ -149,6 +149,15 @@ describe("convertExistingInstall", () => {
     expect(remembered).toContain(`wallet:${databasePassword(before)}`);
   });
 
+  it("reads a hand-edited password with a bare % as written instead of throwing", () => {
+    const text = (password: string) =>
+      `DATABASE_URL='postgres://dpm%:${password}@postgres:5432/db'\n`;
+    expect(databasePassword(text("50%off"))).toBe("50%off");
+    expect(databaseUser(text("x"))).toBe("dpm%");
+    // A properly encoded one still decodes.
+    expect(databasePassword(text("p%40ss"))).toBe("p@ss");
+  });
+
   it("does not contact Postgres for a fresh install with no env files, or fail without access", async () => {
     await convertExistingInstall(dirs(), undefined, () => undefined);
     const d = dirs();
@@ -347,7 +356,11 @@ describe("service roles in Postgres", () => {
     const taken = await admin.query(`SELECT 1 FROM pg_database WHERE datname = 'dpm_wallet'`);
     if (taken.rowCount) {
       await admin.end();
-      return; // someone's real database: never take it over
+      // Someone's real database: never take it over. Say so, so a skipped check is not a pass.
+      console.warn(
+        "SKIPPED: a database named dpm_wallet exists here, so the storage-sampling grant check did not run",
+      );
+      return;
     }
     const walletRole = `t_ws_${suffix}`;
     const managerRole = `t_ms_${suffix}`;

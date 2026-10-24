@@ -18,7 +18,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +30,17 @@ jobs:
   build:
     if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'NOBUILD') }}
     runs-on: ubuntu-latest
+    # The one job that pushes an image. A pull request never does (and never gets a write token
+    # from a fork anyway); a manual run publishes only from the branches and tags released from.
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: >-
+        ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && (
+        github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stage' ||
+        github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/heads/release/') ||
+        startsWith(github.ref, 'refs/tags/v'))) }}
 
     steps:
       - name: Checkout
@@ -40,7 +50,7 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: env.PUBLISH == 'true'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
@@ -64,7 +74,7 @@ jobs:
         with:
           context: .
           file: Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -136,13 +146,24 @@ jobs:
             echo "::error::RELEASE_SIGNING_KEY is not set. Create the key with scripts/release-signing-key.sh."
             exit 1
           fi
+          # The three installers each embed the public key; a release where they disagree would
+          # verify for some and not others, so refuse to sign one.
+          embedded() {
+            awk '/-----BEGIN PUBLIC KEY-----/{f=1} f{print} /-----END PUBLIC KEY-----/{exit}' "$1" \
+              | sed "s/^RELEASE_PUBKEY='//; s/'\$//"
+          }
+          embedded deploy/install.sh > "$RUNNER_TEMP/release.pub"
+          for f in deploy/dpm-custody deploy/install.ps1; do
+            embedded "$f" | cmp -s - "$RUNNER_TEMP/release.pub" \
+              || { echo "::error::The public key embedded in $f differs from the one in deploy/install.sh."; exit 1; }
+          done
+          grep -q 'BEGIN PUBLIC KEY' "$RUNNER_TEMP/release.pub" \
+            || { echo "::error::No embedded release public key found in deploy/install.sh."; exit 1; }
           umask 077
           KEY="$RUNNER_TEMP/release-signing-key.pem"
+          trap 'rm -f "$KEY"' EXIT
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$KEY"
           openssl dgst -sha256 -sign "$KEY" -out deploy/SHA256SUMS.sig deploy/SHA256SUMS
-          rm -f "$KEY"
-          sed -n "/^RELEASE_PUBKEY='/,/^-----END PUBLIC KEY-----'/p" deploy/install.sh \
-            | sed "s/^RELEASE_PUBKEY='//; s/'\$//" > "$RUNNER_TEMP/release.pub"
           openssl dgst -sha256 -verify "$RUNNER_TEMP/release.pub" -signature deploy/SHA256SUMS.sig deploy/SHA256SUMS \
             || { echo "::error::The signature does not verify against the public key embedded in deploy/install.sh. Is the embedded key the one for RELEASE_SIGNING_KEY?"; exit 1; }
 
