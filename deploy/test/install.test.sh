@@ -308,6 +308,20 @@ sys.exit(0 if t["logging"]["driver"] == "none" and not t.get("volumes") and not 
       ok "compose: the tools helper has no log driver, no volumes, no environment"
     else bad "compose: the tools helper has no log driver, no volumes, no environment"; fi
 
+    # config-reader (support's view of the env files): profile-only too, read-only mounts of exactly
+    # the two configuration volumes, no network, no log driver.
+    if PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
+      docker compose -f "$HERE/compose.yml" --profile tools config --format json 2>/dev/null | python3 -c '
+import json, sys
+svc = json.load(sys.stdin)["services"]
+r = svc["config-reader"]
+mounts = {(v["source"], v["target"], bool(v.get("read_only"))) for v in r.get("volumes", [])}
+sys.exit(0 if r["logging"]["driver"] == "none" and r.get("network_mode") == "none" and r.get("read_only") is True
+         and mounts == {("config-wallet", "/config-wallet", True), ("config-manager", "/config-manager", True)}
+         and r.get("profiles") == ["tools"] and r.get("cap_drop") == ["ALL"] else 1)'; then
+      ok "compose: config-reader is isolated and sees only the two configuration volumes, read-only"
+    else bad "compose: config-reader is isolated and sees only the two configuration volumes, read-only"; fi
+
     # Run setup's start script with a fake node: a failed migration must leave the container
     # running (so it is unhealthy and `up -d` fails), never exit; a good one marks the volume and
     # hands over to the worker.

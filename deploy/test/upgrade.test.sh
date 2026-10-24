@@ -93,7 +93,7 @@ case "$args" in
   *"exec -T postgres psql"*"version()"*) echo "${PG_VERSION:-PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc}" ;;
   *"exec -T postgres psql"*"REINDEX"*) ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
-  *"cat /config-wallet"*) printf '%s\n' "${PLANT_ENV:-}"; exit 0 ;;
+  *"cat /config-wallet"*) [ -n "${FAIL_COLLECT:-}" ] && { echo "docker is not running" >&2; exit 1; }; printf '%s\n' "${PLANT_ENV:-}"; exit 0 ;;
   *" logs "*) printf '%s\n' "${PLANT_LOG:-}"; exit 0 ;;
   *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; [ -n "${OLD_IMAGE_SCRUB:-}" ] && exit 2; exit 0 ;;
   *"setup node dist/setup/main backup-recipient"*)
@@ -679,14 +679,19 @@ PLANT="encryption=$HEX_A random=$HEX_B pg=$PG_PW role=$ROLE_PW token=$TOKEN wall
 d="$T/c23"; make_install "$d" 1.1.0 0.2.0 1.1.0
 sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$PG_PW/" "$d/.env"
 PLANT_ENV="$(printf "DPM_WALLET_ENCRYPTION_KEY='%s'\nDATABASE_URL='postgres://manager_app:%s@postgres:5432/dpm'\nSOME_API_TOKEN='%s'\nDPM_WALLET_API_KEY='%s'\nPORT='8090'\nDPM_WALLET_MANAGER_KEY_ENV='dev'\n" "$HEX_A" "$ROLE_PW" "$TOKEN" "$WALLET_KEY")"
-(umask 000; PLANT_ENV="$PLANT_ENV" PLANT_LOG="$PLANT" run "$d" support >/dev/null)
+mkdir -p "$T/tmp23"
+(umask 000; TMPDIR="$T/tmp23" PLANT_ENV="$PLANT_ENV" PLANT_LOG="$PLANT" run "$d" support >/dev/null)
 rep="$(ls "$d"/support-*.txt | head -n 1)"
 check "23 support: the report is owner-only even under umask 000" '[ "$(mode_of "$rep")" = "-rw-------" ]'
 for secret in "$HEX_A" "$HEX_B" "$PG_PW" "$ROLE_PW" "$TOKEN" "$WALLET_KEY" "$RECOVERY"; do
   check "23 support: a planted secret ($(printf '%s' "$secret" | cut -c1-8)…) is masked everywhere" '! grep -qF -- "$secret" "$rep"'
 done
 check "23 support: an image digest is left readable, and the report still says what it did" 'grep -qF -- "sha256:$HEX_DIGEST" "$rep" && grep -q "DPM custody support report" "$rep"'
-check "23 support: short or ordinary values stay (port, mode names)" 'grep -q "role=…" "$rep" || grep -q "role=\*\*\*" "$rep"'
+check "23 support: passwords are hidden entirely, keys and tokens keep their last 4" 'grep -q "role=\*\*\*" "$rep" && grep -q "pg=\*\*\*" "$rep" && grep -q "token=…hijk" "$rep"'
+check "23 support: the secrets list is gone afterwards" '[ -z "$(ls -A "$T/tmp23")" ]'
+d="$T/c23b"; make_install "$d" 1.1.0 0.2.0 1.1.0
+out="$(FAIL_COLLECT=1 TMPDIR="$T/tmp23" PLANT_LOG="$PLANT" run "$d" support)"; rep="$(ls "$d"/support-*.txt | head -n 1)"
+check "23 support: when the secrets cannot be read, it says so on the terminal and in the report, and still masks keys" 'echo "$out" | grep -q "secrets could not be read" && grep -q "masking is partial\|only the keys and 64-digit" "$rep" && ! grep -qF -- "$HEX_B" "$rep" && ! grep -qF -- "$WALLET_KEY" "$rep" && [ -z "$(ls -A "$T/tmp23")" ]'
 
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 

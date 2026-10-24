@@ -45,7 +45,7 @@ x-hardening: &hardening
 x-readonly: &readonly
   read_only: true
   tmpfs:
-    - /tmp
+    - /tmp:size=64m,mode=1777
 
 # Every service keeps at most 5 container log files of 20 MB (100 MB per service), so a long-running
 # install cannot fill the disk with logs.
@@ -238,6 +238,24 @@ services:
     user: "100:101"
     logging:
       driver: none
+
+  # Reads the services' env files for `dpm-custody support`, to know which values to mask. Same
+  # isolation as `tools` (profile only, no network, no log driver, read-only), plus a read-only view
+  # of the two configuration volumes; it runs with `compose run`, so it works with the stack stopped.
+  config-reader:
+    profiles: ["tools"]
+    <<: *hardening
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
+    restart: "no"
+    command: ["true"]
+    user: "100:101"
+    read_only: true
+    network_mode: none
+    logging:
+      driver: none
+    volumes:
+      - config-wallet:/config-wallet:ro
+      - config-manager:/config-manager:ro
 
 configs:
   create-manager-database:

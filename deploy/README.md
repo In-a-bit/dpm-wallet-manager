@@ -159,8 +159,10 @@ If it keeps stopping, run `~/dpm-custody/dpm-custody support`. It writes one fil
 everything support needs: the checklist, what each step did and when, the state of each service,
 and their recent logs. The file is readable by you only. Keys in it are masked, so it's safe to email:
 the install's own secrets (every key, password and token in its settings, the database passwords)
-and any 64-digit hex value (such as an encryption key) are hidden wherever they appear, and image
-digests are left as they are. Send that file to the
+and any 64-digit hex value (such as an encryption key, but also a transaction hash) are hidden
+wherever they appear, and image digests are left as they are. Passwords are hidden entirely; other
+keys show only their last four characters. The settings are read in a throwaway container, so this
+works with the stack stopped; if Docker cannot be reached the report says its masking is partial. Send that file to the
 platform team, with the **reference** shown on the dashboard.
 
 ## Step 3: Check it works

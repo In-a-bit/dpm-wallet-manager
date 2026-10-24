@@ -31,8 +31,15 @@ for image in "$ALPINE" "postgres:$PINNED"; do
 done
 
 psql_in() { docker exec -i "$NAME" psql -U dpm -d "$1" -tA -v ON_ERROR_STOP=1; }
-start() { # IMAGE
-  docker run -d --name "$NAME" -e POSTGRES_USER=dpm -e POSTGRES_PASSWORD=pw -p 127.0.0.1::5432 -v "$VOL:/var/lib/postgresql" "$1" >/dev/null
+# The capabilities compose.yml gives the postgres service (read from it, so the two cannot drift):
+# the entrypoint must still be able to hand the data directory to its own user with only these.
+CAPS="$(sed -n '/^  postgres:/,/^  dpm-wallet:/p' "$HERE/compose.yml" | sed -n 's/^ *cap_add: \[\(.*\)\]/\1/p' | tr -d ' ' | tr ',' ' ')"
+HARDEN=(--cap-drop ALL --security-opt no-new-privileges:true)
+for cap in $CAPS; do HARDEN+=(--cap-add "$cap"); done
+start() { # IMAGE [hardened]
+  local extra=()
+  [ "${2:-}" = hardened ] && extra=("${HARDEN[@]}")
+  docker run -d --name "$NAME" "${extra[@]}" -e POSTGRES_USER=dpm -e POSTGRES_PASSWORD=pw -p 127.0.0.1::5432 -v "$VOL:/var/lib/postgresql" "$1" >/dev/null
   for _ in $(seq 1 60); do docker exec "$NAME" pg_isready -U dpm >/dev/null 2>&1 && return 0; sleep 1; done
   return 1
 }
@@ -48,8 +55,9 @@ SQL
 docker stop "$NAME" >/dev/null && docker rm "$NAME" >/dev/null
 
 # 2. the pinned Debian image takes over the same volume
-start "postgres:$PINNED" || { bad "the pinned postgres did not start on the old volume"; exit 1; }
-check "the entrypoint hands the data directory to the Debian postgres user (uid 999)" \
+check "the compose.yml capability list was read" '[ -n "$CAPS" ]'
+start "postgres:$PINNED" hardened || { bad "the pinned postgres did not start on the old volume"; exit 1; }
+check "with only those capabilities the entrypoint hands the Alpine-made data directory to the Debian postgres user (uid 999)" \
   '[ "$(docker exec "$NAME" stat -c %u /var/lib/postgresql/18/docker)" = 999 ]'
 # The manager measures the disk through a read-only mount of this volume, as its own non-root user
 # (uid 100); any image with busybox `stat` shows whether that still works on the converted volume.
@@ -86,7 +94,7 @@ check "a second run changes nothing" '[ $rc -eq 0 ] && echo "$out" | grep -q "al
 # 4. and back: a rollback to a release on Alpine leaves the indexes in the Debian order, which
 # dpm-custody's rollback rebuilds with the same statement (reindex_if_musl)
 docker stop "$NAME" >/dev/null && docker rm "$NAME" >/dev/null
-start "$ALPINE" || { bad "alpine postgres did not start again"; exit 1; }
+start "$ALPINE" hardened || { bad "alpine postgres did not start again under the hardened settings"; exit 1; }
 check "back on Alpine the index built under Debian's order is out of order (the rollback hazard)" 'broken'
 docker exec "$NAME" psql -U dpm -d dpm_wallet_manager -c "REINDEX DATABASE dpm_wallet_manager" >/dev/null 2>&1
 check "the rollback's REINDEX makes it valid for Alpine again" '! broken'
