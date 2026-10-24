@@ -154,7 +154,15 @@ services:
       - -c
       - |
         rm -f /state/.migrated
-        node dist/setup/main migrate && : > /state/.migrated && exec node dist/setup/main
+        if node dist/setup/main migrate; then
+          : > /state/.migrated
+        else
+          # Stay up but unhealthy: `up -d` then fails at once and an upgrade rolls back, instead
+          # of a restart loop.
+          echo "setup: the volume migration failed (see above)" >&2
+          while :; do sleep 3600; done
+        fi
+        exec node dist/setup/main
     healthcheck:
       test: ["CMD", "test", "-f", "/state/.migrated"]
       interval: 2s

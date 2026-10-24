@@ -85,6 +85,14 @@ case "$args" in
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
+  *"exec -T setup sh -c "*)
+    # Run the script the way the container's sh would, against a fake /proc/mounts and a tar that
+    # only reports its arguments, so a quoting mistake in dpm-custody fails here.
+    script=""; prev=""
+    for a in "$@"; do [ "$prev" = -c ] && script="$a"; prev="$a"; done
+    mounts="${FAKE_MOUNTS:-/dev/null}"
+    script="$(printf '%s' "$script" | sed "s|/proc/mounts|$mounts|g")"
+    PATH="$FAKE_TAR_DIR:$PATH" sh -c "$script" ;;
   *"exec -T "*" tar "*) echo "tarbytes" ;;
 esac
 exit 0
@@ -93,6 +101,10 @@ printf '#!/bin/sh\nexit 0\n' >"$T/bin/sleep"
 chmod +x "$T/bin/docker" "$T/bin/sleep"
 REAL_DOCKER="$(command -v docker || true)"
 export REAL_DOCKER
+mkdir -p "$T/faketar"
+printf '#!/bin/sh\necho "TAR $*"\n' >"$T/faketar/tar"
+chmod +x "$T/faketar/tar"
+export FAKE_TAR_DIR="$T/faketar"
 export PATH="$T/bin:$PATH"
 
 # ---- fixtures -------------------------------------------------------------------------------
@@ -198,8 +210,7 @@ check "7 happy: .prev files hold the old ones, mode 600" 'cmp -s "$d/compose.yml
 check "7 happy: backup folder written, no upgrade.tmp left" '[ -n "$(ls "$d/backups" 2>/dev/null)" ] && [ ! -e "$d/upgrade.tmp" ]'
 check "7 happy: mentions rollback" 'echo "$out" | grep -q "dpm-custody rollback"'
 check "7 happy: the old setup worker is stopped before the volumes are migrated" '[ "$(line_of "$ev" "stop setup")" -lt "$(line_of "$ev" at-migrate)" ]'
-check "7 happy: setup migrate runs after the switch and before up, never in the old compose" 'has "$ev" "at-migrate compose=# compose 1.1.0 marker=yes" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" " up -d")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" at-migrate)" ]'
-check "7 happy: backup reads the split config volumes with the single-volume fallback" 'grep -q "proc/mounts.*config-wallet config-manager state" "$ev" && grep -q "tar -C / -czf - config;" "$ev"'
+check "7 happy: setup migrate runs after the switch and before up, never in the old compose" 'has "$ev" "at-migrate compose=# compose 1.1.0 marker=yes" && has "$ev" "run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" " up -d")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" at-migrate)" ]'
 check "7 happy: cleanup-legacy hint printed" 'echo "$out" | grep -q "cleanup-legacy"'
 
 # 12. rollback after a good upgrade
@@ -216,6 +227,18 @@ d="$T/c7b"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(FAIL_MIGRATE=1 run "$d" upgrade --yes)"; rc=$?
 check "7b migrate failure: non-zero, says so, files restored, only the rollback ran up" '[ $rc -ne 0 ] && echo "$out" | grep -q "configuration volumes" && cmp -s "$d/compose.yml" "$d.orig.compose.yml" && [ "$(grep -c " up -d" "$d.events")" -eq 1 ] && ! has "$d.events" "at-up compose=# compose 1.1.0"'
 
+
+# 7a0. the backup runs the script it sends to the container: split layout when /config-wallet is a
+# mount, the single volume otherwise (the shim executes the script, so quoting bugs fail here)
+d="$T/c7a0"; make_install "$d" 1.1.0 0.2.0 1.1.0
+printf 'x /config-wallet ext4 rw 0 0\n' >"$T/mounts.split"
+out="$(FAKE_MOUNTS="$T/mounts.split" run "$d" backup)"; rc=$?
+b="$(ls -d "$d"/backups/[0-9]* | head -n 1)"
+check "7a0 backup, split volumes: script runs and saves the three" '[ $rc -eq 0 ] && grep -q "^TAR -C / -czf - config-wallet config-manager state$" "$b/config.tar.gz"'
+rm -rf "$d/backups"
+out="$(FAKE_MOUNTS="$T/mounts.none" run "$d" backup)"; rc=$?
+b="$(ls -d "$d"/backups/[0-9]* | head -n 1)"
+check "7a0 backup, single volume: falls back to /config" '[ $rc -eq 0 ] && grep -q "^TAR -C / -czf - config$" "$b/config.tar.gz"'
 
 # 7a. the released v0.2.2 dpm-custody performs the upgrade (it reads this release's real compose.yml
 # and requires every service to be running and healthy: no one-shot service may be left behind).

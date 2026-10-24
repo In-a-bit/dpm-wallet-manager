@@ -51,7 +51,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
 # The one-step install's setup service (deploy/compose.yml) writes the env files it generates into
-# /config-wallet and /config-manager and keeps its own state in /state; the migrate service reads
+# /config-wallet and /config-manager and keeps its own state in /state; setup reads
 # the older single volume at /legacy-config. Creating them here, owned by the service user, is what
 # makes a fresh named volume mounted there writable: Docker seeds an empty volume with the image
 # directory's ownership. /config is where the manager itself finds its env file.

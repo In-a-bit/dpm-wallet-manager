@@ -32,7 +32,7 @@ const env = (name: string, fallback: string): string => process.env[name] || fal
 const WALLET_CONFIG_DIR = env("SETUP_WALLET_CONFIG_DIR", "/config-wallet");
 const MANAGER_CONFIG_DIR = env("SETUP_MANAGER_CONFIG_DIR", "/config-manager");
 const STATE_DIR = env("SETUP_STATE_DIR", "/state");
-/** The single `config` volume of earlier versions; mounted only by the migrate service. */
+/** The single `config` volume of earlier versions; mounted read-only by setup (writable only in `dpm-custody cleanup-legacy` and upgrade runs). */
 const LEGACY_CONFIG_DIR = env("SETUP_LEGACY_CONFIG_DIR", "/legacy-config");
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
 /** Where the builder reaches the wallet manager (and its admin UI) from outside the stack. */

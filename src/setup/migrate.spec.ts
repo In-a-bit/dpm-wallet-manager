@@ -108,6 +108,25 @@ describe("setup migrate", () => {
     }
   });
 
+  it("leaves the legacy volume alone when it is mounted read-only, and still migrates", () => {
+    const dirs = { ...volumes(), legacyWritable: false };
+    legacyInstall(dirs);
+    const touched: string[] = [];
+    (SCRUBS as unknown as unknown[]).push({
+      name: "ro-scrub",
+      run: (layout: { manager: string }) => touched.push(layout.manager),
+    });
+    try {
+      const lines: string[] = [];
+      runAll(dirs, (line) => lines.push(line));
+      expect(touched).toEqual([dirs.manager]);
+      expect(lines.join("\n")).toContain("read-only here");
+      expect(fs.existsSync(path.join(dirs.manager, MANAGER_ENV_FILE))).toBe(true);
+    } finally {
+      (SCRUBS as unknown as unknown[]).pop();
+    }
+  });
+
   it("cleanup-legacy empties the old volume", () => {
     const dirs = volumes();
     legacyInstall(dirs);

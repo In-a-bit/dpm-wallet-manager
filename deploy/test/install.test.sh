@@ -210,6 +210,27 @@ sys.exit(1 if bad or oneshot or waits or "healthcheck" not in svc["setup"] else 
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi
+
+    # Run setup's start script with a fake node: a failed migration must leave the container
+    # running (so it is unhealthy and `up -d` fails), never exit; a good one marks the volume and
+    # hands over to the worker.
+    python3 - "$T/cfg.json" "$T/setup-start.sh" "$T/state" <<'PY'
+import json, sys
+cmd = json.load(open(sys.argv[1]))["services"]["setup"]["command"]
+open(sys.argv[2], "w").write(cmd[2].replace("/state", sys.argv[3]))
+PY
+    mkdir -p "$T/state" "$T/fakenode"
+    printf '#!/bin/sh\n[ "$2" = migrate ] && exit "${FAKE_MIGRATE_RC:-0}"\necho worker >"$T/state/worker"\n' >"$T/fakenode/node"
+    sed -i "s|\$T|$T|g" "$T/fakenode/node"
+    chmod +x "$T/fakenode/node"
+    FAKE_MIGRATE_RC=1 PATH="$T/fakenode:$PATH" timeout 3 sh "$T/setup-start.sh" >/dev/null 2>&1; rc=$?
+    if [ $rc -eq 124 ] && [ ! -e "$T/state/.migrated" ] && [ ! -e "$T/state/worker" ]; then
+      ok "compose: a failed migration keeps setup running, unhealthy"
+    else bad "compose: a failed migration keeps setup running, unhealthy (rc=$rc)"; fi
+    FAKE_MIGRATE_RC=0 PATH="$T/fakenode:$PATH" timeout 3 sh "$T/setup-start.sh" >/dev/null 2>&1; rc=$?
+    if [ $rc -eq 0 ] && [ -e "$T/state/.migrated" ] && [ -e "$T/state/worker" ]; then
+      ok "compose: a good migration marks the volume, then starts the worker"
+    else bad "compose: a good migration marks the volume, then starts the worker (rc=$rc)"; fi
   fi
 fi
 

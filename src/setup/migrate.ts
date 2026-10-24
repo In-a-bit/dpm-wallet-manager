@@ -18,6 +18,8 @@ export type MigrationDirs = {
   wallet: string;
   manager: string;
   state: string;
+  /** False when the legacy volume is mounted read-only; unset means "check the directory". */
+  legacyWritable?: boolean;
 };
 
 type Migration = { name: string; run: (dirs: MigrationDirs, say: (line: string) => void) => void };
@@ -47,7 +49,9 @@ export type ConfigLayout = { wallet: string; manager: string; state: string };
 /**
  * Scrubs run after the migrations, on the current volumes and on the legacy one, on every
  * `setup migrate`. A task that removes a secret from the configuration appends a scrub here, so
- * the copy a rollback would restore is cleaned too. Each must be idempotent.
+ * the copy a rollback would restore is cleaned too. Each must be idempotent. Setup mounts the
+ * legacy volume read-only, so its own start skips the legacy half; `dpm-custody upgrade` runs
+ * migrate with the volume writable, which is where legacy gets scrubbed.
  */
 type Scrub = { name: string; run: (layout: ConfigLayout, say: (line: string) => void) => void };
 export const SCRUBS: readonly Scrub[] = [];
@@ -56,12 +60,23 @@ export const SCRUBS: readonly Scrub[] = [];
 export function runAll(dirs: MigrationDirs, say: (line: string) => void): void {
   runMigrations(dirs, say);
   const legacy: ConfigLayout = { wallet: dirs.legacy, manager: dirs.legacy, state: dirs.legacy };
+  const legacyWritable = dirs.legacyWritable ?? isWritable(dirs.legacy);
   for (const scrub of SCRUBS) {
     say(`[migrate] scrub ${scrub.name}`);
     scrub.run(dirs, (line) => say(`[migrate]   ${line}`));
-    scrub.run(legacy, (line) => say(`[migrate]   legacy: ${line}`));
+    if (legacyWritable) scrub.run(legacy, (line) => say(`[migrate]   legacy: ${line}`));
+    else say("[migrate]   legacy: read-only here, left for the upgrade's writable run");
   }
   sealLegacy(dirs);
+}
+
+function isWritable(dir: string): boolean {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sealLegacy(dirs: MigrationDirs): void {

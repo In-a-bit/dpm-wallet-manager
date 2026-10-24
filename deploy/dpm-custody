@@ -77,10 +77,10 @@ cmd_backup() {
   echo "Saving databases..."
   compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql" && [ -s "$dir/databases.sql" ] ||
     { backup_failed "$dir" "the databases"; return 1; }
-  echo "Saving configuration and keys..."
+  echo "Saving configuration and wallet data..."
   # Three volumes since the config split (config-wallet, config-manager, setup-state); an install
   # whose setup container still has the single /config volume is saved as it was.
-  compose exec -T setup sh -c 'if grep -q ' /config-wallet ' /proc/mounts; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi' >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
+  compose exec -T setup sh -c "if grep -q ' /config-wallet ' /proc/mounts; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi" >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
     { backup_failed "$dir" "the configuration"; return 1; }
   compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz" && [ -s "$dir/wallet-data.tar.gz" ] ||
     { backup_failed "$dir" "the wallet data"; return 1; }
@@ -745,12 +745,13 @@ cmd_upgrade() {
 
 # run_migrate brings the volumes up to the new layout (`setup migrate`): idempotent, and a no-op
 # on an install that is already there. Setup does the same whenever it starts, so this only makes
-# a failure show up here, before the new containers are created. The old setup worker is stopped
+# a failure show up here, before the new containers are created. The old config volume is mounted
+# writable for this run, so scrubs of secrets reach the copy a rollback would restore. The old setup worker is stopped
 # first so it cannot write to the old config volume while that is copied.
 run_migrate() {
   say "Preparing the configuration volumes ..."
   compose stop setup >>"${UPGRADE_LOG:-/dev/null}" 2>&1 || true
-  if ! compose run --rm --no-deps -T setup node dist/setup/main migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
+  if ! compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
     say "  ✕ Could not prepare the configuration volumes (details in upgrade.log)."
     return 1
   fi
