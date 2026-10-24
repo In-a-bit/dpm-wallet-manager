@@ -26,7 +26,12 @@ import type {
 
 /** The upstream error envelope, which this service translates rather than passes through. */
 type UpstreamEnvelope = {
-  error?: { code?: string; message?: string; details?: Record<string, unknown> };
+  error?: {
+    code?: string;
+    message?: string;
+    details?: Record<string, unknown>;
+    requestId?: string;
+  };
 };
 
 /**
@@ -261,13 +266,24 @@ export class DpmWalletClient {
     const code: ErrorCode =
       upstreamCode === undefined ? fallback : (CODE_MAP[upstreamCode] ?? fallback);
 
-    logWarn("upstream.rejected", { method, path, status, upstreamCode });
-    return new UpstreamError(code, envelope?.error?.message ?? `dpm-wallet returned ${status}`, {
+    // What dpm-wallet said (message, details) stays in our log: it can name Turnkey activities,
+    // addresses and other internals the caller has no business seeing. The caller gets our own
+    // wording, the upstream code, and dpm-wallet's request id to quote when asking for the log line.
+    logWarn("upstream.rejected", {
+      method,
+      path,
+      status,
+      upstreamCode,
+      upstreamMessage: envelope?.error?.message,
+      upstreamDetails: envelope?.error?.details,
+      upstreamRequestId: envelope?.error?.requestId,
+    });
+    return new UpstreamError(code, `dpm-wallet returned ${status}`, {
       ...(upstreamCode === undefined ? {} : { upstreamCode }),
       details: {
         upstream: upstreamCode ?? null,
         status,
-        ...(envelope?.error?.details ? { upstreamDetails: envelope.error.details } : {}),
+        ...(envelope?.error?.requestId ? { upstreamRequestId: envelope.error.requestId } : {}),
       },
     });
   }

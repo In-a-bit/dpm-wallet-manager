@@ -19,9 +19,10 @@ export async function liveStatus(
   store: SetupStateStore,
   urls: { walletUrl: string; managerUrl: string },
 ): Promise<{ checks: HealthCheck[] }> {
-  const adminKey = store.load().secrets?.adminKey;
+  const { adminKey, walletApiKey } = store.load().secrets ?? {};
   const [wallet, platform] = await Promise.all([
-    fetchBody<WalletHealth>(http, `${urls.walletUrl}/v1/health`),
+    // dpm-wallet answers only {status} to a caller without its key; the vault detail needs it.
+    fetchBody<WalletHealth>(http, `${urls.walletUrl}/v1/health`, walletApiKey),
     fetchBody<PlatformStatus>(http, `${urls.managerUrl}/v1/platform`, adminKey),
   ]);
   return {
@@ -34,7 +35,12 @@ export async function liveStatus(
       {
         label: "Key vault",
         ok: Boolean(wallet?.vault?.initialized && wallet.vault.ready),
-        detail: wallet?.vault?.ready === false ? "cannot reach the key provider" : undefined,
+        detail:
+          wallet?.vault === undefined && wallet?.status === "ok"
+            ? "vault status unavailable (wallet key not on hand)"
+            : wallet?.vault?.ready === false
+              ? "cannot reach the key provider"
+              : undefined,
       },
       {
         label: "Wallet manager",
