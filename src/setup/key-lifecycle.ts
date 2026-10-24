@@ -49,9 +49,19 @@ export function removeBootstrapKey(managerDir: string): boolean {
   const text = fs.readFileSync(file, "utf8");
   const kept = text.split("\n").filter((line) => !line.startsWith(`${BOOTSTRAP_VAR}=`));
   if (kept.length === text.split("\n").length) return false;
-  const mode = fs.statSync(file).mode & 0o777;
-  fs.writeFileSync(file, kept.join("\n"), { mode });
-  fs.chmodSync(file, mode);
+  // Written beside it and renamed over it: a service reading the file never sees a half-written
+  // one, and a crash leaves the old file whole. Mode and owner are kept.
+  const stat = fs.statSync(file);
+  const mode = stat.mode & 0o777;
+  const temp = `${file}.tmp`;
+  fs.writeFileSync(temp, kept.join("\n"), { mode });
+  fs.chmodSync(temp, mode);
+  try {
+    fs.chownSync(temp, stat.uid, stat.gid);
+  } catch {
+    // Not permitted when not root and the owner differs; the file is already ours then.
+  }
+  fs.renameSync(temp, file);
   return true;
 }
 

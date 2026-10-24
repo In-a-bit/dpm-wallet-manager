@@ -502,6 +502,15 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   that a rollback would use: an upgrade does that itself, and `dpm-custody` does it at its first
   command if an older `dpm-custody` ran the upgrade). `dpm-custody cleanup-legacy` removes the old
   volume's contents altogether; do it once you are sure you will not roll back.
+
+  **If every admin key is lost.** In order of preference: (1) sign in to the admin dashboard as an
+  owner and reveal or create an admin key under API keys (an owner has admin rights there);
+  (2) if no owner password is known but an admin key is, create a new owner with
+  `POST /v1/ui-users`; (3) with neither, setting `DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY` again
+  does **not** help: the manager only seeds an admin key into an empty key table, and
+  `keys:bootstrap` refuses when keys exist but none is a usable admin. There is no supported
+  command for this case; tell the platform team, who can restore a backup taken while an owner
+  password was known, or repair the database by hand.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
   platform credential, so no platform-wide `APP_API_KEY` is handed out or configured. The
   platform accepts it without the app key only where an install needs it:

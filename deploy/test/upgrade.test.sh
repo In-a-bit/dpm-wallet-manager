@@ -85,7 +85,7 @@ case "$args" in
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
-  *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; exit 0 ;;
+  *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; [ -n "${OLD_IMAGE_SCRUB:-}" ] && exit 2; exit 0 ;;
   *"setup node dist/setup/main backup-recipient"*)
     [ -n "${SETUP_DOWN:-}" ] && { echo "service setup is not running" >&2; exit 1; }
     [ -n "${OLD_IMAGE:-}" ] && { echo "Unknown command" >&2; exit 2; }
@@ -599,6 +599,12 @@ check "22 a new installed version scrubs again" 'has "$d.events" "$SCRUB" && [ "
 d="$T/c22b"; make_install "$d" 1.1.0 0.2.0 1.1.0
 out="$(FAIL_SCRUB=1 run "$d" status)"; rc=$?
 check "22 a failing scrub never fails the command, and is retried next time" '[ ! -e "$d/.legacy-scrubbed" ]'
+d="$T/c22e"; make_install "$d" 1.1.0 0.2.0 1.1.0
+out="$(OLD_IMAGE_SCRUB=1 run "$d" status)"
+check "22 an image that does not know the command (exit 2) has nothing to scrub: stamped" '[ "$(cat "$d/.legacy-scrubbed")" = "1.1.0" ]'
+d="$T/c22f"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" upgrade --yes)"; out="$(run "$d" rollback)"; rc=$?
+check "22 a rollback removes the stamp: an older version may write the old volume again" '[ $rc -eq 0 ] && [ ! -e "$d/.legacy-scrubbed" ]'
 d="$T/c22c"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(run "$d" upgrade --yes)"; rc=$?
 check "22 the upgrade (writable migrate run) stamps the target version, so nothing runs twice" '[ $rc -eq 0 ] && [ "$(cat "$d/.legacy-scrubbed")" = "1.1.0" ]'

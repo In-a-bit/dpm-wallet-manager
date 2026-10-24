@@ -95,6 +95,8 @@ export class SetupService {
     this.deps.store.update((next) => {
       next.ownerCreated = true;
     });
+    this.remember();
+    dropSetupKeys(this.deps.store);
   }
 
   /**

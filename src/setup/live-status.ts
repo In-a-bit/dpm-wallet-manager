@@ -59,15 +59,17 @@ export async function liveStatus(
             ? `${platform.mode} mode`
             : "not responding",
       },
-      {
-        label: "Wallets",
-        ok: detailUnavailable ? true : Boolean(platform?.upstream?.reachable),
-        detail: detailUnavailable
-          ? "not checked"
-          : platform
-            ? `${platform.walletCount ?? 0} wallet(s)`
-            : undefined,
-      },
+      // Without the admin key there is nothing to read this from; a check that cannot be made is
+      // left out, not shown as passing.
+      ...(detailUnavailable
+        ? []
+        : [
+            {
+              label: "Wallets",
+              ok: Boolean(platform?.upstream?.reachable),
+              detail: platform ? `${platform.walletCount ?? 0} wallet(s)` : undefined,
+            },
+          ]),
     ],
   };
 }

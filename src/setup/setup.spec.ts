@@ -761,6 +761,18 @@ describe("SetupService owner login", () => {
     );
   });
 
+  it("forgets the setup keys when it finds the owner was created another way", async () => {
+    const stack = new FakeStack();
+    stack.owners.push({ username: "pre-existing", role: "owner", status: "active" });
+    const { service, deps } = await provisioned(stack);
+    service.acknowledgeBackup();
+    expect(deps.store.load().secrets?.adminKey).toBeDefined(); // no owner yet: still needed
+    await service.refreshOwnerStatus();
+    expect(deps.store.load().ownerCreated).toBe(true);
+    expect(deps.store.load().secrets?.adminKey).toBeUndefined();
+    expect(deps.store.load().operatorKey).toBeUndefined();
+  });
+
   it("notices an owner that already exists, so it does not ask again", async () => {
     const stack = new FakeStack();
     stack.owners.push({ username: "pre-existing", role: "owner", status: "active" });

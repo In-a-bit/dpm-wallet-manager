@@ -40,6 +40,7 @@ describe("removeBootstrapKey", () => {
     expect(removeBootstrapKey(dir)).toBe(true);
     expect(fs.readFileSync(file, "utf8")).toBe("PORT='3000'\nOTHER='kept'\n");
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(dir)).toEqual([MANAGER_ENV_FILE]); // no temp file left behind
     expect(removeBootstrapKey(dir)).toBe(false);
     expect(removeBootstrapKey(tempDir())).toBe(false);
   });
@@ -170,6 +171,37 @@ describe("the scrubs through setup migrate", () => {
     expect(JSON.parse(fs.readFileSync(stateFile, "utf8")).lastError).toBe(
       "newer than the legacy copy",
     );
+  });
+
+  it("scrub-legacy leaves the marker alone when the volume changed since the last copy", async () => {
+    const dirs = layout();
+    seedLegacy(dirs);
+    await runAll({ ...dirs, legacyWritable: false }, () => undefined);
+    // A rolled-back version wrote to the old volume after the last copy.
+    fs.appendFileSync(path.join(dirs.legacy, MANAGER_ENV_FILE), "ROLLED_BACK='yes'\n");
+    const lines: string[] = [];
+    scrubLegacy({ ...dirs, legacyWritable: true }, (line) => lines.push(line));
+    expect(lines.join("\n")).toContain("not re-sealed");
+    // So the next migrate copies the change instead of taking the volume for unchanged.
+    const again: string[] = [];
+    await runAll({ ...dirs, legacyWritable: false }, (line) => again.push(line));
+    expect(again.join("\n")).toContain("copied");
+    expect(fs.readFileSync(path.join(dirs.manager, MANAGER_ENV_FILE), "utf8")).toContain(
+      "ROLLED_BACK",
+    );
+  });
+
+  it("accepts both the volume before a scrub and after it, so a crash in between is no change", async () => {
+    const dirs = layout();
+    seedLegacy(dirs);
+    await runAll({ ...dirs, legacyWritable: false }, () => undefined);
+    const marker = path.join(dirs.state, ".legacy-migrated");
+    const pre = fs.readFileSync(marker, "utf8").trim();
+    // A scrub that wrote its plan and died before touching anything: marker "pre post", volume = pre.
+    fs.writeFileSync(marker, `${pre} ${"0".repeat(64)}`);
+    const lines: string[] = [];
+    await runAll({ ...dirs, legacyWritable: false }, (line) => lines.push(line));
+    expect(lines.join("\n")).toContain("already migrated");
   });
 
   it("scrub-legacy refuses a read-only legacy volume", () => {

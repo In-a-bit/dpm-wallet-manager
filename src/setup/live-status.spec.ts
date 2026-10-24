@@ -56,6 +56,7 @@ describe("liveStatus", () => {
     const manager = checks.find((c) => c.label === "Wallet manager");
     expect(manager?.ok).toBe(true);
     expect(manager?.detail).toMatch(/no longer keeps/);
+    expect(checks.find((c) => c.label === "Wallets")).toBeUndefined();
     expect(wallet.requests.some((r) => r.path === "/v1/platform")).toBe(false);
   });
 });

@@ -658,6 +658,9 @@ rollback_now() {
     say "  ✕ Docker could not start the previous version (details in upgrade.log)."
     return 1
   fi
+  # An older version now runs and may write the old config volume again, so the scrub of it that
+  # was stamped as done must be done again by the next command of a newer dpm-custody.
+  rm -f .legacy-scrubbed
   health_gate
 }
 
@@ -952,13 +955,16 @@ run_migrate() {
 # by an older dpm-custody, which never mounted that volume writable. It runs once per installed
 # version (stamp .legacy-scrubbed) at the first command of this dpm-custody, and never fails one.
 ensure_legacy_scrubbed() {
-  local ver stamp=.legacy-scrubbed
+  local ver rc stamp=.legacy-scrubbed
   ver="$(env_value DPM_CUSTODY_VERSION)"
   ver="${ver:-unknown}"
   [ "$(cat "$stamp" 2>/dev/null)" = "$ver" ] && return 0
-  if compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main scrub-legacy >/dev/null 2>&1; then
-    printf '%s\n' "$ver" >"$stamp"
-  fi
+  # Nothing writes the old volume while this runs: the running setup mounts it read-only, so there
+  # is no worker to stop. An image too old to know the command (exit 2) has nothing to scrub either,
+  # so that counts as done for this version.
+  rc=0
+  compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main scrub-legacy >/dev/null 2>&1 || rc=$?
+  case "$rc" in 0 | 2) printf '%s\n' "$ver" >"$stamp" ;; esac
   return 0
 }
 

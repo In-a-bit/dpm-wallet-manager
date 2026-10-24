@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
@@ -128,12 +129,53 @@ export function scrubLegacy(dirs: MigrationDirs, say: (line: string) => void): v
   if (!(dirs.legacyWritable ?? isWritable(dirs.legacy))) {
     throw new Error("The old config volume is mounted read-only.");
   }
+  // Seal only when the volume is exactly what the last copy saw. If it changed since (a rollback's
+  // version wrote to it), leave the marker alone so the next migrate copies that change.
+  const before = legacyFingerprint(dirs.legacy);
+  const sealed = sealedFingerprints(dirs).includes(before);
+  if (sealed) {
+    // Record where the scrub is going before doing it: a crash half way (before or after) is
+    // still a volume the marker knows, so it is never mistaken for a rollback's change.
+    writeMarker(dirs, [before, expectedAfterScrub(dirs.legacy)]);
+  }
   const legacy: ConfigLayout = { wallet: dirs.legacy, manager: dirs.legacy, state: dirs.legacy };
   for (const scrub of SCRUBS) {
     say(`scrub ${scrub.name}`);
     scrub.run(legacy, (line) => say(`  ${line}`));
   }
-  sealLegacy(dirs);
+  if (sealed) sealLegacy(dirs);
+  else
+    say(
+      "the old config volume changed since the last copy: not re-sealed, the next migrate copies it",
+    );
+}
+
+/** What the legacy volume will fingerprint as once every scrub has run, found out on a copy. */
+function expectedAfterScrub(legacyDir: string): string {
+  const copy = fs.mkdtempSync(path.join(os.tmpdir(), "dpm-legacy-scrub-"));
+  try {
+    for (const name of listFiles(legacyDir)) {
+      fs.copyFileSync(path.join(legacyDir, name), path.join(copy, name));
+    }
+    const layout: ConfigLayout = { wallet: copy, manager: copy, state: copy };
+    for (const scrub of SCRUBS) scrub.run(layout, () => undefined);
+    return legacyFingerprint(copy);
+  } finally {
+    fs.rmSync(copy, { recursive: true, force: true });
+  }
+}
+
+/** The fingerprints the marker accepts as "nothing changed": usually one, two during a scrub. */
+function sealedFingerprints(dirs: MigrationDirs): string[] {
+  const marker = path.join(dirs.state, DONE_MARKER);
+  if (!fs.existsSync(marker)) return [];
+  return fs.readFileSync(marker, "utf8").trim().split(/\s+/).filter(Boolean);
+}
+
+function writeMarker(dirs: MigrationDirs, fingerprints: string[]): void {
+  fs.writeFileSync(path.join(dirs.state, DONE_MARKER), fingerprints.join(" "), {
+    mode: OWNER_ONLY,
+  });
 }
 
 function isWritable(dir: string): boolean {
@@ -147,9 +189,7 @@ function isWritable(dir: string): boolean {
 
 function sealLegacy(dirs: MigrationDirs): void {
   if (listFiles(dirs.legacy).length === 0) return;
-  fs.writeFileSync(path.join(dirs.state, DONE_MARKER), legacyFingerprint(dirs.legacy), {
-    mode: OWNER_ONLY,
-  });
+  writeMarker(dirs, [legacyFingerprint(dirs.legacy)]);
 }
 
 /** sha256 over the names and contents of the legacy volume. */
@@ -174,8 +214,7 @@ function legacyFingerprint(dir: string): string {
 function splitConfigVolumes(dirs: MigrationDirs, say: (line: string) => void): void {
   const legacy = listFiles(dirs.legacy);
   if (legacy.length === 0) return say("nothing to migrate");
-  const marker = path.join(dirs.state, DONE_MARKER);
-  if (fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === legacyFingerprint(dirs.legacy)) {
+  if (sealedFingerprints(dirs).includes(legacyFingerprint(dirs.legacy))) {
     return say("already migrated");
   }
 
