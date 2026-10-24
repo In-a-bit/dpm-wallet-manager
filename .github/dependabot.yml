@@ -5,8 +5,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
-  # Dockerfile base image (pinned by digest).
+  # Dockerfile base image (pinned by digest). Node majors are moved by hand, to an LTS line
+  # together with .nvmrc and @types/node; Dependabot only refreshes the digest within the line.
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
