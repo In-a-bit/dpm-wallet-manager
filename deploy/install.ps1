@@ -146,7 +146,7 @@ function Test-ReleaseSignature {
     $q.X = $der[27..58]
     $q.Y = $der[59..90]
     $parameters = New-Object System.Security.Cryptography.ECParameters
-    $parameters.Curve = [System.Security.Cryptography.ECCurve]::CreateFromValue("1.2.840.10045.3.1.7")
+    $parameters.Curve = [System.Security.Cryptography.ECCurve+NamedCurves]::nistP256
     $parameters.Q = $q
     $data = [System.IO.File]::ReadAllBytes((Join-Path $Stage "SHA256SUMS"))
     $signature = ConvertFrom-DerSignature ([System.IO.File]::ReadAllBytes((Join-Path $Stage "SHA256SUMS.sig")))

@@ -422,6 +422,11 @@ variable. The other files are restored the same way, straight into the volume wi
 decrypted copy to disk (only when the platform team asks; the configuration is not restored
 routinely):
 
+A backup taken before the volume split holds a single top-level `config/` instead of `config-wallet/`,
+`config-manager/` and `state/`; restore that one into the old volume, which the setup service
+mounts read-only, so add a writable mount for it:
+`... run --rm --no-deps -T -v config:/config setup tar -C / -xzf -`.
+
 ```sh
 ./dpm-custody backup-open "$B/config.tar.gz.sealed" | \
   docker compose --env-file .env -f compose.yml run --rm --no-deps -T setup tar -C / -xzf -
@@ -1104,6 +1109,7 @@ two real Postgres containers on a throwaway volume (and needs the images pulled)
 ```sh
 bash deploy/test/install.test.sh     # install.sh: checksums and signatures, options (name, port), re-runs
 bash deploy/test/upgrade.test.sh     # dpm-custody upgrade and rollback, every failure path
+bash deploy/test/try-install.test.sh     # try-install.sh and smoke.sh: secrets off the command line, platform URL rules
 bash deploy/test/postgres-switch.test.sh   # real Docker: Alpine volume -> pinned Debian Postgres -> setup migrate repairs the indexes
 
 # install.ps1, under PowerShell 7 in a container (or `pwsh -File …` where PowerShell is installed)

@@ -141,7 +141,7 @@ verify_files() {
   verify_signature
   : >"$STAGE/SHA256SUMS.use"
   for f in "$@"; do
-    line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"
+    line="$(awk -v f="$f" 'NF == 2 && length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ { n = $2; sub(/^\*/, "", n); if (n == f) { print; exit } }' "$STAGE/SHA256SUMS" || true)"
     [ -n "$line" ] || fail "SHA256SUMS has no entry for $f. Nothing was installed."
     printf '%s\n' "$line" >>"$STAGE/SHA256SUMS.use"
   done

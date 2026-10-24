@@ -334,6 +334,10 @@ PY
     printf '#!/bin/sh\n[ "$2" = migrate ] && exit "${FAKE_MIGRATE_RC:-0}"\necho worker >"$T/state/worker"\n' >"$T/fakenode/node"
     sed -i "s|\$T|$T|g" "$T/fakenode/node"
     chmod +x "$T/fakenode/node"
+    # The start script's wait loop would leave an orphaned `sleep 3600` when `timeout` kills the
+    # shell; a short sleep in its place leaves nothing behind.
+    printf '#!/bin/sh\nexec /bin/sleep 0.2\n' >"$T/fakenode/sleep"
+    chmod +x "$T/fakenode/sleep"
     FAKE_MIGRATE_RC=1 PATH="$T/fakenode:$PATH" timeout 3 sh "$T/setup-start.sh" >/dev/null 2>&1; rc=$?
     if [ $rc -eq 124 ] && [ ! -e "$T/state/.migrated" ] && [ ! -e "$T/state/worker" ]; then
       ok "compose: a failed migration keeps setup running, unhealthy"
