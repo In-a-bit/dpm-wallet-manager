@@ -47,8 +47,9 @@ case "$args" in
     if [ -n "${out:-}" ]; then printf '%s\n' "$out"; else printf 'postgres\ndpm-wallet\ndpm-wallet-manager\nsetup\n'; fi ;;
   *" ps "*"--format json"*)
     n=$(grep -c ' up -d' "$EVENTS")
-    if [ -n "${HUP_PIDFILE:-}" ] && [ "$n" -ge 1 ] && [ ! -e "$HUP_PIDFILE.sent" ]; then
-      : >"$HUP_PIDFILE.sent"; kill -HUP "$(cat "$HUP_PIDFILE")"
+    # mkdir claims the one-time signal atomically, so two polls at once cannot both send it.
+    if [ -n "${HUP_PIDFILE:-}" ] && [ "$n" -ge 1 ] && mkdir "$HUP_PIDFILE.sent" 2>/dev/null; then
+      kill -HUP "$(cat "$HUP_PIDFILE")" 2>/dev/null || true
     fi
     st=$(echo "${HEALTH_BY_UP:-healthy}" | awk -v i=$((n + 1)) '{ if (i > NF) i = NF; print $i }')
     mh=healthy; [ "$st" = unhealthy ] && mh=unhealthy
@@ -412,7 +413,13 @@ check "8d a good upgrade leaves no stash" '[ $rc -eq 0 ] && [ -z "$(ls -a "$d" |
 # 12p. rolling back across the Postgres image change (Debian -> Alpine): the collation record is
 # forgotten while the new setup container still exists, the services stop, Postgres is restarted
 # alone on the Alpine image, EVERY connectable database is reindexed, and only then does the stack start
-alpine_install() { make_install "$1" 1.0.0 0.1.0 1.0.0; echo "# postgres-alpine" >>"$1/compose.yml"; for f in compose.yml; do cp "$1/$f" "$1.orig.$f"; done; }
+# The installed dpm-custody doubles as the v0.2.2 stand-in: a working copy marked so a test can tell
+# whether it or the release's script is installed (a real v0.2.2 `start` is a bare `up -d`).
+alpine_install() {
+  make_install "$1" 1.0.0 0.1.0 1.0.0
+  echo "# postgres-alpine" >>"$1/compose.yml"; echo "# stand-in-for-v0.2.2" >>"$1/dpm-custody"
+  for f in compose.yml dpm-custody; do cp "$1/$f" "$1.orig.$f"; done
+}
 d="$T/c12p"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"
 out="$(run "$d" rollback)"; rc=$?
@@ -426,6 +433,7 @@ d="$T/c12r"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"
 out="$(FAIL_REINDEX=1 run "$d" rollback)"; rc=$?
 check "12p a failed reindex stops the rollback: services stay stopped, restore steps printed, misleading wording gone" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not rebuild" && echo "$out" | grep -q "services are stopped" && ! echo "$out" | grep -q "touched by the rollback\.$" && [ "$(grep -c " up -d$" "$d.events")" -eq 0 ]'
+check "12r on a failed reindex the installed dpm-custody is still the release's (it can finish the job), not the v0.2.2 stand-in" '! grep -q "stand-in-for-v0.2.2" "$d/dpm-custody" && [ -f "$d/dpm-custody.prev" ] && grep -q "stand-in-for-v0.2.2" "$d/dpm-custody.prev"'
 check "12r a failed reindex leaves the intent on disk (owner-only)" '[ -f "$d/.reindex-pending" ] && [ "$(mode_of "$d/.reindex-pending")" = "-rw-------" ]'
 out="$(run "$d" upgrade --yes)"; rc=$?
 check "12r upgrade refuses while a reindex is owed, and changes nothing" '[ $rc -ne 0 ] && echo "$out" | grep -q "did not finish rebuilding" && echo "$out" | grep -q "./dpm-custody start"'
@@ -436,6 +444,7 @@ check "12r start finishes the owed rebuild first: services stopped, postgres alo
 d="$T/c12t"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"; out="$(FAIL_REINDEX=1 run "$d" rollback)"
 out="$(run "$d" rollback)"; rc=$?
+check "12t and once the rebuild is done the v0.2.2 stand-in is the installed dpm-custody again" 'grep -q "stand-in-for-v0.2.2" "$d/dpm-custody"'
 check "12t re-running the rollback after an interrupted reindex reindexes again (musl vs musl is not taken for 'nothing to do')" '[ $rc -eq 0 ] && has "$d.events" "REINDEX DATABASE dpm_wallet_manager" && [ ! -e "$d/.reindex-pending" ]'
 d="$T/c12u"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"; cp "$d/compose.yml" "$T/c12u.before"; cp "$d/.env" "$T/c12u.env.before"

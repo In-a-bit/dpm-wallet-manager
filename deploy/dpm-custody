@@ -587,7 +587,7 @@ fetch_release() {
   verify_signature
   : >"$STAGE/SHA256SUMS.use"
   for f in compose.yml versions.env dpm-custody; do
-    line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"
+    line="$(awk -v f="$f" 'NF == 2 && length($1) == 64 && $1 ~ /^[0-9a-fA-F]+$/ { n = $2; sub(/^\*/, "", n); if (n == f) { print; exit } }' "$STAGE/SHA256SUMS" || true)"
     [ -n "$line" ] || stop_unchanged "SHA256SUMS has no entry for $f."
     printf '%s\n' "$line" >>"$STAGE/SHA256SUMS.use"
   done
@@ -675,7 +675,10 @@ unstash_prev() {
 
 # restore_prev puts the *.prev files back. In .env only the image tags and DPM_CUSTODY_VERSION
 # go back to their .env.prev values (a key .env.prev did not have is removed); any other edit to
-# .env since the upgrade is kept. dpm-custody goes back last.
+# .env since the upgrade is kept. dpm-custody goes back last, unless the caller asks to keep this
+# one (--keep-script) and puts the old one back itself with put_back_script: a rollback that still
+# owes a text-index rebuild must keep the dpm-custody that knows how to finish it (`start` of the
+# old script is a bare `up -d`).
 restore_prev() {
   local k v
   install_file compose.yml.prev compose.yml 644 || return 1
@@ -693,8 +696,10 @@ restore_prev() {
       unset_env "$k" || return 1
     fi
   done
-  install_file dpm-custody.prev dpm-custody 755 || return 1
+  [ "${1:-}" = --keep-script ] || put_back_script
 }
+
+put_back_script() { install_file dpm-custody.prev dpm-custody 755; }
 
 latest_backup() { ls -1d backups/[0-9]*/ 2>/dev/null | grep -v -- '-incomplete/$' | tail -n 1 | sed 's|/$||'; }
 
@@ -749,7 +754,7 @@ rollback_now() {
       return 1
     }
   fi
-  if ! restore_prev; then
+  if ! restore_prev --keep-script; then
     say "  ✕ Could not put the previous files back (see the message above)."
     return 1
   fi
@@ -766,6 +771,8 @@ rollback_now() {
       return 1
     fi
   fi
+  # Only now, with nothing left owed, the previous dpm-custody comes back.
+  put_back_script || { say "  ✕ Could not put the previous dpm-custody back."; return 1; }
   if ! compose up -d >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
     say "  ✕ Docker could not start the previous version (details in upgrade.log)."
     return 1
@@ -799,7 +806,8 @@ finish_pending_reindex() {
   if ! reindex_all_databases; then
     say "  ✕ Could not rebuild the databases' text indexes (details in ${UPGRADE_LOG:-reindex.log}). The services are stopped"
     say "    on purpose: they must not run on wrongly ordered indexes. Fix the cause, then run ./dpm-custody start,"
-    say "    which finishes the rebuild first. ($(pwd)/$REINDEX_PENDING records that it is owed.)"
+    say "    which finishes the rebuild first, and ./dpm-custody rollback again to complete the rollback."
+    say "    ($(pwd)/$REINDEX_PENDING records that the rebuild is owed.)"
     return 1
   fi
   rm -f "$REINDEX_PENDING"
