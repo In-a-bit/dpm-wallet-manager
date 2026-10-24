@@ -15,7 +15,7 @@ import {
   type IdempotencyRecord,
 } from "../../db/repositories/idempotency.repo";
 import { ManagerError } from "../../errors";
-import { ACTOR_PROPERTY, type AuthenticatedRequest } from "../actor";
+import { ACTOR_PROPERTY, actorScope, type AuthenticatedRequest } from "../actor";
 import { IDEMPOTENT_METADATA } from "../decorators/api-idempotency.decorator";
 
 export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
@@ -61,7 +61,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const key = request.header(IDEMPOTENCY_KEY_HEADER)?.trim();
     const actor = request[ACTOR_PROPERTY];
     if (!key || !actor) return next.handle();
-    const actorId = actor.keyId ?? `user:${actor.userId}`;
+    const actorId = actorScope(actor);
 
     // Hashed from the raw body: pipes transform the handler's argument, not the request, so
     // this sees exactly what the client sent, as the Express middleware did.

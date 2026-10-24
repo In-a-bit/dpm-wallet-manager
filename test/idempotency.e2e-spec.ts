@@ -78,4 +78,51 @@ describe("idempotency", () => {
     await repo.save("a", "old", { requestHash: "h2", responseJson: "{}" }, now.toISOString());
     expect((await repo.find("a", "old", now))?.requestHash).toBe("h2");
   });
+
+  it("forwards a key scoped to the actor, so dpm-wallet cannot replay one actor's response to another", async () => {
+    const before = harness.upstream.requests.length;
+    await sign(harness.adminKey, "fwd-key");
+    await sign(harness.operatorKey, "fwd-key");
+    const sent = harness.upstream.requests
+      .slice(before)
+      .filter((request) => request.path === "/v1/sign/order")
+      .map((request) => request.headers["idempotency-key"]);
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatch(/^[0-9a-f]{16}:fwd-key:order$/);
+    expect(sent[1]).toMatch(/^[0-9a-f]{16}:fwd-key:order$/);
+    expect(sent[0]).not.toBe(sent[1]);
+  });
+
+  describe("across a key rotation", () => {
+    const rotatedOperator = async (name: string) => {
+      const created = (await harness.post("/v1/api-keys", { body: { role: "operator", name } }))
+        .body;
+      const rotation = await harness.post(`/v1/api-keys/${created.id}/rotate`, {
+        body: { graceSeconds: 3600 },
+      });
+      return { before: created.key as string, after: rotation.body.created.key as string };
+    };
+
+    it("replays a retry made with the replacement credential", async () => {
+      const { before, after } = await rotatedOperator("rot-replay");
+      const first = await sign(before, "rot-key");
+      const retry = await sign(after, "rot-key");
+      expect(retry.status).toBe(200);
+      expect(retry.body).toEqual(first.body);
+    });
+
+    it("merges the operation and reuses the upstream key even when the stored replay is gone", async () => {
+      const { before, after } = await rotatedOperator("rot-merge");
+      const first = await sign(before, "rot-merge-key");
+      await harness.db.query(`DELETE FROM idempotency_keys`);
+      const upstreamBefore = harness.upstream.requests.length;
+      const retry = await sign(after, "rot-merge-key");
+      expect(retry.body.operationId).toBe(first.body.operationId);
+      const sent = harness.upstream.requests
+        .slice(upstreamBefore)
+        .filter((request) => request.path === "/v1/sign/order")
+        .map((request) => request.headers["idempotency-key"]);
+      expect(sent).toHaveLength(1);
+    });
+  });
 });

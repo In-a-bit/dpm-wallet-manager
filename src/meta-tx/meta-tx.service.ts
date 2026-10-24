@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
 
 import { DpmWalletClient } from "../clients/dpm-wallet.client";
-import type { Actor } from "../common/actor";
+import { forwardedKey, type Actor } from "../common/actor";
 import { OperationRepository } from "../db/repositories/operation.repo";
 import { validationFailed } from "../errors";
 import { AuditLog } from "../observability/audit";
@@ -62,7 +62,7 @@ export class MetaTxService {
         ...(args.amountDecimal === undefined ? {} : { amountDecimal: args.amountDecimal }),
         ...(recipient === undefined ? {} : { recipient }),
       },
-      idempotencyKey ? { idempotencyKey: `${idempotencyKey}:${kind}` } : {},
+      idempotencyKey ? { idempotencyKey: forwardedKey(actor, idempotencyKey, kind) } : {},
     );
 
     // A replayed signature (same idempotency key) is the same operation, not a second one;

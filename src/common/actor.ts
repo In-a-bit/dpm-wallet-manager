@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { createParamDecorator, type ExecutionContext } from "@nestjs/common";
 import type { Request } from "express";
 
@@ -19,7 +21,31 @@ export type Actor = {
   /** The non-secret handle, safe to log and to echo back: a key prefix, or `user:<username>`. */
   prefix: string;
   name: string;
+  /**
+   * The first key of this key's rotation chain, so a credential and its replacements count as one
+   * caller for idempotency. Unset for a UI user, and when the key was never rotated.
+   */
+  lineageId?: string;
 };
+
+/** Who an idempotency key belongs to: the rotation root, else the key id, else `user:<id>`. */
+export function actorScope(actor: Pick<Actor, "keyId" | "userId" | "lineageId">): string {
+  return actor.lineageId ?? actor.keyId ?? `user:${actor.userId}`;
+}
+
+/**
+ * The key sent to dpm-wallet for one upstream call. dpm-wallet replays a stored response to
+ * anyone presenting the same key, so the caller's scope is part of it: another actor reusing a key
+ * must not be handed this one's signature (or have its own transfer silently skipped).
+ */
+export function forwardedKey(
+  actor: Pick<Actor, "keyId" | "userId" | "lineageId">,
+  key: string,
+  suffix: string,
+): string {
+  const scope = createHash("sha256").update(actorScope(actor), "utf8").digest("hex").slice(0, 16);
+  return `${scope}:${key}:${suffix}`;
+}
 
 /** The property the guard writes and `@CurrentActor()` reads. */
 export const ACTOR_PROPERTY = "actor";

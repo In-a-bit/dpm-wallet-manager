@@ -109,7 +109,8 @@ export const ERROR_DESCRIPTIONS: Record<ErrorCode, string> = {
     "This Idempotency-Key was already used for a different request: another route, another " +
     "wallet, or a different body.",
   UPSTREAM_UNAVAILABLE:
-    "dpm-wallet could not be reached, or answered with a server error. Safe to retry.",
+    "dpm-wallet could not be reached, answered with a server error, or is still executing an " +
+    "earlier attempt with this key. Safe to retry.",
   UPSTREAM_REJECTED:
     "dpm-wallet refused the request. `details.upstream` carries its own error code.",
   BALANCES_UNAVAILABLE:

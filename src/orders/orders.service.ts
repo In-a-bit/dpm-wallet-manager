@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { Injectable } from "@nestjs/common";
 
 import { DpmWalletClient } from "../clients/dpm-wallet.client";
-import type { Actor } from "../common/actor";
+import { forwardedKey, type Actor } from "../common/actor";
 import { OperationRepository } from "../db/repositories/operation.repo";
 import type { ReadyWallet } from "../db/repositories/wallet.repo";
 import { AuditLog } from "../observability/audit";
@@ -71,7 +71,7 @@ export class OrdersService {
         // Omitted rather than sent as the zero address, so the request says what it means.
         ...(routing.recipient === undefined ? {} : { recipient: routing.recipient }),
       },
-      idempotencyKey ? { idempotencyKey: `${idempotencyKey}:order` } : {},
+      idempotencyKey ? { idempotencyKey: forwardedKey(actor, idempotencyKey, "order") } : {},
     );
 
     const operationId = await this.record({
@@ -136,7 +136,7 @@ export class OrdersService {
     const signer = await this.cancelSigner(wallet, orderHash);
     const signed = await this.upstream.signCancel(
       { ref: signer.ref, orderHash, marketId },
-      idempotencyKey ? { idempotencyKey: `${idempotencyKey}:cancel` } : {},
+      idempotencyKey ? { idempotencyKey: forwardedKey(actor, idempotencyKey, "cancel") } : {},
     );
 
     const operationId = await this.record({

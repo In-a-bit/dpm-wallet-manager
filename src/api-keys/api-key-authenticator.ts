@@ -21,6 +21,9 @@ const TOUCH_INTERVAL_MS = 60_000;
  * Separate from `ApiKeyGuard` so the guard stays a thin piece of Nest plumbing and this — the
  * part with the security properties — can be tested without an HTTP context.
  */
+/** A chain is a handful of rotations; the cap only guards against a corrupted cycle. */
+const MAX_ROTATION_DEPTH = 50;
+
 @Injectable()
 export class ApiKeyAuthenticator {
   private readonly lastTouched = new Map<string, number>();
@@ -53,7 +56,9 @@ export class ApiKeyAuthenticator {
     if (isExpired(stored)) throw await this.reject("expired", parsed.prefix, context);
 
     void this.touch(stored.id);
+    const lineageId = await this.rotationRoot(stored);
     return {
+      ...(lineageId === stored.id ? {} : { lineageId }),
       keyId: stored.id,
       userId: null,
       username: null,
@@ -61,6 +66,17 @@ export class ApiKeyAuthenticator {
       prefix: stored.prefix,
       name: stored.name,
     };
+  }
+
+  /** The first key of the rotation chain this key belongs to (itself when never rotated). */
+  private async rotationRoot(key: { id: string; rotatedFromId: string | null }): Promise<string> {
+    let current = key;
+    for (let depth = 0; depth < MAX_ROTATION_DEPTH && current.rotatedFromId; depth++) {
+      const parent = await this.keys.findById(current.rotatedFromId);
+      if (!parent) return current.rotatedFromId;
+      current = parent;
+    }
+    return current.id;
   }
 
   /**

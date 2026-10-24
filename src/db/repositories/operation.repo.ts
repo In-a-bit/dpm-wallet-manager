@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { IsNull, type Repository } from "typeorm";
+import { In, IsNull, type Repository } from "typeorm";
 
 import {
   decodeCursor,
@@ -100,14 +100,16 @@ export class OperationRepository {
    */
   async insertOrGet(operation: NewOperation): Promise<string> {
     if (operation.idempotencyKey) {
+      const keyIds = operation.apiKeyId ? await this.rotationFamily(operation.apiKeyId) : undefined;
       const existing = await this.operations.findOne({
         where: {
           idempotencyKey: operation.idempotencyKey,
           kind: operation.kind,
           signerWalletId: operation.signerWalletId,
           requestHash: operation.requestHash,
-          // The same actor's retry: another caller reusing a key is a different action.
-          apiKeyId: operation.apiKeyId ?? IsNull(),
+          // The same actor's retry (a rotated key is the same actor): another caller reusing a key
+          // is a different action.
+          apiKeyId: keyIds ? In(keyIds) : IsNull(),
           uiUserId: operation.uiUserId ?? IsNull(),
         },
         order: { createdAt: "ASC" },
@@ -116,6 +118,24 @@ export class OperationRepository {
     }
     await this.operations.insert(operation);
     return operation.id;
+  }
+
+  /** Every key of the rotation chain `keyId` belongs to: its root and everything rotated from it. */
+  private async rotationFamily(keyId: string): Promise<string[]> {
+    const rows: { id: string }[] = await this.operations.query(
+      `WITH RECURSIVE up AS (
+         SELECT id, rotated_from_id FROM api_keys WHERE id = $1
+         UNION ALL
+         SELECT k.id, k.rotated_from_id FROM api_keys k JOIN up ON k.id = up.rotated_from_id
+       ), down AS (
+         SELECT id FROM up u WHERE NOT EXISTS (SELECT 1 FROM api_keys p WHERE p.id = u.rotated_from_id)
+         UNION ALL
+         SELECT k.id FROM api_keys k JOIN down ON k.rotated_from_id = down.id
+       )
+       SELECT id FROM down`,
+      [keyId],
+    );
+    return rows.length > 0 ? rows.map((row) => row.id) : [keyId];
   }
 
   /**

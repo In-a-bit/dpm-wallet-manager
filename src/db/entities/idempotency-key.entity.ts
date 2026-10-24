@@ -10,10 +10,10 @@ import { isoTimestamp } from "../iso-timestamp";
 @Entity("idempotency_keys")
 export class IdempotencyKeyEntity {
   /** The API key id, or `user:<id>` for a signed-in UI user. */
-  @PrimaryColumn("text")
+  @PrimaryColumn("text", { primaryKeyConstraintName: "PK_idempotency_keys_actor_key" })
   actor!: string;
 
-  @PrimaryColumn("text")
+  @PrimaryColumn("text", { primaryKeyConstraintName: "PK_idempotency_keys_actor_key" })
   key!: string;
 
   @Column("text", { name: "request_hash" })

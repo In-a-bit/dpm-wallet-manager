@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 
 import { DpmWalletClient } from "../clients/dpm-wallet.client";
 import type { UpstreamRelayTransaction } from "../clients/dpm-wallet.types";
-import type { Actor } from "../common/actor";
+import { forwardedKey, type Actor } from "../common/actor";
 import { OperationRepository } from "../db/repositories/operation.repo";
 import { internalError, ManagerError } from "../errors";
 import { WalletsService } from "../wallets/wallets.service";
@@ -44,7 +44,7 @@ export class TransfersService {
     // retry after a crash replays both the signature and the relay instead of submitting twice.
     const relayed = await this.upstream.relay(
       signed,
-      idempotencyKey ? { idempotencyKey: `${idempotencyKey}:relay` } : {},
+      idempotencyKey ? { idempotencyKey: forwardedKey(actor, idempotencyKey, "relay") } : {},
     );
     const relayerTransactionId = transactionId(relayed);
     if (!relayerTransactionId) {

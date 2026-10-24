@@ -75,7 +75,9 @@ describe("TransfersService.transfer", () => {
 
     expect(relayBodies).toHaveLength(2);
     expect(relayBodies[1]).toBe(relayBodies[0]);
-    expect(relayKeys).toEqual(["k1:relay", "k1:relay"]);
+    // Scoped to the actor, and identical across the retry.
+    expect(relayKeys[0]).toMatch(/^[0-9a-f]{16}:k1:relay$/);
+    expect(relayKeys).toEqual([relayKeys[0], relayKeys[0]]);
     expect(second.relayerTransactionId).toBe("tx-1");
     expect(operations.setRelayerTransactionId).toHaveBeenLastCalledWith("op-101", "tx-1");
   });
