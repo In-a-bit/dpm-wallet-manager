@@ -316,9 +316,9 @@ stops the upgrade with the install running as before:
 6. Keeps the current `compose.yml`, `versions.env`, `.env` and `dpm-custody` as `*.prev`
    (readable only by you).
 7. Switches: puts the new files in place, sets the new image tags and `DPM_CUSTODY_VERSION` in
-   `.env`, prepares the configuration volumes (`setup migrate`, safe to repeat; it copies an
-   older install's single `config` volume into the new ones and keeps the old one), and
-   restarts. Database changes run as each service starts.
+   `.env`, stops the old setup worker, prepares the configuration volumes (`setup migrate`, safe to
+   repeat; it copies an older install's single `config` volume into the new ones and keeps the
+   old one), and restarts. Database changes run as each service starts.
 8. Waits up to 5 minutes (see below) for every service to be healthy. If they are, it removes
    this install's older images (other than the new and previous ones) and is done. If not, it
    rolls back by itself (below) and tells you where the backup is.
@@ -435,9 +435,11 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   setup), each file readable by its owner only. Setup keeps its own state in `setup-state`,
   mounted by setup alone, plus `setup-journal.jsonl`, a masked log of every step, which the
   support report includes. So the manager cannot read dpm-wallet's configuration, and neither
-  service can read setup's state. Older versions used one `config` volume; an upgrade copies it
-  across (the `migrate` service) and keeps it so a rollback still works, until you run
-  `dpm-custody cleanup-legacy`. It gets the platform values from dpm-api
+  service can read setup's state. Older versions used one `config` volume. Setup copies it across
+  whenever it starts (an upgrade also does it up front), and keeps it so a rollback still works;
+  `dpm-custody cleanup-legacy` empties it. A version from before the split uses that old volume,
+  which can be out of date after a rollback; upgrading again copies any change across. Setup
+  gets the platform values from dpm-api
   `GET /wallet-install/config`, authenticated with the builder key, and generates every other
   secret itself.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only

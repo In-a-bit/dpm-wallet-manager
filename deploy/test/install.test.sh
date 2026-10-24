@@ -194,13 +194,19 @@ for name, s in svc.items():
     for v in s.get("volumes", []):
         users.setdefault(v["source"], set()).add(name)
 want = {
-    "config-wallet": {"dpm-wallet", "setup", "migrate"},
-    "config-manager": {"dpm-wallet-manager", "setup", "migrate"},
-    "setup-state": {"setup", "migrate"},
-    "config": {"migrate"},
+    "config-wallet": {"dpm-wallet", "setup"},
+    "config-manager": {"dpm-wallet-manager", "setup"},
+    "setup-state": {"setup"},
+    "config": {"setup"},
 }
 bad = {k: users.get(k) for k, v in want.items() if users.get(k) != v}
-sys.exit(1 if bad else 0)
+# Every service is long-running: the old dpm-custody that performs an upgrade requires each
+# service of the new compose.yml to be running, so a one-shot would fail its health gate.
+oneshot = [n for n, s in svc.items() if s.get("restart") != "unless-stopped"]
+# The services that read the volumes start only once setup has migrated them.
+waits = [n for n in ("dpm-wallet", "dpm-wallet-manager")
+         if svc[n]["depends_on"].get("setup", {}).get("condition") != "service_healthy"]
+sys.exit(1 if bad or oneshot or waits or "healthcheck" not in svc["setup"] else 0)
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -32,19 +33,70 @@ export function runMigrations(dirs: MigrationDirs, say: (line: string) => void):
   }
 }
 
-/** Written to the state volume once everything is copied; its presence means "done". */
+/**
+ * Written to the state volume once everything is copied. It holds a fingerprint of the legacy
+ * volume as it was then, so a rollback that lets an older version write there again is noticed
+ * and copied again on the next upgrade.
+ */
 const DONE_MARKER = ".legacy-migrated";
 const OWNER_ONLY = 0o600;
+
+/** The three places a configuration lives; the legacy volume holds all of them in one folder. */
+export type ConfigLayout = { wallet: string; manager: string; state: string };
+
+/**
+ * Scrubs run after the migrations, on the current volumes and on the legacy one, on every
+ * `setup migrate`. A task that removes a secret from the configuration appends a scrub here, so
+ * the copy a rollback would restore is cleaned too. Each must be idempotent.
+ */
+type Scrub = { name: string; run: (layout: ConfigLayout, say: (line: string) => void) => void };
+export const SCRUBS: readonly Scrub[] = [];
+
+/** The migrations, then the scrubs, then the legacy fingerprint (last, so a crash re-copies). */
+export function runAll(dirs: MigrationDirs, say: (line: string) => void): void {
+  runMigrations(dirs, say);
+  const legacy: ConfigLayout = { wallet: dirs.legacy, manager: dirs.legacy, state: dirs.legacy };
+  for (const scrub of SCRUBS) {
+    say(`[migrate] scrub ${scrub.name}`);
+    scrub.run(dirs, (line) => say(`[migrate]   ${line}`));
+    scrub.run(legacy, (line) => say(`[migrate]   legacy: ${line}`));
+  }
+  sealLegacy(dirs);
+}
+
+function sealLegacy(dirs: MigrationDirs): void {
+  if (listFiles(dirs.legacy).length === 0) return;
+  fs.writeFileSync(path.join(dirs.state, DONE_MARKER), legacyFingerprint(dirs.legacy), {
+    mode: OWNER_ONLY,
+  });
+}
+
+/** sha256 over the names and contents of the legacy volume. */
+function legacyFingerprint(dir: string): string {
+  const hash = createHash("sha256");
+  for (const name of listFiles(dir).sort()) {
+    hash
+      .update(`${name}\0`)
+      .update(fs.readFileSync(path.join(dir, name)))
+      .update("\0");
+  }
+  return hash.digest("hex");
+}
 
 /**
  * Copies the old single `config` volume into the three new ones: each service's env file and
  * `ready` go to its own volume, everything else (setup's state, journal, retry request) to the
- * setup-state volume. The old volume is left as it is: a rollback needs it.
+ * setup-state volume. The old volume is left as it is: a rollback needs it. A legacy volume that
+ * has not changed since the last copy is skipped; one an older version wrote to since (after a
+ * rollback) is copied again.
  */
 function splitConfigVolumes(dirs: MigrationDirs, say: (line: string) => void): void {
   const legacy = listFiles(dirs.legacy);
   if (legacy.length === 0) return say("nothing to migrate");
-  if (fs.existsSync(path.join(dirs.state, DONE_MARKER))) return say("already migrated");
+  const marker = path.join(dirs.state, DONE_MARKER);
+  if (fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === legacyFingerprint(dirs.legacy)) {
+    return say("already migrated");
+  }
 
   const services: [string, string][] = [
     [WALLET_ENV_FILE, dirs.wallet],
@@ -62,9 +114,6 @@ function splitConfigVolumes(dirs: MigrationDirs, say: (line: string) => void): v
       if (legacy.includes(file)) copy(dirs.legacy, READY_MARKER, dir);
     }
   }
-  fs.writeFileSync(path.join(dirs.state, DONE_MARKER), new Date().toISOString(), {
-    mode: OWNER_ONLY,
-  });
   say(`copied ${legacy.length} file(s); the old config volume is kept until cleanup-legacy`);
 }
 

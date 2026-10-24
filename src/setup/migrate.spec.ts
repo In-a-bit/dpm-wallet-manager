@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
-import { cleanupLegacy, runMigrations, type MigrationDirs } from "./migrate";
+import { cleanupLegacy, runAll, SCRUBS, type MigrationDirs } from "./migrate";
 
 const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "dpm-migrate-"));
 const modeOf = (file: string) => fs.statSync(file).mode & 0o777;
@@ -25,7 +25,7 @@ function legacyInstall(dirs: MigrationDirs, finished = true): void {
 describe("setup migrate", () => {
   it("does nothing on a fresh install", () => {
     const dirs = volumes();
-    runMigrations(dirs, () => undefined);
+    runAll(dirs, () => undefined);
     expect(fs.readdirSync(dirs.wallet)).toEqual([]);
     expect(fs.readdirSync(dirs.state)).toEqual([]);
   });
@@ -33,7 +33,7 @@ describe("setup migrate", () => {
   it("splits the old config volume, each file owner-only, and leaves the old volume intact", () => {
     const dirs = volumes();
     legacyInstall(dirs);
-    runMigrations(dirs, () => undefined);
+    runAll(dirs, () => undefined);
 
     expect(fs.readdirSync(dirs.wallet).sort()).toEqual([READY_MARKER, WALLET_ENV_FILE].sort());
     expect(fs.readdirSync(dirs.manager).sort()).toEqual([MANAGER_ENV_FILE, READY_MARKER].sort());
@@ -51,7 +51,7 @@ describe("setup migrate", () => {
   it("copies no ready marker for a setup that never finished", () => {
     const dirs = volumes();
     legacyInstall(dirs, false);
-    runMigrations(dirs, () => undefined);
+    runAll(dirs, () => undefined);
     expect(fs.existsSync(path.join(dirs.wallet, READY_MARKER))).toBe(false);
     expect(fs.existsSync(path.join(dirs.manager, READY_MARKER))).toBe(false);
   });
@@ -59,12 +59,53 @@ describe("setup migrate", () => {
   it("is idempotent: a second run leaves later changes alone", () => {
     const dirs = volumes();
     legacyInstall(dirs);
-    runMigrations(dirs, () => undefined);
+    runAll(dirs, () => undefined);
     fs.writeFileSync(path.join(dirs.state, "setup-state.json"), '{"completedSteps":["x"]}');
     const lines: string[] = [];
-    runMigrations(dirs, (line) => lines.push(line));
+    runAll(dirs, (line) => lines.push(line));
     expect(fs.readFileSync(path.join(dirs.state, "setup-state.json"), "utf8")).toContain('"x"');
     expect(lines.join("\n")).toContain("already migrated");
+  });
+
+  it("copies again when an older version wrote to the legacy volume after a rollback", () => {
+    const dirs = volumes();
+    legacyInstall(dirs);
+    runAll(dirs, () => undefined);
+    fs.writeFileSync(path.join(dirs.legacy, MANAGER_ENV_FILE), "B='rolled-back'\n");
+    const lines: string[] = [];
+    runAll(dirs, (line) => lines.push(line));
+    expect(fs.readFileSync(path.join(dirs.manager, MANAGER_ENV_FILE), "utf8")).toBe(
+      "B='rolled-back'\n",
+    );
+    expect(lines.join("\n")).toContain("copied");
+    runAll(dirs, (line) => lines.push(line));
+    expect(lines.at(-1)).toContain("already migrated");
+  });
+
+  it("runs scrubs on the current volumes and on the legacy one, without forcing a re-copy", () => {
+    const dirs = volumes();
+    legacyInstall(dirs);
+    const seen: string[] = [];
+    (SCRUBS as unknown as unknown[]).push({
+      name: "test-scrub",
+      run: (layout: { manager: string }) => {
+        seen.push(layout.manager);
+        const file = path.join(layout.manager, MANAGER_ENV_FILE);
+        if (fs.existsSync(file)) fs.writeFileSync(file, "B='scrubbed'\n");
+      },
+    });
+    try {
+      runAll(dirs, () => undefined);
+      expect(seen).toEqual([dirs.manager, dirs.legacy]);
+      expect(fs.readFileSync(path.join(dirs.legacy, MANAGER_ENV_FILE), "utf8")).toBe(
+        "B='scrubbed'\n",
+      );
+      const lines: string[] = [];
+      runAll(dirs, (line) => lines.push(line));
+      expect(lines.join("\n")).toContain("already migrated");
+    } finally {
+      (SCRUBS as unknown as unknown[]).pop();
+    }
   });
 
   it("cleanup-legacy empties the old volume", () => {

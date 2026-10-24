@@ -5,7 +5,7 @@ import { MANAGER_PORT, WALLET_PORT, writeInstallConfig } from "./config-writer";
 import { fetchHttp } from "./http";
 import { excerpt, Journal } from "./journal";
 import { liveStatus } from "./live-status";
-import { cleanupLegacy, runMigrations } from "./migrate";
+import { cleanupLegacy, runAll } from "./migrate";
 import { SetupService } from "./setup-service";
 import { SetupStateStore } from "./state";
 import type { ProvisioningDeps, SetupHttp } from "./steps";
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   };
   switch (process.argv[2]) {
     case "migrate":
-      return runMigrations(dirs, say);
+      return runAll(dirs, say);
     case "cleanup-legacy":
       return cleanupLegacy(LEGACY_CONFIG_DIR, say);
   }

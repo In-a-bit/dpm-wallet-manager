@@ -80,7 +80,7 @@ cmd_backup() {
   echo "Saving configuration and keys..."
   # Three volumes since the config split (config-wallet, config-manager, setup-state); an install
   # whose setup container still has the single /config volume is saved as it was.
-  compose exec -T setup sh -c 'if [ -d /config-wallet ]; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi' >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
+  compose exec -T setup sh -c 'if grep -q ' /config-wallet ' /proc/mounts; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi' >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
     { backup_failed "$dir" "the configuration"; return 1; }
   compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz" && [ -s "$dir/wallet-data.tar.gz" ] ||
     { backup_failed "$dir" "the wallet data"; return 1; }
@@ -248,7 +248,6 @@ stack_healthy() {
   [ -n "$services" ] || return 1
   states="$(compose ps -a --format json 2>/dev/null | ps_states)" || return 1
   for svc in $services; do
-    [ "$svc" = migrate ] && continue # a one-shot: it exits once the volumes are ready
     lines="$(printf '%s\n' "$states" | awk -v s="$svc" '$1 == s')"
     [ -n "$lines" ] || return 1
     while read -r svc_ state health; do
@@ -262,7 +261,7 @@ stack_healthy() {
 # not_healthy_list prints the services that are not healthy, for messages.
 not_healthy_list() {
   compose ps -a --format json 2>/dev/null | ps_states |
-    awk '$1 == "migrate" { next } $2 != "running" || ($3 != "-" && $3 != "healthy") { printf "%s%s (%s%s)", sep, $1, $2, ($3 == "-" ? "" : ", " $3); sep = ", " }'
+    awk '$2 != "running" || ($3 != "-" && $3 != "healthy") { printf "%s%s (%s%s)", sep, $1, $2, ($3 == "-" ? "" : ", " $3); sep = ", " }'
 }
 
 # health_gate waits up to the health timeout (DPM_CUSTODY_HEALTH_TIMEOUT, default 300 s) for
@@ -745,18 +744,21 @@ cmd_upgrade() {
 }
 
 # run_migrate brings the volumes up to the new layout (`setup migrate`): idempotent, and a no-op
-# on an install that is already there. It runs in the new compose.yml's migrate service, before
-# the new containers are created.
+# on an install that is already there. Setup does the same whenever it starts, so this only makes
+# a failure show up here, before the new containers are created. The old setup worker is stopped
+# first so it cannot write to the old config volume while that is copied.
 run_migrate() {
   say "Preparing the configuration volumes ..."
-  if ! compose run --rm --no-deps -T migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
+  compose stop setup >>"${UPGRADE_LOG:-/dev/null}" 2>&1 || true
+  if ! compose run --rm --no-deps -T setup node dist/setup/main migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
     say "  ✕ Could not prepare the configuration volumes (details in upgrade.log)."
     return 1
   fi
 }
 
 # cmd_cleanup_legacy empties the single config volume that versions before the split used. Until
-# then it is kept, because rolling back to such a version needs it.
+# then it is kept, because rolling back to such a version needs it. The volume is mounted
+# read-only in setup, so this run mounts it writable.
 cmd_cleanup_legacy() {
   local answer
   if [ "${1:-}" != --yes ] && [ "${1:-}" != -y ]; then
@@ -766,7 +768,7 @@ cmd_cleanup_legacy() {
     read -r -p "Empty it now? [y/N] " answer || answer=""
     case "$answer" in y | Y | yes | YES | Yes) ;; *) echo "Cancelled."; return 0 ;; esac
   fi
-  compose run --rm --no-deps -T migrate node dist/setup/main cleanup-legacy
+  compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main cleanup-legacy
 }
 
 cmd_rollback() {
@@ -795,6 +797,9 @@ cmd_rollback() {
     rm -f "$MARKER"
     say ""
     say "  ✓ Rolled back to ${to:-the previous version}. Every service is healthy."
+    say "    Note: if that version is from before the configuration volume split, it runs from the"
+    say "    old config volume, which can be older than the current configuration or still hold"
+    say "    secrets that newer versions removed. Upgrading again copies any change back across."
     say ""
   else
     print_restore_steps

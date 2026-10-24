@@ -13,8 +13,10 @@
 # image creates), so 0600 lets the service that owns the volume read its file; no volume is shared
 # between two services, which is why distinct uids add nothing. The services pin `user:` so a
 # change of image user fails loudly (a permission error at boot) rather than silently.
-# `config` is the single volume older versions used. Only the `migrate` service mounts it; it is
-# copied across once and kept so a rollback still works, until `./dpm-custody cleanup-legacy`.
+# `config` is the single volume older versions used. Setup mounts it read-only and copies it across
+# when it starts; it is kept so a rollback still works, until `./dpm-custody cleanup-legacy`.
+# Migration is part of setup's start (not a separate one-shot service) because an upgrade is run by
+# the *old* dpm-custody, which requires every service in the new compose.yml to be running.
 #
 # Setup has no port: it is driven from a terminal with `./dpm-custody setup`, which runs inside
 # its container. The only port published is the wallet manager's API (3000), on loopback unless
@@ -96,9 +98,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # Creates the volume above with the right owner before this container can claim it.
-      migrate:
-        condition: service_completed_successfully
+      # Setup has migrated the volumes (and so created them with the right owner) by then.
+      setup:
+        condition: service_healthy
     stop_grace_period: 30s
 
   dpm-wallet-manager:
@@ -135,8 +137,8 @@ services:
         condition: service_healthy
       dpm-wallet:
         condition: service_started
-      migrate:
-        condition: service_completed_successfully
+      setup:
+        condition: service_healthy
     stop_grace_period: 30s
 
   # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a
@@ -145,7 +147,20 @@ services:
     <<: [*platform-host, *logging]
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
-    command: ["node", "dist/setup/main"]
+    # Migrate the volumes (idempotent; see src/setup/migrate.ts), mark it done, then run the worker.
+    # The marker is cleared first, so "healthy" always means this start has migrated.
+    command:
+      - sh
+      - -c
+      - |
+        rm -f /state/.migrated
+        node dist/setup/main migrate && : > /state/.migrated && exec node dist/setup/main
+    healthcheck:
+      test: ["CMD", "test", "-f", "/state/.migrated"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
     user: "100:101"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dpm}
@@ -155,26 +170,9 @@ services:
       - config-wallet:/config-wallet
       - config-manager:/config-manager
       - setup-state:/state
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-
-  # Runs `setup migrate` to completion before anything else uses the volumes: on an upgrade it
-  # copies the old single `config` volume into the three new ones; on a fresh install it does
-  # nothing. Idempotent, so it is safe on every `up`. `dpm-custody upgrade` also runs it by hand.
-  # It is the only service that mounts the legacy volume (read-write only so cleanup-legacy can
-  # empty it; migrate itself only reads).
-  migrate:
-    <<: *logging
-    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
-    restart: "no"
-    command: ["node", "dist/setup/main", "migrate"]
-    user: "100:101"
-    volumes:
-      - config:/legacy-config
-      - config-wallet:/config-wallet
-      - config-manager:/config-manager
-      - setup-state:/state
+      # The single volume of earlier versions, read-only: migrate copies from it. Only
+      # `dpm-custody cleanup-legacy` mounts it writable, to empty it.
+      - config:/legacy-config:ro
 
 configs:
   create-manager-database:
