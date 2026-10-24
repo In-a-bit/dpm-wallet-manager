@@ -73,7 +73,7 @@ export class FundsPolicyService {
     // they are.
     if (request.recipient === undefined) return { external: false };
 
-    if (await this.wallets.isPlatformAddress(request.recipient)) {
+    if (await this.wallets.isPlatformProxyAddress(request.recipient)) {
       return { external: false };
     }
 

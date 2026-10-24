@@ -140,6 +140,19 @@ describe("transfers", () => {
     expect(relays()).toHaveLength(0);
   });
 
+  // A wallet's EOA is only its signer. Funds sent there leave the platform's accounts, so an
+  // operator may not send them there even though the address is "ours".
+  it("treats a platform wallet's EOA as external, not as an internal recipient", async () => {
+    const opsEoa = (await harness.get(`/v1/wallets/${opsId}`)).body.address as string;
+    const response = await harness.post(`/v1/wallets/${masterId}/transfers`, {
+      body: { recipient: opsEoa, amountDecimal: "5" },
+      apiKey: harness.operatorKey,
+    });
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe("EXTERNAL_TRANSFER_FORBIDDEN");
+    expect(relays()).toHaveLength(0);
+  });
+
   it("relays an external transfer from the master wallet with an admin key", async () => {
     const response = await harness.post(`/v1/wallets/${masterId}/transfers`, {
       body: { recipient: EXTERNAL, amountDecimal: "5" },

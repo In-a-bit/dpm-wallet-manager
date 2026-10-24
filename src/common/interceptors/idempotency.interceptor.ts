@@ -14,11 +14,14 @@ import {
   IdempotencyRepository,
   type IdempotencyRecord,
 } from "../../db/repositories/idempotency.repo";
-import { ManagerError } from "../../errors";
+import { ManagerError, validationFailed } from "../../errors";
 import { ACTOR_PROPERTY, actorScope, type AuthenticatedRequest } from "../actor";
 import { IDEMPOTENT_METADATA } from "../decorators/api-idempotency.decorator";
 
 export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
+
+/** Callers' keys are at most this long; dpm-wallet takes up to 256 once this service adds its own parts. */
+export const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 
 /**
  * Replays the stored response when a POST is retried with the same `Idempotency-Key` on the same
@@ -61,6 +64,11 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const key = request.header(IDEMPOTENCY_KEY_HEADER)?.trim();
     const actor = request[ACTOR_PROPERTY];
     if (!key || !actor) return next.handle();
+    if (key.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
+      throw validationFailed(
+        `${IDEMPOTENCY_KEY_HEADER} must be at most ${MAX_IDEMPOTENCY_KEY_LENGTH} characters`,
+      );
+    }
     const actorId = actorScope(actor);
 
     // Hashed from the raw body: pipes transform the handler's argument, not the request, so

@@ -100,10 +100,13 @@ export class ApiKeyService {
     });
 
     const expiresAt = new Date(Date.now() + graceSeconds * 1000).toISOString();
+    // With no grace the old key is revoked now, through the same locked check as a revoke: the
+    // replacement just minted counts as usable, so this cannot strand the install, but it must not
+    // race another revoke's count either.
     const rotated =
       graceSeconds > 0
         ? await this.keys.setExpiry(existing.id, expiresAt)
-        : await this.keys.revoke(existing.id, new Date().toISOString());
+        : (await this.keys.revokeUnlessLastAdmin(existing.id, new Date().toISOString())).key;
 
     await this.audit.record({
       actor,
@@ -150,8 +153,11 @@ export class ApiKeyService {
     const stored = await this.require(id);
     if (stored.status !== "active") return toView(stored);
 
-    const now = new Date().toISOString();
-    if (stored.role === "admin" && (await this.keys.countUsable("admin", now, id)) === 0) {
+    const { key: revoked, refused } = await this.keys.revokeUnlessLastAdmin(
+      id,
+      new Date().toISOString(),
+    );
+    if (refused) {
       await this.audit.record({
         actor,
         action: AuditAction.KeyRevoke,
@@ -165,7 +171,6 @@ export class ApiKeyService {
       );
     }
 
-    const revoked = await this.keys.revoke(id, now);
     await this.audit.record({
       actor,
       action: AuditAction.KeyRevoke,

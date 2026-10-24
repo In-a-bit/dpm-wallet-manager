@@ -231,7 +231,8 @@ export class WalletsController {
    *
    * A precondition for every meta-transaction: the RelayHub nonce is resolved from the platform's
    * user table, so an unregistered EOA cannot yield one. The stored flag mirrors what dpm-wallet
-   * reports back, not what the request asked for.
+   * reports back, not what the request asked for. Setting it to `false` on the master or operations
+   * wallet needs an admin key; registering needs only an operator.
    */
   @Post(":id/dpm-registered")
   @Roles("operator")

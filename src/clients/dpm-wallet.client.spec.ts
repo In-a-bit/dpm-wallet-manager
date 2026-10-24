@@ -98,6 +98,25 @@ describe("DpmWalletClient", () => {
     }
   });
 
+  it("keeps dpm-wallet's message and details out of the error it raises, but logs them", async () => {
+    const lines: string[] = [];
+    const write = jest.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      upstream.failNextWith(409, "SOMETHING_ODD", "turnkey org org-9f3 denied the activity");
+      const error = (await client.health().catch((err: unknown) => err)) as UpstreamError;
+
+      expect(error.upstreamCode).toBe("SOMETHING_ODD");
+      expect(error.message).toBe("dpm-wallet returned 409");
+      expect(JSON.stringify(error.details)).not.toContain("org-9f3");
+      expect(lines.join("\n")).toContain("org-9f3");
+    } finally {
+      write.mockRestore();
+    }
+  });
+
   it("reports an unreachable upstream rather than hanging", async () => {
     upstream.hang = true;
     const error = await client.health().catch((err: unknown) => err);

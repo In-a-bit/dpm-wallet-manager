@@ -6,6 +6,7 @@ import { validationFailed } from "../errors";
 import { AuditLog } from "../observability/audit";
 import { AuditAction, AuditOutcome } from "../observability/audit-action";
 import { TRANSACTION, type Transaction } from "../tokens";
+import { isForbiddenWebhookAddress } from "../storage/webhook-target";
 import type { SettingSource } from "./retention-settings.service";
 
 /** `platform_settings` keys. A row exists only while the dashboard overrides the default. */
@@ -107,7 +108,9 @@ export class StorageSettingsService {
     }
     const url = patch.alertWebhookUrl;
     if (url !== undefined && url !== null && !isHttpUrl(url)) {
-      issues.push("alertWebhookUrl must be an http or https URL");
+      issues.push(
+        "alertWebhookUrl must be an http or https URL that does not point at a link-local or metadata address",
+      );
     }
     if (issues.length > 0) throw validationFailed("Invalid storage settings", { issues });
 
@@ -180,8 +183,8 @@ function isHttpUrl(value: unknown): value is string {
     return false;
   }
   try {
-    const { protocol } = new URL(value);
-    return protocol === "http:" || protocol === "https:";
+    const { protocol, hostname } = new URL(value);
+    return (protocol === "http:" || protocol === "https:") && !isForbiddenWebhookAddress(hostname);
   } catch {
     return false;
   }

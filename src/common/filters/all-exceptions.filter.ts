@@ -16,6 +16,10 @@ const SERVER_ERROR_THRESHOLD = 500;
  * Framework exceptions — an unmatched route, an unsupported method — keep Nest's own body.
  * They describe a routing mistake rather than a domain outcome, so they carry no `ErrorCode`
  * for the gateway to branch on.
+ *
+ * The body parser runs before Nest and throws `http-errors` instead (a compressed body, an oversized
+ * one, malformed JSON). Those carry a client status and a message flagged safe to show, so they
+ * pass through with that status rather than becoming a 500.
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {

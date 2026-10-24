@@ -32,7 +32,7 @@ describe("FundsPolicyService", () => {
     }),
   };
   const wallets = {
-    isPlatformAddress: jest.fn(
+    isPlatformProxyAddress: jest.fn(
       async (address: string) => address.toLowerCase() === PLATFORM_ADDRESS.toLowerCase(),
     ),
   };

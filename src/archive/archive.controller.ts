@@ -78,8 +78,8 @@ export class ArchiveController {
    * Count what an archive would cover.
    *
    * Rows per table that are important (withdrawals, and audit events retention never trims, other
-   * than the `archive.*` trail) and older than `before`, counted now. `before` must be at least a
-   * day ago.
+   * than the `archive.*` trail) and older than `before`, counted now. `before` must be at least 30
+   * days ago.
    */
   @Get("preview")
   @Roles("admin")

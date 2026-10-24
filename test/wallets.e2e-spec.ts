@@ -227,7 +227,7 @@ describe("wallets", () => {
       const disabled = (await harness.wallets.list({ status: "disabled" }, 1, 0)).wallets[0];
       // Funds may still sit there; forgetting it would turn an internal transfer into an external
       // one, which the funds policy would then refuse for the wrong reason.
-      expect(await harness.wallets.isPlatformAddress(disabled?.proxyAddress ?? "")).toBe(true);
+      expect(await harness.wallets.isPlatformProxyAddress(disabled?.proxyAddress ?? "")).toBe(true);
     });
 
     it("refuses an operator key on the admin-only patch", async () => {

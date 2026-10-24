@@ -198,7 +198,8 @@ export class FakeDpmWallet {
 
     if (route === "/v1/maintenance/audit-export" && this.holdExport) await this.holdExport;
 
-    const result = this.route(request.method ?? "GET", route, body, path);
+    const authenticated = header(request, "x-api-key") === FAKE_UPSTREAM_API_KEY;
+    const result = this.route(request.method ?? "GET", route, body, path, authenticated);
     if (!result) {
       return send(response, 404, { error: { code: "NOT_FOUND", message: `no route ${route}` } });
     }
@@ -211,13 +212,17 @@ export class FakeDpmWallet {
     route: string,
     body: Record<string, unknown> | undefined,
     path = route,
+    authenticated = true,
   ): { status: number; body: unknown } | undefined {
     if (route === "/v1/health") {
+      // Like dpm-wallet: the vault detail only goes to a caller presenting the key.
       return {
         status: 200,
         body: {
           status: "ok",
-          vault: { mode: "turnkey", initialized: this.vaultInitialized, ready: true },
+          ...(authenticated
+            ? { vault: { mode: "turnkey", initialized: this.vaultInitialized, ready: true } }
+            : {}),
         },
       };
     }

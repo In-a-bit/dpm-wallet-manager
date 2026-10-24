@@ -124,5 +124,34 @@ describe("idempotency", () => {
         .map((request) => request.headers["idempotency-key"]);
       expect(sent).toHaveLength(1);
     });
+
+    it("terminates on a rotation cycle instead of spinning", async () => {
+      const created = (
+        await harness.post("/v1/api-keys", { body: { role: "operator", name: "rot-cycle" } })
+      ).body;
+      const rotation = await harness.post(`/v1/api-keys/${created.id}/rotate`, {
+        body: { graceSeconds: 3600 },
+      });
+      // Nothing writes this; the query must survive it anyway.
+      await harness.db.query(`UPDATE api_keys SET rotated_from_id = $1 WHERE id = $2`, [
+        rotation.body.created.id,
+        created.id,
+      ]);
+
+      const first = await sign(rotation.body.created.key as string, "rot-cycle-key");
+      const retry = await sign(rotation.body.created.key as string, "rot-cycle-key");
+
+      expect(first.status).toBe(200);
+      expect(retry.status).toBe(200);
+    });
+  });
+
+  it("accepts a 200-character key and refuses a longer one with 400", async () => {
+    const ok = await sign(harness.adminKey, "k".repeat(200));
+    const tooLong = await sign(harness.adminKey, "k".repeat(201));
+
+    expect(ok.status).toBe(200);
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.error.code).toBe("VALIDATION_FAILED");
   });
 });

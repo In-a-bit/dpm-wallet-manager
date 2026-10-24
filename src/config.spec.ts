@@ -1,4 +1,4 @@
-import { loadConfig } from "./config";
+import { insecureCookieWarning, loadConfig } from "./config";
 import { testEnv } from "./testing/env";
 
 function load(extra: Record<string, string> = {}) {
@@ -98,5 +98,39 @@ describe("loadConfig storage", () => {
   it("rejects a public URL that is not http(s)", () => {
     expect(() => load({ MANAGER_PUBLIC_URL: "custody.example.com" })).toThrow(/MANAGER_PUBLIC_URL/);
     expect(() => load({ MANAGER_PUBLIC_URL: "ftp://x" })).toThrow(/MANAGER_PUBLIC_URL/);
+  });
+});
+
+describe("loadConfig session cookie and API docs", () => {
+  it("marks the cookie Secure when MANAGER_PUBLIC_URL is https, unless overridden", () => {
+    expect(load().uiCookieSecure).toBe(false);
+    expect(load({ MANAGER_PUBLIC_URL: "http://localhost:3000" }).uiCookieSecure).toBe(false);
+    expect(load({ MANAGER_PUBLIC_URL: "https://custody.example.com" }).uiCookieSecure).toBe(true);
+    expect(
+      load({ MANAGER_PUBLIC_URL: "https://custody.example.com", UI_COOKIE_SECURE: "false" })
+        .uiCookieSecure,
+    ).toBe(false);
+    expect(load({ UI_COOKIE_SECURE: "true" }).uiCookieSecure).toBe(true);
+    // Existing installs wrote these spellings.
+    expect(load({ UI_COOKIE_SECURE: "1" }).uiCookieSecure).toBe(true);
+    expect(load({ UI_COOKIE_SECURE: "TRUE" }).uiCookieSecure).toBe(true);
+    expect(load({ UI_COOKIE_SECURE: "0" }).uiCookieSecure).toBe(false);
+    expect(load({ UI_COOKIE_SECURE: "False" }).uiCookieSecure).toBe(false);
+    expect(() => load({ UI_COOKIE_SECURE: "yes" })).toThrow(/UI_COOKIE_SECURE/);
+  });
+
+  it("warns about a non-Secure cookie only for a non-loopback public URL", () => {
+    const warn = (extra: Record<string, string>) => insecureCookieWarning(load(extra));
+    expect(warn({})).toBeUndefined();
+    expect(warn({ MANAGER_PUBLIC_URL: "http://localhost:3000" })).toBeUndefined();
+    expect(warn({ MANAGER_PUBLIC_URL: "http://127.0.0.1:3000" })).toBeUndefined();
+    expect(warn({ MANAGER_PUBLIC_URL: "https://custody.example.com" })).toBeUndefined();
+    expect(warn({ MANAGER_PUBLIC_URL: "http://custody.example.com" })).toMatch(/not marked Secure/);
+  });
+
+  it("serves the API docs only when ENABLE_API_DOCS=true", () => {
+    expect(load().enableApiDocs).toBe(false);
+    expect(load({ ENABLE_API_DOCS: "true" }).enableApiDocs).toBe(true);
+    expect(() => load({ ENABLE_API_DOCS: "yes" })).toThrow(/ENABLE_API_DOCS/);
   });
 });

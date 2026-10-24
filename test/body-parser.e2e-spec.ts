@@ -27,7 +27,15 @@ describe("request body encoding", () => {
 
   it("still accepts a plain JSON body", async () => {
     const response = await harness.post("/v1/wallets", { body: { label: "plain" } });
-    expect(response.status).not.toBe(415);
-    expect(response.status).toBeLessThan(500);
+    expect(response.status).toBe(201);
+  });
+
+  it("answers malformed JSON with 400, not a 500", async () => {
+    const response = await request(harness.app.getHttpServer())
+      .post("/v1/wallets")
+      .set("X-API-Key", harness.adminKey)
+      .set("Content-Type", "application/json")
+      .send('{"label": ');
+    expect(response.status).toBe(400);
   });
 });

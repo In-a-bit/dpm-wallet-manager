@@ -152,6 +152,19 @@ describe("settings", () => {
       expect(denied.status).toBe(403);
     });
 
+    it("refuses a webhook aimed at a link-local or metadata address", async () => {
+      for (const url of [
+        "http://169.254.169.254/latest/meta-data",
+        "http://[fd00:ec2::254]/",
+        "http://[::ffff:169.254.169.254]/",
+        "http://[64:ff9b::169.254.169.254]/",
+      ]) {
+        const put = await harness.put("/v1/settings/storage", { body: { alertWebhookUrl: url } });
+        expect(put.status).toBe(400);
+        expect(put.body.error.code).toBe("VALIDATION_FAILED");
+      }
+    });
+
     it("persists a change, audits old and new values once, and null reverts", async () => {
       const before = (await audited("settings.storage_update")).length;
       const put = await harness.put("/v1/settings/storage", {
