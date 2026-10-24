@@ -1,4 +1,9 @@
-import { findEnvironment, isSafePlatformUrl, resolveDpmApiUrl } from "./environments";
+import {
+  environmentForUrl,
+  findEnvironment,
+  isSafePlatformUrl,
+  resolveDpmApiUrl,
+} from "./environments";
 import { fetchInstallConfig, type FetchLike } from "./platform-config";
 
 const CONFIG = {
@@ -23,12 +28,18 @@ describe("isSafePlatformUrl", () => {
     "http://127.0.0.1:8086",
     "http://[::1]:8086",
     "http://host.docker.internal:8086",
+    "HTTP://localhost",
+    "HTTP://LOCALHOST:8086/path",
   ])("accepts %s", (url) => expect(isSafePlatformUrl(url)).toBe(true));
 
   it.each([
     "http://api.example.com",
     "http://10.0.0.5:8086",
     "http://localhost.evil.example",
+    "http://localhost@evil.com",
+    "http://localhost:80@evil.com/",
+    "http://127.0.0.1.nip.io",
+    "http://[::ffff:127.0.0.1]",
     "ftp://localhost",
     "not a url",
   ])("refuses %s", (url) => expect(isSafePlatformUrl(url)).toBe(false));
@@ -36,6 +47,23 @@ describe("isSafePlatformUrl", () => {
 
 describe("custom platform address", () => {
   const custom = findEnvironment("custom")!;
+
+  // SETUP_PLATFORM_URL reaches setup as a platform answer: environmentForUrl, then the same check.
+  it.each(["http://localhost@evil.com", "http://127.0.0.1.nip.io", "http://[::ffff:127.0.0.1]"])(
+    "refuses %s given through the SETUP_PLATFORM_URL path",
+    (preset) => {
+      const { environment, customUrl } = environmentForUrl(preset);
+      expect(environment).toBe("custom");
+      expect(resolveDpmApiUrl(findEnvironment(environment)!, customUrl)).toEqual({
+        error: expect.any(String),
+      });
+    },
+  );
+
+  it("takes HTTP://localhost through the same path", () => {
+    const { customUrl } = environmentForUrl("HTTP://localhost:8086");
+    expect(resolveDpmApiUrl(custom, customUrl)).toBe("HTTP://localhost:8086");
+  });
 
   it("refuses plain http away from this computer, naming the reason", () => {
     expect(resolveDpmApiUrl(custom, "http://api.example.com")).toEqual({
@@ -46,6 +74,18 @@ describe("custom platform address", () => {
   it("still takes https and a platform on this computer over http", () => {
     expect(resolveDpmApiUrl(custom, "https://api.example.com/")).toBe("https://api.example.com");
     expect(resolveDpmApiUrl(custom, "http://localhost:8086")).toBe("http://localhost:8086");
+  });
+});
+
+describe("the key is never re-sent on a redirect", () => {
+  it("asks for the install config with redirect: error", async () => {
+    let init: RequestInit | undefined;
+    const spy: FetchLike = async (_url, options) => {
+      init = options;
+      return new Response(JSON.stringify(CONFIG), { status: 200 });
+    };
+    await fetchInstallConfig("https://x", "bld_sk_a", spy);
+    expect(init?.redirect).toBe("error");
   });
 });
 

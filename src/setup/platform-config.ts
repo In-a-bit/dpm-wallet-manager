@@ -63,6 +63,8 @@ async function requestInstallConfig(
   try {
     return await fetchImpl(url, {
       headers: key ? { [BUILDER_KEY_HEADER]: key } : {},
+      // The key is in that header: a redirect (https -> http, or to another host) would re-send it.
+      redirect: "error",
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {

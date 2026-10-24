@@ -58,7 +58,7 @@ export function findEnvironment(id: string): Environment | undefined {
 export function resolveDpmApiUrl(env: Environment, customUrl?: string): string | { error: string } {
   if (env.dpmApiUrl) return env.dpmApiUrl;
   const trimmed = (customUrl ?? "").trim().replace(/\/+$/, "");
-  if (!/^https?:\/\/[^\s/]+/.test(trimmed)) {
+  if (!/^https?:\/\/[^\s/]+/i.test(trimmed)) {
     return { error: "Enter the platform address, starting with https://" };
   }
   if (!isSafePlatformUrl(trimmed)) {

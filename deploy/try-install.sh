@@ -116,6 +116,37 @@ http_with_header() {
 status_of() { tail -n 1 <<<"$1"; }
 body_of() { sed '$d' <<<"$1"; }
 
+# safe_platform_url URL succeeds when a builder key may be sent to URL: https://, or http:// only
+# for a host on this computer (localhost, 127.0.0.1, [::1], host.docker.internal). Userinfo (an
+# `@` in the authority) is refused: `http://localhost@evil.example` is evil.example. This is the
+# shell twin of isSafePlatformUrl in src/setup/environments.ts.
+safe_platform_url() {
+  local url scheme rest authority host
+  url="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$url" in
+    https://?*) scheme=https; rest="${url#https://}" ;;
+    http://?*) scheme=http; rest="${url#http://}" ;;
+    *) return 1 ;;
+  esac
+  authority="${rest%%[/?#]*}"
+  case "$authority" in *@* | *[[:space:]]*) return 1 ;; esac
+  [ "$scheme" = https ] && return 0
+  case "$authority" in
+    "[::1]" | "[::1]":*) host="[::1]" ;;
+    *) host="${authority%%:*}" ;;
+  esac
+  case "$host" in
+    localhost | 127.0.0.1 | "[::1]" | host.docker.internal) ;;
+    *) return 1 ;;
+  esac
+  # Only an optional :port may follow the host.
+  case "${authority#"$host"}" in
+    "" | :[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  case "${authority#"$host"}" in *[!0-9:]*) return 1 ;; esac
+}
+
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 
 # claimed_ports lists every host port a container on this machine publishes, running or stopped.
@@ -200,6 +231,10 @@ platform_ok() {
     http://?* | https://?*) ;;
     *) PROBLEM="\"$PLATFORM\" is not an address: it should start with http:// or https://." && return 1 ;;
   esac
+  safe_platform_url "$PLATFORM" || {
+    PROBLEM="\"$PLATFORM\" must use https://, or http:// only for a platform on this computer (localhost, 127.0.0.1, [::1] or host.docker.internal), and carry no user@ part: the builder key is sent to it."
+    return 1
+  }
   [ "$(status_of "$(http GET "$PLATFORM/healthz")")" = 200 ] || {
     PROBLEM="Nothing answers at $PLATFORM/healthz: check the address and that the platform's dpm-api is running."
     return 1
@@ -226,7 +261,7 @@ ask_builder_key() {
       read -rsp "  Paste it here (it is not shown): " BUILDER_KEY
       printf '\n'
     fi
-    BUILDER_KEY="$(tr -d '[:space:]' <<<"$BUILDER_KEY")"
+    BUILDER_KEY="$(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' <<<"$BUILDER_KEY")"
     if key_ok; then
       BUILDER_NAME="$(body_of "$CONFIG" | json_path owner.name)"
       ok "the platform knows this key: builder \"$BUILDER_NAME\""
@@ -245,6 +280,11 @@ key_ok() {
   case "$BUILDER_KEY" in
     bld_sk_?*) ;;
     *) PROBLEM="That is not a builder private key: it should start with bld_sk_." && return 1 ;;
+  esac
+  # The key travels in a curl config on stdin: a space, quote or line break in it would be read as
+  # more config. A real key has none, so refuse rather than strip.
+  case "$BUILDER_KEY" in
+    *[[:space:][:cntrl:]\"\\]*) PROBLEM="That key contains spaces, quotes or line breaks, which a builder key never does: paste only the key." && return 1 ;;
   esac
   CONFIG="$(http_with_header "X-Builder-Api-Private-Key: $BUILDER_KEY" GET "$PLATFORM/wallet-install/config")"
   case "$(status_of "$CONFIG")" in
@@ -265,6 +305,13 @@ check_platform_apis() {
   local gamma_api relayer_api answer
   gamma_api="$(body_of "$CONFIG" | json_path services.gamma_api)"
   relayer_api="$(body_of "$CONFIG" | json_path services.relayer_api)"
+  # The platform names these itself, and the key goes to both: hold them to the same rule.
+  local service
+  for service in "$gamma_api" "$relayer_api"; do
+    safe_platform_url "$service" ||
+      fail "The platform reported an unsafe service address: ${service:-(none)}." \
+        "Services must use https:// (http:// only for a platform on this computer). The builder key was not sent there."
+  done
 
   answer="$(http_with_header "X-Builder-Api-Private-Key: $BUILDER_KEY" POST "$gamma_api/custody/users" \
     -H 'Content-Type: application/json' -d '{}')"

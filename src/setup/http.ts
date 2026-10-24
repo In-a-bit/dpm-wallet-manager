@@ -11,6 +11,8 @@ export const fetchHttp: SetupHttp = async (method, url, options = {}) => {
     method,
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    // Requests carry API keys in headers; never follow a redirect with them.
+    redirect: "error",
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await response.text();
