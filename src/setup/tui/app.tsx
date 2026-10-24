@@ -449,7 +449,8 @@ function App(props: DashboardOptions & { outcome: { finished: boolean } }) {
         ) : null;
       break;
     case "done": {
-      const operatorKey = service.connectionDetails()?.operatorKey ?? "(see the backup kit)";
+      const operatorKey =
+        service.connectionDetails()?.operatorKey ?? "(reveal it in the admin dashboard)";
       panel = (
         <DonePanel
           lines={[

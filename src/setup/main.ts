@@ -12,7 +12,8 @@ import { Client } from "pg";
 import { BackupCryptoError, generateRecoveryKeyPair, opener, sealer } from "./backup-crypto";
 
 import { applyServiceRoles, type Connect } from "./db-roles";
-import { cleanupLegacy, runAll } from "./migrate";
+import { removeBootstrapKey } from "./key-lifecycle";
+import { cleanupLegacy, runAll, scrubLegacy } from "./migrate";
 import { SetupService } from "./setup-service";
 import { SetupStateStore } from "./state";
 import type { ProvisioningDeps, SetupHttp } from "./steps";
@@ -33,6 +34,7 @@ import { SetupWorker } from "./worker";
  *   node dist/setup/main backup-seal | backup-open | backup-keygen | backup-recipient
  *                                 encrypted backups (see backupCommand)
  *   node dist/setup/main migrate  bring the volumes up to this version's layout (idempotent)
+ *   node dist/setup/main scrub-legacy  remove spent credentials from the old config volume (writable run)
  *   node dist/setup/main cleanup-legacy  empty the old single config volume, kept for rollback
  */
 const env = (name: string, fallback: string): string => process.env[name] || fallback;
@@ -66,6 +68,8 @@ async function main(): Promise<void> {
       return backupCommand(process.argv[2], process.argv.slice(3));
     case "migrate":
       return runAll(dirs, say, { connect: adminConnect() });
+    case "scrub-legacy":
+      return scrubLegacy(dirs, say);
     case "cleanup-legacy":
       return cleanupLegacy(LEGACY_CONFIG_DIR, say);
   }
@@ -129,6 +133,7 @@ function provisioningDeps(store: SetupStateStore, journal: Journal): Provisionin
     store,
     provisionDbRoles: (secrets) =>
       applyServiceRoles(connectAs(database.user, database.password), secrets),
+    dropBootstrapKey: () => void removeBootstrapKey(MANAGER_CONFIG_DIR),
     writeConfig: (inputs) =>
       writeInstallConfig({ wallet: WALLET_CONFIG_DIR, manager: MANAGER_CONFIG_DIR }, inputs),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

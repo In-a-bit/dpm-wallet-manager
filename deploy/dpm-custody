@@ -848,7 +848,7 @@ cmd_upgrade() {
     set_env DPM_WALLET_MANAGER_TAG "$new_manager" &&
     set_env DPM_CUSTODY_VERSION "$target" &&
     install_file "$STAGE/dpm-custody" dpm-custody 755 &&
-    run_migrate &&
+    run_migrate "$target" &&
     compose up -d >>"$UPGRADE_LOG" 2>&1 &&
     health_gate; then
     # 8. Healthy.
@@ -902,6 +902,24 @@ run_migrate() {
     say "  ✕ Could not prepare the configuration volumes (details in upgrade.log)."
     return 1
   fi
+  # That run had the old config volume writable, so its scrubs are done for the new version.
+  if [ -n "${1:-}" ]; then printf '%s\n' "$1" >.legacy-scrubbed; fi
+}
+
+# ensure_legacy_scrubbed removes credentials that setup no longer needs (the bootstrap admin key,
+# the admin/backend/builder keys in its state) from the OLD config volume too, which a rollback
+# would otherwise bring back. The upgrade does it itself (run_migrate); this covers an upgrade run
+# by an older dpm-custody, which never mounted that volume writable. It runs once per installed
+# version (stamp .legacy-scrubbed) at the first command of this dpm-custody, and never fails one.
+ensure_legacy_scrubbed() {
+  local ver stamp=.legacy-scrubbed
+  ver="$(env_value DPM_CUSTODY_VERSION)"
+  ver="${ver:-unknown}"
+  [ "$(cat "$stamp" 2>/dev/null)" = "$ver" ] && return 0
+  if compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main scrub-legacy >/dev/null 2>&1; then
+    printf '%s\n' "$ver" >"$stamp"
+  fi
+  return 0
 }
 
 # cmd_cleanup_legacy empties the single config volume that versions before the split used. Until
@@ -974,6 +992,9 @@ usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' 
 # Everything runs from main, called on the last line: an upgrade replaces this file, and bash
 # reads a script as it goes, so nothing may be left to read from the file once main has started.
 main() {
+  case "${1:-help}" in
+    start | status | setup | backup | support | logs) ensure_legacy_scrubbed ;;
+  esac
   case "${1:-help}" in
     start) compose up -d ;;
     stop) compose stop ;;

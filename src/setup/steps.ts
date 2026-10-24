@@ -21,6 +21,8 @@ export type ProvisioningDeps = {
   http: SetupHttp;
   store: SetupStateStore;
   writeConfig: (inputs: InstallInputs) => void;
+  /** Takes the bootstrap admin key out of the manager's settings once the manager has adopted it. */
+  dropBootstrapKey: () => void;
   /** Creates the services' database roles (db-roles.ts); the superuser connection stays here. */
   provisionDbRoles: (secrets: InstallSecrets) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
@@ -205,6 +207,9 @@ async function waitForManager({ deps, progress }: StepContext): Promise<void> {
 async function createMasterWallet({ deps, state, progress }: StepContext): Promise<void> {
   progress("Creating the master wallet, then registering it with the platform");
   await postAsAdmin(deps, state, "/v1/platform/master-wallet", {}, "Creating the master wallet");
+  // This call signed in with the admin key, so the manager has adopted it: its settings no longer
+  // need to carry it.
+  deps.dropBootstrapKey();
 }
 
 async function createOperationsWallet({ deps, state, progress }: StepContext): Promise<void> {
@@ -239,7 +244,7 @@ async function verify({ deps, state, progress }: StepContext): Promise<void> {
   const { answers, secrets } = requireConfigured(state);
   progress("Reading the wallet manager's own view of the install");
   const result = await deps.http("GET", `${deps.managerUrl}/v1/platform`, {
-    apiKey: secrets.adminKey,
+    apiKey: adminKeyOf(secrets),
   });
   const platform = expectSuccess(result, "Checking the install") as PlatformStatus;
   const problem = platformProblem(platform, answers.mode);
@@ -271,6 +276,12 @@ function platformProblem(platform: PlatformStatus, mode: string): string | undef
   return undefined;
 }
 
+function adminKeyOf(secrets: { adminKey?: string }): string {
+  if (!secrets.adminKey)
+    throw new SetupError("The admin key is no longer stored; setup is finished.");
+  return secrets.adminKey;
+}
+
 function requireConfigured(
   state: SetupState,
 ): Required<Pick<SetupState, "answers" | "platform" | "secrets">> {
@@ -289,7 +300,7 @@ async function postAsAdmin(
 ): Promise<unknown> {
   const { secrets } = requireConfigured(state);
   const result = await deps.http("POST", `${deps.managerUrl}${path}`, {
-    apiKey: secrets.adminKey,
+    apiKey: adminKeyOf(secrets),
     body,
   });
   return expectSuccess(result, what);

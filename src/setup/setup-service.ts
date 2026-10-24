@@ -8,6 +8,7 @@ import {
   type FetchLike,
   type InstallConfig,
 } from "./platform-config";
+import { dropSetupKeys } from "./key-lifecycle";
 import { generateInstallSecrets } from "./secrets";
 import type { CustodyMode, SetupState } from "./state";
 import { isComplete, progress, type ProvisioningDeps, type StepProgress } from "./steps";
@@ -84,7 +85,7 @@ export class SetupService {
    */
   async refreshOwnerStatus(): Promise<void> {
     const state = this.deps.store.load();
-    if (state.ownerCreated || !isComplete(state) || !state.secrets) return;
+    if (state.ownerCreated || !isComplete(state) || !state.secrets?.adminKey) return;
     const listed = await this.deps
       .http("GET", `${this.deps.managerUrl}/v1/ui-users`, { apiKey: state.secrets.adminKey })
       .catch(() => undefined);
@@ -104,6 +105,9 @@ export class SetupService {
     const state = this.deps.store.load();
     if (!isComplete(state) || !state.secrets) throw new SetupError("Finish setup first.");
     if (state.ownerCreated) throw new SetupError("The owner account already exists.");
+    if (!state.secrets.adminKey) {
+      throw new SetupError("The admin key is no longer stored, so setup cannot create the owner.");
+    }
     if (password.length < MIN_OWNER_PASSWORD) {
       throw new SetupError(`The password needs at least ${MIN_OWNER_PASSWORD} characters.`);
     }
@@ -115,6 +119,8 @@ export class SetupService {
     this.deps.store.update((next) => {
       next.ownerCreated = true;
     });
+    this.remember();
+    dropSetupKeys(this.deps.store);
   }
 
   /** Checks the platform answers at the chosen address, before a key is asked for. */
@@ -177,6 +183,8 @@ export class SetupService {
       // Shown once in the kit; from here on only the public half stays on this machine.
       if (state.secrets) delete state.secrets.backupRecoveryKey;
     });
+    this.remember();
+    dropSetupKeys(this.deps.store);
   }
 
   backupKit(): string {
@@ -186,8 +194,19 @@ export class SetupService {
   /** The URL and key the builder's own backend is configured with, once setup is done. */
   connectionDetails(): { operatorKey: string } | undefined {
     const state = this.deps.store.load();
-    if (!isComplete(state) || !state.operatorKey) return undefined;
-    return { operatorKey: state.operatorKey };
+    if (!isComplete(state)) return undefined;
+    this.remember();
+    return this.operatorKey ? { operatorKey: this.operatorKey } : undefined;
+  }
+
+  /**
+   * The backend key as of this session. Setup drops it from its state once the owner has the kit,
+   * but the screen that ends the session still shows it; from a later session it is revealed in
+   * the admin UI instead.
+   */
+  private operatorKey: string | undefined;
+  private remember(): void {
+    this.operatorKey ??= this.deps.store.load().operatorKey;
   }
 
   private platformUrl(input: PlatformInput): string {
@@ -236,10 +255,19 @@ export function renderBackupKit(state: SetupState, adminUiUrl?: string): string 
     "-- Secrets --",
     `Wallet encryption key:   ${state.secrets.walletEncryptionKey}`,
     `Manager master key:      ${state.secrets.managerMasterKey}`,
-    `Admin API key:           ${state.secrets.adminKey}`,
-    `Backend (operator) key:  ${state.operatorKey ?? "(not issued yet)"}`,
+    ...(state.secrets.adminKey
+      ? [
+          `Admin API key:           ${state.secrets.adminKey}`,
+          `Backend (operator) key:  ${state.operatorKey ?? "(not issued yet)"}`,
+        ]
+      : [
+          "Admin and backend API keys: not kept by setup any more. Sign in to the admin UI and",
+          "                            reveal them under API keys.",
+        ]),
     `Internal wallet API key: ${state.secrets.walletApiKey}`,
-    `Builder private key:     ${state.answers.builderKey}`,
+    ...(state.answers.builderKey
+      ? [`Builder private key:     ${state.answers.builderKey}`]
+      : ["Builder private key:     not kept by setup; it is in the platform backoffice."]),
     "",
     ...recoveryKeyLines(state.secrets),
     "Also back up the data itself: run ./dpm-custody backup regularly.",

@@ -93,7 +93,10 @@ describe("generateInstallSecrets", () => {
     expect(secrets.walletEncryptionKey).toMatch(/^[0-9a-f]{64}$/);
     expect(secrets.managerMasterKey).toMatch(/^[0-9a-f]{64}$/);
     expect(secrets.walletApiKey).toMatch(/^dpmw_[0-9a-f]{40}$/);
-    expect(parseApiKey(secrets.adminKey)).toMatchObject({ role: "admin", environment: "dev" });
+    expect(parseApiKey(secrets.adminKey as string)).toMatchObject({
+      role: "admin",
+      environment: "dev",
+    });
   });
 
   it("never repeats", () => {
@@ -346,6 +349,9 @@ class FakeStack {
   }
 }
 
+/** Calls the fake dropBootstrapKey seam received, in order. */
+const dropped: string[] = [];
+
 function provisioningDeps(
   stack: FakeStack,
   dir: string,
@@ -355,6 +361,7 @@ function provisioningDeps(
     http: stack.http,
     store: new SetupStateStore(dir),
     provisionDbRoles: async () => undefined,
+    dropBootstrapKey: () => void dropped.push("bootstrap"),
     writeConfig: (inputs) => written.push(inputs),
     sleep: async () => undefined,
     walletUrl: "http://wallet",
@@ -407,6 +414,19 @@ describe("provision", () => {
 
     expect(stack.count("POST /v1/platform/operations-wallet")).toBe(1);
     expect(isComplete(deps.store.load())).toBe(true);
+  });
+
+  it("takes the bootstrap key out of the manager's settings only after the manager used the admin key", async () => {
+    dropped.length = 0;
+    const stack = new FakeStack();
+    stack.failures.set("/v1/platform/master-wallet", 1);
+    const deps = provisioningDeps(stack, tempDir(), []);
+    seedStarted(deps.store, "shared");
+
+    await expect(provision(deps)).rejects.toThrow();
+    expect(dropped).toEqual([]); // the admin call failed: nothing proves the key was adopted
+    await provision(deps);
+    expect(dropped).toEqual(["bootstrap"]);
   });
 
   it("does not call an install ready while a platform wallet is unregistered", async () => {
@@ -748,6 +768,31 @@ describe("SetupService owner login", () => {
     expect(service.view().ownerCreated).toBe(false);
     await service.refreshOwnerStatus();
     expect(service.view().ownerCreated).toBe(true);
+  });
+
+  it("drops the admin, backend and builder keys once the owner exists and has the kit, yet still shows the backend key to the session that finishes", async () => {
+    const { service, deps } = await provisioned();
+    const operatorKey = deps.store.load().operatorKey as string;
+    expect(service.backupKit()).toContain(operatorKey);
+
+    await service.createOwner("alice", "a long enough password");
+    service.acknowledgeBackup();
+
+    const state = deps.store.load();
+    expect(state.secrets?.adminKey).toBeUndefined();
+    expect(state.operatorKey).toBeUndefined();
+    expect(state.answers?.builderKey).toBeUndefined();
+    // The screen that ends this session still has the key to show; a later session does not.
+    expect(service.connectionDetails()?.operatorKey).toBe(operatorKey);
+    expect(new SetupService(deps, fetch).connectionDetails()).toBeUndefined();
+    // The kit explains where the keys went, and no longer prints them.
+    const kit = service.backupKit();
+    expect(kit).not.toContain(operatorKey);
+    expect(kit).toContain("reveal them under API keys");
+    expect(kit).toContain("platform backoffice");
+    // The rest of the install's memory is intact.
+    expect(state.secrets?.walletDbPassword).toBeDefined();
+    expect(state.secrets?.backupRecipient).toMatch(/^dpmbk_pub_/);
   });
 
   it("shows the backup recovery key once, then keeps only the public half", async () => {

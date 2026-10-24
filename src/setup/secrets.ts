@@ -13,9 +13,11 @@ export type InstallSecrets = {
   managerMasterKey: string;
   /**
    * `DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY`. Generated here rather than left to the manager's
-   * first boot, whose minted key only reaches a log line — which redacts it.
+   * first boot, whose minted key only reaches a log line — which redacts it. Removed from the
+   * manager's env once adopted, and from setup's state once setup is finished (key-lifecycle.ts):
+   * later it is revealed in the admin UI.
    */
-  adminKey: string;
+  adminKey?: string;
   /** Passwords of the least-privilege database roles each service connects as (db-roles.ts). */
   walletDbPassword: string;
   managerDbPassword: string;

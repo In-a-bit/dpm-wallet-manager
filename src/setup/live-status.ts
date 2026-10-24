@@ -23,8 +23,16 @@ export async function liveStatus(
   const [wallet, platform] = await Promise.all([
     // dpm-wallet answers only {status} to a caller without its key; the vault detail needs it.
     fetchBody<WalletHealth>(http, `${urls.walletUrl}/v1/health`, walletApiKey),
-    fetchBody<PlatformStatus>(http, `${urls.managerUrl}/v1/platform`, adminKey),
+    // Once setup is finished it no longer holds the admin key; the manager's own health answer
+    // then stands in, with less detail.
+    adminKey
+      ? fetchBody<PlatformStatus>(http, `${urls.managerUrl}/v1/platform`, adminKey)
+      : fetchBody<{ status?: string }>(http, `${urls.managerUrl}/v1/health`).then((health) =>
+          health?.status === "ok" ? { detailUnavailable: true } : undefined,
+        ),
   ]);
+  const detailUnavailable = (platform as { detailUnavailable?: boolean } | undefined)
+    ?.detailUnavailable;
   return {
     checks: [
       {
@@ -45,12 +53,20 @@ export async function liveStatus(
       {
         label: "Wallet manager",
         ok: platform !== undefined,
-        detail: platform ? `${platform.mode} mode` : "not responding",
+        detail: detailUnavailable
+          ? "answering (mode and wallet detail need the admin key, which setup no longer keeps)"
+          : platform
+            ? `${platform.mode} mode`
+            : "not responding",
       },
       {
         label: "Wallets",
-        ok: Boolean(platform?.upstream?.reachable),
-        detail: platform ? `${platform.walletCount ?? 0} wallet(s)` : undefined,
+        ok: detailUnavailable ? true : Boolean(platform?.upstream?.reachable),
+        detail: detailUnavailable
+          ? "not checked"
+          : platform
+            ? `${platform.walletCount ?? 0} wallet(s)`
+            : undefined,
       },
     ],
   };

@@ -85,6 +85,7 @@ case "$args" in
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
+  *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; exit 0 ;;
   *"setup node dist/setup/main backup-recipient"*) [ -n "${FAKE_RECIPIENT:-}" ] && echo "$FAKE_RECIPIENT"; exit 0 ;;
   *"setup node dist/setup/main backup-"*)
     # The real implementation, from the compiled dist, so the sealed files are really sealed.
@@ -519,6 +520,30 @@ if [ -f "$DIST_MAIN" ]; then
 else
   echo "skip - 21 sealed backups (build first: npx nest build)"
 fi
+
+# 22. spent credentials are scrubbed from the OLD config volume too, even after an upgrade run by an
+# older dpm-custody (which never mounted it writable): once per installed version, at the first
+# command of this dpm-custody; and by the upgrade itself
+SCRUB='-v config:/legacy-config:rw setup node dist/setup/main scrub-legacy'
+d="$T/c22"; make_install "$d" 1.1.0 0.2.0 1.1.0
+out="$(run "$d" status)"; rc=$?
+check "22 the first command scrubs the old config volume (writable mount) and stamps the version" 'has "$d.events" "$SCRUB" && [ "$(cat "$d/.legacy-scrubbed")" = "1.1.0" ]'
+out="$(run "$d" start)"
+check "22 later commands of the same version do not repeat it" '! has "$d.events" "$SCRUB"'
+sed -i 's/^DPM_CUSTODY_VERSION=.*/DPM_CUSTODY_VERSION=1.2.0/' "$d/.env"
+out="$(run "$d" start)"
+check "22 a new installed version scrubs again" 'has "$d.events" "$SCRUB" && [ "$(cat "$d/.legacy-scrubbed")" = "1.2.0" ]'
+d="$T/c22b"; make_install "$d" 1.1.0 0.2.0 1.1.0
+out="$(FAIL_SCRUB=1 run "$d" status)"; rc=$?
+check "22 a failing scrub never fails the command, and is retried next time" '[ ! -e "$d/.legacy-scrubbed" ]'
+d="$T/c22c"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" upgrade --yes)"; rc=$?
+check "22 the upgrade (writable migrate run) stamps the target version, so nothing runs twice" '[ $rc -eq 0 ] && [ "$(cat "$d/.legacy-scrubbed")" = "1.1.0" ]'
+out="$(run "$d" start)"
+check "22 and the next command does not scrub again" '! has "$d.events" "$SCRUB"'
+d="$T/c22d"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" cleanup-legacy --yes)"
+check "22 cleanup-legacy and rollback do not trigger it" '! has "$d.events" "$SCRUB"'
 
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 

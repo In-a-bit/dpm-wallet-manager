@@ -53,7 +53,7 @@ export function walletEnv(inputs: InstallInputs): Record<string, string> {
     ...(platform.services.data_api ? { DATA_API_URL: platform.services.data_api } : {}),
     // The builder key is the install's only platform credential: every service it calls
     // accepts it, so no platform-wide APP_API_KEY is written.
-    RELAYER_BUILDER_API_KEY: answers.builderKey.trim(),
+    RELAYER_BUILDER_API_KEY: requiredBuilderKey(answers.builderKey),
     CHAIN_ID: String(platform.chain_id),
     CONTRACT_CTF_EXCHANGE: platform.contracts.ctf_exchange,
     CONTRACT_PROXY_FACTORY: platform.contracts.proxy_factory,
@@ -68,7 +68,8 @@ export function managerEnv(inputs: InstallInputs): Record<string, string> {
     DATABASE_URL: databaseUrl(managerDbCredentials(secrets), MANAGER_DATABASE),
     DPM_WALLET_MANAGER_MODE: answers.mode,
     DPM_WALLET_MANAGER_MASTER_KEY: secrets.managerMasterKey,
-    DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY: secrets.adminKey,
+    // Adopted by the manager on its first start, then removed from this file (key-lifecycle.ts).
+    ...(secrets.adminKey ? { DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY: secrets.adminKey } : {}),
     DPM_WALLET_MANAGER_KEY_ENV: inputs.keyEnv,
     DPM_WALLET_BASE_URL: `http://${WALLET_HOST}:${WALLET_PORT}`,
     DPM_WALLET_API_KEY: secrets.walletApiKey,
@@ -86,6 +87,12 @@ export function renderEnvFile(values: Record<string, string>): string {
     return `${name}='${value}'`;
   });
   return `# Written by dpm-wallet-manager setup. Do not edit by hand.\n${lines.join("\n")}\n`;
+}
+
+function requiredBuilderKey(key: string | undefined): string {
+  if (!key)
+    throw new Error("The builder key is no longer stored; the configuration cannot be rewritten.");
+  return key.trim();
 }
 
 /** The services connect as their own roles, never as the database superuser. */

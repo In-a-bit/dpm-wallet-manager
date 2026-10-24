@@ -306,7 +306,12 @@ async function handOverBackupKit(io: readline.Interface, service: SetupService):
 
 function printConnection(service: SetupService): void {
   const details = service.connectionDetails();
-  if (!details) return;
+  if (!details) {
+    console.log(
+      "\nYour install is running. Reveal your backend key in the admin dashboard (API keys).",
+    );
+    return;
+  }
   console.log("\nYour install is running. Give your backend:");
   console.log(`  Backend key: ${details.operatorKey}`);
   console.log("  Wallet manager address: see ./dpm-custody status");

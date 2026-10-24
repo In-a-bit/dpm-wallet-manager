@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
 import { convertExistingInstall, type Connect } from "./db-roles";
+import { scrubKeys } from "./key-lifecycle";
 import { SetupStateStore } from "./state";
 
 /**
@@ -97,7 +98,7 @@ export type ConfigLayout = { wallet: string; manager: string; state: string };
  * migrate with the volume writable, which is where legacy gets scrubbed.
  */
 type Scrub = { name: string; run: (layout: ConfigLayout, say: (line: string) => void) => void };
-export const SCRUBS: readonly Scrub[] = [];
+export const SCRUBS: readonly Scrub[] = [{ name: "setup-keys", run: scrubKeys }];
 
 /** The migrations, then the scrubs, then the legacy fingerprint (last, so a crash re-copies). */
 export async function runAll(
@@ -113,6 +114,24 @@ export async function runAll(
     scrub.run(dirs, (line) => say(`[migrate]   ${line}`));
     if (legacyWritable) scrub.run(legacy, (line) => say(`[migrate]   legacy: ${line}`));
     else say("[migrate]   legacy: read-only here, left for the upgrade's writable run");
+  }
+  sealLegacy(dirs);
+}
+
+/**
+ * Runs every scrub on the legacy volume alone, and re-seals it so the next migrate does not take
+ * the scrubbed copy for a rollback's change. For `dpm-custody` to call with the volume mounted
+ * writable: an upgrade run by an older dpm-custody never gets the writable migrate run.
+ */
+export function scrubLegacy(dirs: MigrationDirs, say: (line: string) => void): void {
+  if (listFiles(dirs.legacy).length === 0) return say("nothing in the old config volume");
+  if (!(dirs.legacyWritable ?? isWritable(dirs.legacy))) {
+    throw new Error("The old config volume is mounted read-only.");
+  }
+  const legacy: ConfigLayout = { wallet: dirs.legacy, manager: dirs.legacy, state: dirs.legacy };
+  for (const scrub of SCRUBS) {
+    say(`scrub ${scrub.name}`);
+    scrub.run(legacy, (line) => say(`  ${line}`));
   }
   sealLegacy(dirs);
 }

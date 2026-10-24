@@ -478,6 +478,16 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   databases and rewrites the env files. Rolling back to such a version uses the old `config`
   volume, which still holds the superuser URL (the superuser can use the converted databases);
   `dpm-custody cleanup-legacy` removes it.
+- **Keys setup does not keep:** setup generates an admin key and gives the manager it as
+  `DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY`. Once the manager has used it, setup removes that line
+  from the manager's settings. When setup is finished, the owner account exists and you have
+  confirmed the backup kit, setup also forgets the admin key, the backend (operator) key and your
+  builder key. From then on the backup kit says so: reveal the admin and backend keys in the admin
+  dashboard (API keys), and the builder key is in the platform's backoffice. The same cleanup is
+  applied to an install made before it, the first time setup starts (and to the old `config` volume
+  that a rollback would use: an upgrade does that itself, and `dpm-custody` does it at its first
+  command if an older `dpm-custody` ran the upgrade). `dpm-custody cleanup-legacy` removes the old
+  volume's contents altogether; do it once you are sure you will not roll back.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
   platform credential, so no platform-wide `APP_API_KEY` is handed out or configured. The
   platform accepts it without the app key only where an install needs it:

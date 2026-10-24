@@ -1,6 +1,7 @@
 import type { Db } from "../src/db/client";
 import { ApiKeyRepository } from "../src/db/repositories/api-key.repo";
 import { DB } from "../src/tokens";
+import { createTestDatabase } from "../src/testing/pg-test-db";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 /**
@@ -325,6 +326,37 @@ describe("api keys on an empty install", () => {
       expect(second.created).toBe(false);
     } finally {
       await harness.close();
+    }
+  });
+});
+
+describe("a restart after the bootstrap key is removed from the settings", () => {
+  it("boots fine without it, keeps the adopted admin key and mints nothing", async () => {
+    const configured = "dpmm_test_ad_k7m2q9x4b3n8v3c6z2s5t2r7w4y9p8j3";
+    const database = await createTestDatabase();
+    try {
+      const first = await startHarness(
+        { DATABASE_URL: database.url, DPM_WALLET_MANAGER_BOOTSTRAP_ADMIN_KEY: configured },
+        { withoutKeys: true },
+      );
+      expect((await first.get("/v1/api-keys", { apiKey: configured })).status).toBe(200);
+      const before = (await first.get("/v1/api-keys", { apiKey: configured })).body.total;
+      await first.stop();
+
+      // Setup took the variable out of the env file; startup must still run, and do nothing.
+      const second = await startHarness(
+        { DATABASE_URL: database.url, DPM_WALLET_MANAGER_SKIP_STARTUP_KEY_BOOTSTRAP: "" },
+        { withoutKeys: true },
+      );
+      try {
+        const listed = await second.get("/v1/api-keys", { apiKey: configured });
+        expect(listed.status).toBe(200);
+        expect(listed.body.total).toBe(before);
+      } finally {
+        await second.stop();
+      }
+    } finally {
+      await database.drop();
     }
   });
 });

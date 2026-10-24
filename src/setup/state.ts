@@ -11,7 +11,8 @@ export type CustodyMode = "shared" | "segregated";
 export type SetupAnswers = {
   environment: EnvironmentId;
   dpmApiUrl: string;
-  builderKey: string;
+  /** Dropped once setup is finished and the owner has the kit (key-lifecycle.ts). */
+  builderKey?: string;
   mode: CustodyMode;
 };
 
