@@ -19,6 +19,7 @@ import {
 
 import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
+import { Idempotent } from "../common/decorators/api-idempotency.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
@@ -60,6 +61,7 @@ export class WalletsController {
   @Roles("operator")
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ operationId: "createWallet", summary: "Create a wallet" })
+  @Idempotent()
   @ApiCreatedResponse({ type: WalletResponseDto })
   @ApiErrors("VALIDATION_FAILED", "EXTERNAL_ID_TAKEN", "UPSTREAM_UNAVAILABLE", "UPSTREAM_REJECTED")
   async create(

@@ -1,5 +1,17 @@
-import { applyDecorators } from "@nestjs/common";
+import { applyDecorators, SetMetadata } from "@nestjs/common";
 import { ApiHeader } from "@nestjs/swagger";
+
+/** Set by `@Idempotent()`; the interceptor acts only on routes that carry it. */
+export const IDEMPOTENT_METADATA = "dpmm:idempotent";
+
+/**
+ * Opts a route into `Idempotency-Key` handling (see `IdempotencyInterceptor`) and documents the
+ * header. Only the POSTs that sign or move value carry it — never key, session or user routes,
+ * whose responses hold secrets that must not be stored for replay.
+ */
+export function Idempotent() {
+  return applyDecorators(SetMetadata(IDEMPOTENT_METADATA, true), ApiIdempotencyKey());
+}
 
 /**
  * Documents the `Idempotency-Key` header on a route that signs something.

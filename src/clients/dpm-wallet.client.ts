@@ -44,6 +44,8 @@ type UpstreamEnvelope = {
 const CODE_MAP: Record<string, ErrorCode> = {
   CUSTOMER_NOT_REGISTERED: "WALLET_NOT_REGISTERED",
   IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT",
+  // The same key is still being executed upstream (our earlier attempt timed out): retry later.
+  IDEMPOTENCY_IN_PROGRESS: "UPSTREAM_UNAVAILABLE",
   VAULT_NOT_INITIALIZED: "UPSTREAM_UNAVAILABLE",
   BALANCES_UNAVAILABLE: "BALANCES_UNAVAILABLE",
   // Only ever answered for an id this service relayed, so to our caller the transfer is unknown.

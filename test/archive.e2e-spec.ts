@@ -535,6 +535,7 @@ describe("operation idempotency key migration", () => {
 
       // Back and forth: existing rows survive with a NULL key.
       const id = await seedOperation(harness, "order", OLD);
+      await harness.db.undoLastMigration(); // idempotency actor scope
       await harness.db.undoLastMigration();
       await harness.db.undoLastMigration();
       expect(
@@ -559,7 +560,7 @@ describe("archives migration", () => {
     const harness = await startHarness();
     try {
       // Back to before the archive migrations, with rows already in the table.
-      for (let i = 0; i < 4; i++) await harness.db.undoLastMigration();
+      for (let i = 0; i < 5; i++) await harness.db.undoLastMigration();
       const existing = await seedOperation(harness, "withdraw", OLD);
       const routine = await seedOperation(harness, "order", OLD);
       await harness.db.runMigrations();

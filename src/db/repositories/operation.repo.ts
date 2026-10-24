@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import type { Repository } from "typeorm";
+import { IsNull, type Repository } from "typeorm";
 
 import {
   decodeCursor,
@@ -95,7 +95,7 @@ export class OperationRepository {
   /**
    * Inserts unless this is the same request retried under the same idempotency key, and returns
    * the id of whichever row stands. A retry gets the original signature back, so the same key,
-   * kind, signer and request means the same action, not a second one. Without a key nothing is
+   * kind, signer, request and actor means the same action, not a second one. Without a key nothing is
    * merged: two requests that look alike are still two requests, each with its own actor.
    */
   async insertOrGet(operation: NewOperation): Promise<string> {
@@ -106,6 +106,9 @@ export class OperationRepository {
           kind: operation.kind,
           signerWalletId: operation.signerWalletId,
           requestHash: operation.requestHash,
+          // The same actor's retry: another caller reusing a key is a different action.
+          apiKeyId: operation.apiKeyId ?? IsNull(),
+          uiUserId: operation.uiUserId ?? IsNull(),
         },
         order: { createdAt: "ASC" },
       });

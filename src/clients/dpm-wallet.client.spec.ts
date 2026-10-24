@@ -83,6 +83,21 @@ describe("DpmWalletClient", () => {
     expect((rejected as UpstreamError).code).toBe("UPSTREAM_REJECTED");
   });
 
+  it("maps an upstream idempotency-in-progress to a retryable code, and 413/415 to rejected", async () => {
+    upstream.failNextWith(409, "IDEMPOTENCY_IN_PROGRESS");
+    const busy = await client.health().catch((err: unknown) => err);
+    expect((busy as UpstreamError).code).toBe("UPSTREAM_UNAVAILABLE");
+    expect((busy as UpstreamError).upstreamCode).toBe("IDEMPOTENCY_IN_PROGRESS");
+    for (const [status, code] of [
+      [413, "PAYLOAD_TOO_LARGE"],
+      [415, "UNSUPPORTED_MEDIA_TYPE"],
+    ] as const) {
+      upstream.failNextWith(status, code);
+      const rejected = await client.health().catch((err: unknown) => err);
+      expect((rejected as UpstreamError).code).toBe("UPSTREAM_REJECTED");
+    }
+  });
+
   it("reports an unreachable upstream rather than hanging", async () => {
     upstream.hang = true;
     const error = await client.health().catch((err: unknown) => err);

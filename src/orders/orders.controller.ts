@@ -4,7 +4,7 @@ import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger"
 import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
-import { ApiIdempotencyKey } from "../common/decorators/api-idempotency.decorator";
+import { Idempotent } from "../common/decorators/api-idempotency.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import { SignCancelDto, SignOrderDto } from "./dto/order.dto";
@@ -50,7 +50,7 @@ export class OrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signOrder", summary: "Build and sign an order" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: SignedOrderResponseDto })
   @ApiErrors(
     "VALIDATION_FAILED",
@@ -85,7 +85,7 @@ export class OrdersController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signCancel", summary: "Sign an order cancellation" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: SignedCancelResponseDto })
   @ApiErrors(
     "VALIDATION_FAILED",

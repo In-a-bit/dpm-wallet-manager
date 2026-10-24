@@ -118,8 +118,8 @@ describe("RetentionService", () => {
     await seedAudit("meta.withdraw", "success", 1000);
     await seedAudit("key.create", "success", 1000);
 
-    await idempotency.save("old", { requestHash: "h", responseJson: "{}" }, ago(8));
-    await idempotency.save("fresh", { requestHash: "h", responseJson: "{}" }, ago(1));
+    await idempotency.save("a", "old", { requestHash: "h", responseJson: "{}" }, ago(8));
+    await idempotency.save("a", "fresh", { requestHash: "h", responseJson: "{}" }, ago(1));
     for (const [expiresAt, id] of [
       [new Date(now.getTime() - 1000).toISOString(), randomUUID()],
       [new Date(now.getTime() + DAY).toISOString(), randomUUID()],

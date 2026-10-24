@@ -273,7 +273,11 @@ describe("repositories", () => {
 
       it("returns the original row for the same key, kind, signer and request", async () => {
         const first = fresh({ idempotencyKey: "retry" });
-        const retry = fresh({ walletId: first.walletId, idempotencyKey: "retry" });
+        const retry = fresh({
+          walletId: first.walletId,
+          idempotencyKey: "retry",
+          apiKeyId: first.apiKeyId,
+        });
         await operations.insertOrGet(first);
         expect(await operations.insertOrGet(retry)).toBe(first.id);
         expect((await operations.findById(first.id))?.apiKeyId).toBe(first.apiKeyId);
@@ -287,6 +291,7 @@ describe("repositories", () => {
           { kind: "cancel" as const },
           { signerWalletId: randomUUID() },
           { requestHash: "other" },
+          { apiKeyId: randomUUID() },
         ]) {
           const other = fresh({ walletId: base.walletId, idempotencyKey: "shared", ...over });
           expect(await operations.insertOrGet(other)).toBe(other.id);
@@ -297,9 +302,9 @@ describe("repositories", () => {
 
   describe("idempotency", () => {
     it("keeps the first writer's record when two retries race", async () => {
-      await idempotency.save("k1", { requestHash: "h1", responseJson: '{"a":1}' }, now());
-      await idempotency.save("k1", { requestHash: "h2", responseJson: '{"b":2}' }, now());
-      expect(await idempotency.find("k1")).toEqual({
+      await idempotency.save("a", "k1", { requestHash: "h1", responseJson: '{"a":1}' }, now());
+      await idempotency.save("a", "k1", { requestHash: "h2", responseJson: '{"b":2}' }, now());
+      expect(await idempotency.find("a", "k1")).toEqual({
         requestHash: "h1",
         responseJson: '{"a":1}',
       });
@@ -307,10 +312,11 @@ describe("repositories", () => {
 
     it("purges only records older than the retention window", async () => {
       const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      await idempotency.save("k-old", { requestHash: "h", responseJson: "{}" }, old);
+      await idempotency.save("a", "k-old", { requestHash: "h", responseJson: "{}" }, old);
       expect(await idempotency.purgeExpired()).toBe(1);
-      expect(await idempotency.find("k-old")).toBeUndefined();
-      expect(await idempotency.find("k1")).toBeDefined();
+      expect(await idempotency.find("a", "k-old")).toBeUndefined();
+      expect(await idempotency.find("a", "k1")).toBeDefined();
+      expect(await idempotency.find("b", "k1")).toBeUndefined();
     });
   });
 });

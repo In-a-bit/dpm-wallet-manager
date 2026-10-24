@@ -8,12 +8,15 @@ import { createHash } from "node:crypto";
 
 import type { Request } from "express";
 import { concatMap, of, type Observable } from "rxjs";
+import { Reflector } from "@nestjs/core";
 
 import {
   IdempotencyRepository,
   type IdempotencyRecord,
 } from "../../db/repositories/idempotency.repo";
 import { ManagerError } from "../../errors";
+import { ACTOR_PROPERTY, type AuthenticatedRequest } from "../actor";
+import { IDEMPOTENT_METADATA } from "../decorators/api-idempotency.decorator";
 
 export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
@@ -30,22 +33,40 @@ export const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
  * The same key is forwarded upstream by the services below, so the protection holds even when the
  * retry arrives after this service has already returned but before the caller saw the response.
  *
+ * Opt-in: only routes marked `@Idempotent()` are touched, and only a POST. A key is scoped to the
+ * actor (API key id or `user:<id>`), so another caller reusing it is simply a fresh key and can
+ * neither replay nor detect the original. Keys are honoured for 24 hours.
+ *
  * Only successful responses are stored. An exception skips the mapping below, so a retry after
  * a transient failure still reaches the handler.
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
-  constructor(private readonly repository: IdempotencyRepository) {}
+  constructor(
+    private readonly repository: IdempotencyRepository,
+    private readonly reflector: Reflector,
+  ) {}
 
   async intercept(context: ExecutionContext, next: CallHandler): Promise<Observable<unknown>> {
-    const request = context.switchToHttp().getRequest<Request>();
+    const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
+    if (request.method !== "POST") return next.handle();
+    if (
+      !this.reflector.getAllAndOverride<boolean>(IDEMPOTENT_METADATA, [
+        context.getHandler(),
+        context.getClass(),
+      ])
+    ) {
+      return next.handle();
+    }
     const key = request.header(IDEMPOTENCY_KEY_HEADER)?.trim();
-    if (!key) return next.handle();
+    const actor = request[ACTOR_PROPERTY];
+    if (!key || !actor) return next.handle();
+    const actorId = actor.keyId ?? `user:${actor.userId}`;
 
     // Hashed from the raw body: pipes transform the handler's argument, not the request, so
     // this sees exactly what the client sent, as the Express middleware did.
     const requestHash = hashRequest(request);
-    const stored = await this.repository.find(key);
+    const stored = await this.repository.find(actorId, key);
     if (stored) return of(replayOrConflict(stored, requestHash));
 
     // The record is committed before the body is emitted, not alongside it: a client that
@@ -54,6 +75,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     return next.handle().pipe(
       concatMap(async (body: unknown) => {
         await this.repository.save(
+          actorId,
           key,
           { requestHash, responseJson: JSON.stringify(body) },
           new Date().toISOString(),

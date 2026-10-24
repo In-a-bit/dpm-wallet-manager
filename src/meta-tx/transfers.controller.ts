@@ -4,7 +4,7 @@ import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger"
 import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
-import { ApiIdempotencyKey } from "../common/decorators/api-idempotency.decorator";
+import { Idempotent } from "../common/decorators/api-idempotency.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import { MetaTxWithdrawDto } from "./dto/meta-tx.dto";
@@ -43,7 +43,7 @@ export class TransfersController {
     format: "uuid",
     description: "The wallet the funds move from. It signs; there is no routing here.",
   })
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: TransferResponseDto })
   @ApiErrors(
     "VALIDATION_FAILED",

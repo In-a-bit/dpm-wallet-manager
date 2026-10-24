@@ -9,6 +9,8 @@ export type IdempotencyRecord = { requestHash: string; responseJson: string };
 
 /** Records older than this are dropped at boot: a retry window measured in days is generous. */
 const RETENTION_DAYS = 7;
+/** A key is honoured for this long (documented on the `Idempotency-Key` header). */
+const WINDOW_MS = 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class IdempotencyRepository {
@@ -18,9 +20,15 @@ export class IdempotencyRepository {
     this.records = db.getRepository(IdempotencyKeyEntity);
   }
 
-  async find(key: string): Promise<IdempotencyRecord | undefined> {
-    const row = await this.records.findOneBy({ key });
-    return row ? { requestHash: row.requestHash, responseJson: row.responseJson } : undefined;
+  async find(
+    actor: string,
+    key: string,
+    now: Date = new Date(),
+  ): Promise<IdempotencyRecord | undefined> {
+    const row = await this.records.findOneBy({ actor, key });
+    if (!row) return undefined;
+    if (Date.parse(row.createdAt) < now.getTime() - WINDOW_MS) return undefined;
+    return { requestHash: row.requestHash, responseJson: row.responseJson };
   }
 
   /**
@@ -28,11 +36,21 @@ export class IdempotencyRepository {
    * original, so the insert ignores a conflict rather than overwriting — the loser then reads the
    * winner's stored response on its next attempt.
    */
-  async save(key: string, record: IdempotencyRecord, now: string): Promise<void> {
+  async save(actor: string, key: string, record: IdempotencyRecord, now: string): Promise<void> {
+    // An expired row still occupies the key, so it is replaced rather than ignored.
+    await this.records
+      .createQueryBuilder()
+      .delete()
+      .where("actor = :actor AND key = :key AND created_at < :cutoff", {
+        actor,
+        key,
+        cutoff: new Date(Date.parse(now) - WINDOW_MS).toISOString(),
+      })
+      .execute();
     await this.records
       .createQueryBuilder()
       .insert()
-      .values({ key, ...record, createdAt: now })
+      .values({ actor, key, ...record, createdAt: now })
       .orIgnore()
       .execute();
   }

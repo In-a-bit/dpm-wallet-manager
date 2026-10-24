@@ -4,7 +4,7 @@ import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from "@nestjs/swagger"
 import { CurrentActor, type Actor } from "../common/actor";
 import { ApiAuth } from "../common/decorators/api-auth.decorator";
 import { ApiErrors } from "../common/decorators/api-errors.decorator";
-import { ApiIdempotencyKey } from "../common/decorators/api-idempotency.decorator";
+import { Idempotent } from "../common/decorators/api-idempotency.decorator";
 import { Roles } from "../common/decorators/roles.decorator";
 import { IsUuidPipe } from "../common/pipes/uuid.pipe";
 import type { ErrorCode } from "../errors";
@@ -61,7 +61,7 @@ export class MetaTxController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signAllowance", summary: "Sign a USDC and CTF allowance" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: MetaTxResponseDto })
   @ApiErrors(...COMMON_ERRORS, "MASTER_ALLOWANCE_FORBIDDEN")
   allowance(
@@ -84,7 +84,7 @@ export class MetaTxController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signRedeem", summary: "Sign a redemption" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: MetaTxResponseDto })
   @ApiErrors(...COMMON_ERRORS, "EXTERNAL_TRANSFER_FORBIDDEN")
   redeem(
@@ -107,7 +107,7 @@ export class MetaTxController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signSplit", summary: "Sign a position split" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: MetaTxResponseDto })
   @ApiErrors(...COMMON_ERRORS)
   split(
@@ -130,7 +130,7 @@ export class MetaTxController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signMerge", summary: "Sign a position merge" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: MetaTxResponseDto })
   @ApiErrors(...COMMON_ERRORS)
   merge(
@@ -160,7 +160,7 @@ export class MetaTxController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ operationId: "signWithdraw", summary: "Sign a USDC transfer out of a wallet" })
   @ApiParam(WALLET_ID)
-  @ApiIdempotencyKey()
+  @Idempotent()
   @ApiOkResponse({ type: MetaTxResponseDto })
   @ApiErrors(...COMMON_ERRORS, "EXTERNAL_TRANSFER_FORBIDDEN")
   withdraw(
