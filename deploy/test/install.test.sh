@@ -182,6 +182,29 @@ if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/docker ]; then
   if PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
     docker compose -f "$HERE/compose.yml" config >/dev/null 2>"$T/cfg.err"; then ok "compose config validates"
   else bad "compose config validates: $(head -3 "$T/cfg.err")"; fi
+  # Each volume is mounted only where it is needed (the config split).
+  if command -v python3 >/dev/null 2>&1 &&
+    PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
+      docker compose -f "$HERE/compose.yml" config --format json >"$T/cfg.json" 2>/dev/null; then
+    if python3 - "$T/cfg.json" <<'PY'
+import json, sys
+svc = json.load(open(sys.argv[1]))["services"]
+users = {}
+for name, s in svc.items():
+    for v in s.get("volumes", []):
+        users.setdefault(v["source"], set()).add(name)
+want = {
+    "config-wallet": {"dpm-wallet", "setup", "migrate"},
+    "config-manager": {"dpm-wallet-manager", "setup", "migrate"},
+    "setup-state": {"setup", "migrate"},
+    "config": {"migrate"},
+}
+bad = {k: users.get(k) for k, v in want.items() if users.get(k) != v}
+sys.exit(1 if bad else 0)
+PY
+    then ok "compose: config volumes are mounted only by their consumers"
+    else bad "compose: config volumes are mounted only by their consumers"; fi
+  fi
 fi
 
 [ $fails -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }

@@ -3,8 +3,18 @@
 #
 # Nobody edits this file. The installer (install.sh / install.ps1) writes .env next to it with
 # the database password and the image versions; everything else is produced by setup, which
-# writes the two services' env files into the `config` volume. Until it has, both services wait:
-# their command below loops until /config/ready exists.
+# writes each service's env file into that service's own volume (`config-wallet`, `config-manager`).
+# Until it has, both services wait: their command below loops until /config/ready exists.
+#
+# Who can read what. Three volumes, each mounted only where it is needed: `config-wallet` by
+# dpm-wallet and setup, `config-manager` by the manager and setup, `setup-state` (answers, secrets,
+# journal) by setup alone. So the manager cannot read the wallet's env file, and neither service can
+# read setup's state. Env files are mode 0600. All three containers run as uid 100 (the user each
+# image creates), so 0600 lets the service that owns the volume read its file; no volume is shared
+# between two services, which is why distinct uids add nothing. The services pin `user:` so a
+# change of image user fails loudly (a permission error at boot) rather than silently.
+# `config` is the single volume older versions used. Only the `migrate` service mounts it; it is
+# copied across once and kept so a rollback still works, until `./dpm-custody cleanup-legacy`.
 #
 # Setup has no port: it is driven from a terminal with `./dpm-custody setup`, which runs inside
 # its container. The only port published is the wallet manager's API (3000), on loopback unless
@@ -78,13 +88,17 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+    user: "100:101"
     volumes:
-      - config:/config:ro
+      - config-wallet:/config:ro
       # The wallet's data directory (no key material is written here); `dpm-custody backup` still copies it.
       - wallet-data:/data
     depends_on:
       postgres:
         condition: service_healthy
+      # Creates the volume above with the right owner before this container can claim it.
+      migrate:
+        condition: service_completed_successfully
     stop_grace_period: 30s
 
   dpm-wallet-manager:
@@ -111,8 +125,9 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+    user: "100:101"
     volumes:
-      - config:/config:ro
+      - config-manager:/config:ro
       # Read-only, and used only to ask the disk how full it is (statfs); no file is read.
       - pg-data:/storage/pg:ro
     depends_on:
@@ -120,6 +135,8 @@ services:
         condition: service_healthy
       dpm-wallet:
         condition: service_started
+      migrate:
+        condition: service_completed_successfully
     stop_grace_period: 30s
 
   # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a
@@ -129,12 +146,35 @@ services:
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     command: ["node", "dist/setup/main"]
+    user: "100:101"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dpm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       SETUP_MANAGER_PUBLIC_URL: ${MANAGER_PUBLIC_URL:-http://localhost:3000}
     volumes:
-      - config:/config
+      - config-wallet:/config-wallet
+      - config-manager:/config-manager
+      - setup-state:/state
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Runs `setup migrate` to completion before anything else uses the volumes: on an upgrade it
+  # copies the old single `config` volume into the three new ones; on a fresh install it does
+  # nothing. Idempotent, so it is safe on every `up`. `dpm-custody upgrade` also runs it by hand.
+  # It is the only service that mounts the legacy volume (read-write only so cleanup-legacy can
+  # empty it; migrate itself only reads).
+  migrate:
+    <<: *logging
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
+    restart: "no"
+    command: ["node", "dist/setup/main", "migrate"]
+    user: "100:101"
+    volumes:
+      - config:/legacy-config
+      - config-wallet:/config-wallet
+      - config-manager:/config-manager
+      - setup-state:/state
 
 configs:
   create-manager-database:
@@ -144,4 +184,8 @@ configs:
 volumes:
   pg-data:
   wallet-data:
+  config-wallet:
+  config-manager:
+  setup-state:
+  # Legacy: the single volume of versions before the split. See the header.
   config:

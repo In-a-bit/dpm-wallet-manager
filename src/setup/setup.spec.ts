@@ -152,13 +152,28 @@ describe("config writer", () => {
   });
 
   it("writes both env files, then the ready marker", () => {
-    const dir = tempDir();
-    writeInstallConfig(dir, inputs);
-    const manager = fs.readFileSync(path.join(dir, MANAGER_ENV_FILE), "utf8");
+    const dirs = { wallet: tempDir(), manager: tempDir() };
+    writeInstallConfig(dirs, inputs);
+    const manager = fs.readFileSync(path.join(dirs.manager, MANAGER_ENV_FILE), "utf8");
     expect(manager).toContain("DPM_WALLET_MANAGER_MODE='shared'");
     expect(manager).toContain(`DPM_WALLET_API_KEY='${inputs.secrets.walletApiKey}'`);
-    expect(fs.existsSync(path.join(dir, WALLET_ENV_FILE))).toBe(true);
-    expect(fs.existsSync(path.join(dir, READY_MARKER))).toBe(true);
+    expect(fs.existsSync(path.join(dirs.wallet, WALLET_ENV_FILE))).toBe(true);
+    for (const dir of [dirs.wallet, dirs.manager]) {
+      expect(fs.existsSync(path.join(dir, READY_MARKER))).toBe(true);
+    }
+  });
+
+  it("keeps each service's file out of the other's volume, readable by its owner only", () => {
+    const dirs = { wallet: tempDir(), manager: tempDir() };
+    writeInstallConfig(dirs, inputs);
+    expect(fs.readdirSync(dirs.wallet).sort()).toEqual([READY_MARKER, WALLET_ENV_FILE].sort());
+    expect(fs.readdirSync(dirs.manager).sort()).toEqual([MANAGER_ENV_FILE, READY_MARKER].sort());
+    for (const file of [
+      path.join(dirs.wallet, WALLET_ENV_FILE),
+      path.join(dirs.manager, MANAGER_ENV_FILE),
+    ]) {
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
   });
 });
 

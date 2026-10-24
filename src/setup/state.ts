@@ -17,8 +17,8 @@ export type SetupAnswers = {
 
 /**
  * Everything setup knows, persisted after every change so a closed tab, a crash or a reboot
- * resumes where it stopped. It lives on the same volume as the env files it produces, which
- * already hold these secrets, so keeping it adds no new exposure.
+ * resumes where it stopped. It lives in the setup-state volume, mounted by setup alone, so the
+ * services never see the secrets of the other one (or the owner-visible kit material).
  */
 export type SetupState = {
   answers?: SetupAnswers;

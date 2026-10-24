@@ -13,6 +13,10 @@
 #                              move to the newest version (or to that version): checks the
 #                              download, backs up, and rolls back by itself if it does not come up
 #   ./dpm-custody rollback     undo the last upgrade (images and files; never the databases)
+#   ./dpm-custody cleanup-legacy [--yes]
+#                              after an upgrade from a version before the config volume split:
+#                              empty the old config volume (this makes a rollback to that
+#                              version impossible)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -74,7 +78,9 @@ cmd_backup() {
   compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql" && [ -s "$dir/databases.sql" ] ||
     { backup_failed "$dir" "the databases"; return 1; }
   echo "Saving configuration and keys..."
-  compose exec -T setup tar -C / -czf - config >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
+  # Three volumes since the config split (config-wallet, config-manager, setup-state); an install
+  # whose setup container still has the single /config volume is saved as it was.
+  compose exec -T setup sh -c 'if [ -d /config-wallet ]; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi' >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
     { backup_failed "$dir" "the configuration"; return 1; }
   compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz" && [ -s "$dir/wallet-data.tar.gz" ] ||
     { backup_failed "$dir" "the wallet data"; return 1; }
@@ -242,6 +248,7 @@ stack_healthy() {
   [ -n "$services" ] || return 1
   states="$(compose ps -a --format json 2>/dev/null | ps_states)" || return 1
   for svc in $services; do
+    [ "$svc" = migrate ] && continue # a one-shot: it exits once the volumes are ready
     lines="$(printf '%s\n' "$states" | awk -v s="$svc" '$1 == s')"
     [ -n "$lines" ] || return 1
     while read -r svc_ state health; do
@@ -255,7 +262,7 @@ stack_healthy() {
 # not_healthy_list prints the services that are not healthy, for messages.
 not_healthy_list() {
   compose ps -a --format json 2>/dev/null | ps_states |
-    awk '$2 != "running" || ($3 != "-" && $3 != "healthy") { printf "%s%s (%s%s)", sep, $1, $2, ($3 == "-" ? "" : ", " $3); sep = ", " }'
+    awk '$1 == "migrate" { next } $2 != "running" || ($3 != "-" && $3 != "healthy") { printf "%s%s (%s%s)", sep, $1, $2, ($3 == "-" ? "" : ", " $3); sep = ", " }'
 }
 
 # health_gate waits up to the health timeout (DPM_CUSTODY_HEALTH_TIMEOUT, default 300 s) for
@@ -695,6 +702,7 @@ cmd_upgrade() {
     set_env DPM_WALLET_MANAGER_TAG "$new_manager" &&
     set_env DPM_CUSTODY_VERSION "$target" &&
     install_file "$STAGE/dpm-custody" dpm-custody 755 &&
+    run_migrate &&
     compose up -d >>"$UPGRADE_LOG" 2>&1 &&
     health_gate; then
     # 8. Healthy.
@@ -706,6 +714,8 @@ cmd_upgrade() {
     say "  ✓ Upgraded to $target. Every service is healthy."
     say "    If something is not right, ./dpm-custody rollback goes back to $installed"
     say "    (images and files; the databases stay as they are). The backup is in $(pwd)/$BACKUP_DIR."
+    say "    Once you are sure you will not go back, ./dpm-custody cleanup-legacy removes the old"
+    say "    configuration volume that earlier versions used (only present if you upgraded from one)."
     say ""
     return 0
   fi
@@ -732,6 +742,31 @@ cmd_upgrade() {
     say "    The note that this upgrade did not finish stays until ./dpm-custody rollback succeeds."
   fi
   exit 1
+}
+
+# run_migrate brings the volumes up to the new layout (`setup migrate`): idempotent, and a no-op
+# on an install that is already there. It runs in the new compose.yml's migrate service, before
+# the new containers are created.
+run_migrate() {
+  say "Preparing the configuration volumes ..."
+  if ! compose run --rm --no-deps -T migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
+    say "  ✕ Could not prepare the configuration volumes (details in upgrade.log)."
+    return 1
+  fi
+}
+
+# cmd_cleanup_legacy empties the single config volume that versions before the split used. Until
+# then it is kept, because rolling back to such a version needs it.
+cmd_cleanup_legacy() {
+  local answer
+  if [ "${1:-}" != --yes ] && [ "${1:-}" != -y ]; then
+    echo "This empties the old configuration volume. After it, ./dpm-custody rollback can no longer"
+    echo "go back to a version from before the volume split. The running install is not affected."
+    [ -t 0 ] || { echo "No terminal to ask in. Run it again with --yes." >&2; return 1; }
+    read -r -p "Empty it now? [y/N] " answer || answer=""
+    case "$answer" in y | Y | yes | YES | Yes) ;; *) echo "Cancelled."; return 0 ;; esac
+  fi
+  compose run --rm --no-deps -T migrate node dist/setup/main cleanup-legacy
 }
 
 cmd_rollback() {
@@ -802,6 +837,7 @@ main() {
     backup-kit) compose exec -T setup node dist/setup/main kit ;;
     upgrade) shift; cmd_upgrade "$@" ;;
     rollback) cmd_rollback ;;
+    cleanup-legacy) shift; cmd_cleanup_legacy "$@" ;;
     *) usage ;;
   esac
 }

@@ -5,17 +5,20 @@ import type { InstallConfig } from "./platform-config";
 import type { InstallSecrets } from "./secrets";
 import type { SetupAnswers } from "./state";
 
-/** Files the compose wrappers read. `ready` is written last: its presence means both are whole. */
+/**
+ * Files the compose wrappers read, each in its own service's volume (see deploy/compose.yml).
+ * `ready` is written last in each: its presence means that service's env file is whole.
+ */
 export const WALLET_ENV_FILE = "dpm-wallet.env";
 export const MANAGER_ENV_FILE = "dpm-wallet-manager.env";
 export const READY_MARKER = "ready";
 
-/**
- * The service containers run as their own non-root users (different ones), so the files they
- * read are world-readable. They sit in a volume only this stack mounts, read-only everywhere but
- * setup; setup's own state file, which nobody else reads, stays owner-only (see state.ts).
- */
-const SERVICE_READABLE = 0o644;
+/** Each env file is owner-only: the service that reads it runs as the same user as setup. */
+const OWNER_ONLY = 0o600;
+const MARKER_MODE = 0o644;
+
+/** The two volumes setup writes configuration into; each is mounted by one service only. */
+export type ConfigDirs = { wallet: string; manager: string };
 
 /** Where each service listens inside the compose network. Fixed: nothing outside reaches them. */
 export const WALLET_PORT = 8090;
@@ -85,10 +88,15 @@ export function renderEnvFile(values: Record<string, string>): string {
   return `# Written by dpm-wallet-manager setup. Do not edit by hand.\n${lines.join("\n")}\n`;
 }
 
-export function writeInstallConfig(configDir: string, inputs: InstallInputs): void {
-  writeServiceFile(path.join(configDir, WALLET_ENV_FILE), renderEnvFile(walletEnv(inputs)));
-  writeServiceFile(path.join(configDir, MANAGER_ENV_FILE), renderEnvFile(managerEnv(inputs)));
-  writeServiceFile(path.join(configDir, READY_MARKER), "");
+export function writeInstallConfig(dirs: ConfigDirs, inputs: InstallInputs): void {
+  writeFile(path.join(dirs.wallet, WALLET_ENV_FILE), renderEnvFile(walletEnv(inputs)), OWNER_ONLY);
+  writeFile(
+    path.join(dirs.manager, MANAGER_ENV_FILE),
+    renderEnvFile(managerEnv(inputs)),
+    OWNER_ONLY,
+  );
+  writeFile(path.join(dirs.wallet, READY_MARKER), "", MARKER_MODE);
+  writeFile(path.join(dirs.manager, READY_MARKER), "", MARKER_MODE);
 }
 
 function databaseUrl(credentials: DatabaseCredentials, database: string): string {
@@ -97,7 +105,7 @@ function databaseUrl(credentials: DatabaseCredentials, database: string): string
   return `postgres://${user}:${password}@${POSTGRES_HOST}:5432/${database}`;
 }
 
-function writeServiceFile(file: string, content: string): void {
-  fs.writeFileSync(file, content, { mode: SERVICE_READABLE });
-  fs.chmodSync(file, SERVICE_READABLE);
+function writeFile(file: string, content: string, mode: number): void {
+  fs.writeFileSync(file, content, { mode });
+  fs.chmodSync(file, mode);
 }

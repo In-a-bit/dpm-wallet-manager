@@ -41,7 +41,7 @@ case "$args" in
   "image "*) exit 0 ;;
 esac
 case "$args" in
-  *" config --services"*) printf 'postgres\ndpm-wallet\ndpm-wallet-manager\nsetup\n' ;;
+  *" config --services"*) printf 'postgres\ndpm-wallet\ndpm-wallet-manager\nsetup\nmigrate\n' ;;
   *" ps "*"--format json"*)
     n=$(grep -c ' up -d' "$EVENTS")
     if [ -n "${HUP_PIDFILE:-}" ] && [ "$n" -ge 1 ] && [ ! -e "$HUP_PIDFILE.sent" ]; then
@@ -53,12 +53,17 @@ case "$args" in
     o2='{"Health":"healthy","Name":"x-dpm-wallet-1","Service":"dpm-wallet","State":"running"}'
     o3='{"State":"running","Service":"dpm-wallet-manager","Health":"'"$mh"'","Publishers":[{"URL":"127.0.0.1","TargetPort":3000,"PublishedPort":3000}]}'
     o4='{"Health":"","Name":"x-setup-1","Service":"setup","State":"running","Status":"Up"}'
-    if [ "${PS_ARRAY:-}" = 1 ]; then printf '[%s,%s,%s,%s]\n' "$o1" "$o2" "$o3" "$o4"
-    else printf '%s\n%s\n%s\n%s\n' "$o1" "$o2" "$o3" "$o4"; fi
+    o5='{"Health":"","Name":"x-migrate-1","Service":"migrate","State":"exited","Status":"Exited (0)"}'
+    if [ "${PS_ARRAY:-}" = 1 ]; then printf '[%s,%s,%s,%s,%s]\n' "$o1" "$o2" "$o3" "$o4" "$o5"
+    else printf '%s\n%s\n%s\n%s\n%s\n' "$o1" "$o2" "$o3" "$o4" "$o5"; fi
     ;;
   *" pull"*)
     [ -n "${FAIL_PULL:-}" ] && { echo "pull failed" >&2; exit 1; }
     echo "at-pull compose=$(head -n 1 compose.yml) prev=$([ -e compose.yml.prev ] && echo yes || echo no) tag=${DPM_WALLET_MANAGER_TAG:-}" >>"$EVENTS"
+    ;;
+  *" run "*"migrate"*)
+    echo "at-migrate compose=$(head -n 1 compose.yml) marker=$([ -e upgrade.inprogress ] && echo yes || echo no)" >>"$EVENTS"
+    [ -n "${FAIL_MIGRATE:-}" ] && { echo "migrate failed" >&2; exit 1; }
     ;;
   *" up -d"*)
     echo "at-up compose=$(head -n 1 compose.yml) marker=$([ -e upgrade.inprogress ] && echo yes || echo no) prev=$([ -e .env.prev ] && ls -l compose.yml.prev .env.prev dpm-custody.prev | cut -c1-10 | sort -u | tr '\n' ' ')" >>"$EVENTS"
@@ -180,6 +185,9 @@ check "7 happy: files switched, dpm-custody executable" 'cmp -s "$d/compose.yml"
 check "7 happy: .prev files hold the old ones, mode 600" 'cmp -s "$d/compose.yml.prev" "$d.orig.compose.yml" && cmp -s "$d/.env.prev" "$d.orig..env" && cmp -s "$d/dpm-custody.prev" "$d.orig.dpm-custody" && [ "$(mode_of "$d/.env.prev")" = "-rw-------" ] && [ "$(mode_of "$d/dpm-custody.prev")" = "-rw-------" ]'
 check "7 happy: backup folder written, no upgrade.tmp left" '[ -n "$(ls "$d/backups" 2>/dev/null)" ] && [ ! -e "$d/upgrade.tmp" ]'
 check "7 happy: mentions rollback" 'echo "$out" | grep -q "dpm-custody rollback"'
+check "7 happy: setup migrate runs after the switch and before up, never in the old compose" 'has "$ev" "at-migrate compose=# compose 1.1.0 marker=yes" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" " up -d")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" at-migrate)" ]'
+check "7 happy: backup reads the split config volumes with the single-volume fallback" 'grep -q "config-wallet config-manager state" "$ev" && grep -q "tar -C / -czf - config;" "$ev"'
+check "7 happy: the exited migrate one-shot does not fail the health gate; cleanup-legacy hint printed" 'echo "$out" | grep -q "cleanup-legacy"'
 
 # 12. rollback after a good upgrade
 cp "$d/.env" "$T/c7.env.after"
@@ -187,6 +195,19 @@ echo "OPERATOR_LATER=1" >>"$d/.env"
 out="$(run "$d" rollback)"; rc=$?
 check "12 rollback: exit 0, files and versions back" '[ $rc -eq 0 ] && cmp -s "$d/compose.yml" "$d.orig.compose.yml" && cmp -s "$d/dpm-custody" "$d.orig.dpm-custody" && grep -qx "DPM_CUSTODY_VERSION=1.0.0" "$d/.env" && grep -qx "DPM_WALLET_MANAGER_TAG=1.0.0" "$d/.env"'
 check "12 rollback: operator edit kept, up ran, .prev removed" 'grep -qx "OPERATOR_LATER=1" "$d/.env" && has "$d.events" " up -d" && [ ! -e "$d/.env.prev" ]'
+
+
+# 7b. migrate fails: the upgrade does not start the new containers, and rolls back
+d="$T/c7b"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(FAIL_MIGRATE=1 run "$d" upgrade --yes)"; rc=$?
+check "7b migrate failure: non-zero, says so, files restored, only the rollback ran up" '[ $rc -ne 0 ] && echo "$out" | grep -q "configuration volumes" && cmp -s "$d/compose.yml" "$d.orig.compose.yml" && [ "$(grep -c " up -d" "$d.events")" -eq 1 ] && ! has "$d.events" "at-up compose=# compose 1.1.0"'
+
+# 7c. cleanup-legacy
+d="$T/c7c"; make_install "$d" 1.1.0 0.2.0 1.1.0
+out="$(run "$d" cleanup-legacy --yes)"; rc=$?
+check "7c cleanup-legacy --yes runs the migrate service's cleanup" '[ $rc -eq 0 ] && has "$d.events" "run --rm --no-deps -T migrate node dist/setup/main cleanup-legacy"'
+out="$(run "$d" cleanup-legacy)"; rc=$?
+check "7c cleanup-legacy without a terminal or --yes refuses and runs nothing" '[ $rc -ne 0 ] && ! has "$d.events" "cleanup-legacy$"'
 
 # 8. unhealthy after up for the whole gate: automatic rollback
 d="$T/c8"; make_install "$d" 1.0.0 0.1.0 1.0.0

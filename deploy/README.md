@@ -188,6 +188,7 @@ Everything lives in the install folder (`~/dpm-custody` unless you chose another
 | read recent logs             | `~/dpm-custody/dpm-custody logs [service]` |
 | make a backup                | `~/dpm-custody/dpm-custody backup`         |
 | print the backup kit again   | `~/dpm-custody/dpm-custody backup-kit`     |
+| empty the old config volume  | `~/dpm-custody/dpm-custody cleanup-legacy` |
 | update to the newest version | `~/dpm-custody/dpm-custody upgrade`        |
 | undo the last update         | `~/dpm-custody/dpm-custody rollback`       |
 | get help from support        | `~/dpm-custody/dpm-custody support`        |
@@ -209,7 +210,7 @@ docker compose --env-file .env -f compose.yml exec setup node dist/setup/main se
 docker compose --env-file .env -f compose.yml exec setup node dist/setup/main kit     # backup kit
 ```
 
-`backup`, `upgrade`, `rollback` and `support` exist only in `dpm-custody`, so on Windows they
+`backup`, `upgrade`, `rollback`, `cleanup-legacy` and `support` exist only in `dpm-custody`, so on Windows they
 need Git Bash or WSL. They have not been tested on Windows yet; tell the platform team if one
 fails there.
 
@@ -308,12 +309,16 @@ stops the upgrade with the install running as before:
    that free disk is at least twice the size of the databases plus 1 GB.
 3. Shows the installed and new versions and the release notes, and asks. Without a terminal it
    needs `--yes`.
-4. Takes a backup (`dpm-custody backup`). A failed backup stops the upgrade.
+4. Takes a backup (`dpm-custody backup`). A failed backup stops the upgrade. (Its
+   `config.tar.gz` holds the three configuration volumes; on an install from before the volume
+   split, the single old `config` volume.)
 5. Downloads the new images while the old ones keep running.
 6. Keeps the current `compose.yml`, `versions.env`, `.env` and `dpm-custody` as `*.prev`
    (readable only by you).
 7. Switches: puts the new files in place, sets the new image tags and `DPM_CUSTODY_VERSION` in
-   `.env`, and restarts. Database changes run as each service starts.
+   `.env`, prepares the configuration volumes (`setup migrate`, safe to repeat; it copies an
+   older install's single `config` volume into the new ones and keeps the old one), and
+   restarts. Database changes run as each service starts.
 8. Waits up to 5 minutes (see below) for every service to be healthy. If they are, it removes
    this install's older images (other than the new and previous ones) and is done. If not, it
    rolls back by itself (below) and tells you where the backup is.
@@ -425,9 +430,14 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   has no port: it runs in a terminal, inside its container. To reach the manager from another
   host, set `MANAGER_BIND=0.0.0.0` in `.env` and put TLS in front of it. dpm-wallet and Postgres
   are reachable only inside the stack.
-- **Configuration:** setup writes both services' configuration into the `config` volume. It
-  also keeps its state there, plus `setup-journal.jsonl`, a masked log of every step, which the
-  support report includes. It gets the platform values from dpm-api
+- **Configuration:** setup writes each service's configuration into that service's own volume:
+  `config-wallet` (mounted by dpm-wallet and setup) and `config-manager` (the manager and
+  setup), each file readable by its owner only. Setup keeps its own state in `setup-state`,
+  mounted by setup alone, plus `setup-journal.jsonl`, a masked log of every step, which the
+  support report includes. So the manager cannot read dpm-wallet's configuration, and neither
+  service can read setup's state. Older versions used one `config` volume; an upgrade copies it
+  across (the `migrate` service) and keeps it so a rollback still works, until you run
+  `dpm-custody cleanup-legacy`. It gets the platform values from dpm-api
   `GET /wallet-install/config`, authenticated with the builder key, and generates every other
   secret itself.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
@@ -453,7 +463,7 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   ```sh
   cd ~/dpm-custody
   docker compose --env-file .env -f compose.yml exec setup \
-    sh -c 'echo "DATA_API_URL=https://<the platform data-api address>" >> /config/dpm-wallet.env'
+    sh -c 'echo "DATA_API_URL=https://<the platform data-api address>" >> /config-wallet/dpm-wallet.env'
   docker compose --env-file .env -f compose.yml restart dpm-wallet
   ```
 

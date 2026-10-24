@@ -298,7 +298,7 @@ async function handOverBackupKit(io: readline.Interface, service: SetupService):
   console.log(service.backupKit());
   console.log("───────────────────────────────────────────────────────────────────────────────");
   console.log(
-    "(It is also kept in this install's config volume; ./dpm-custody backup-kit prints it again.)",
+    "(It is also kept in this install's setup-state volume; ./dpm-custody backup-kit prints it again.)",
   );
   await ask(io, "\nPress Enter once you have saved it. ");
   service.acknowledgeBackup();

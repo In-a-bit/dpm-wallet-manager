@@ -5,6 +5,7 @@ import { MANAGER_PORT, WALLET_PORT, writeInstallConfig } from "./config-writer";
 import { fetchHttp } from "./http";
 import { excerpt, Journal } from "./journal";
 import { liveStatus } from "./live-status";
+import { cleanupLegacy, runMigrations } from "./migrate";
 import { SetupService } from "./setup-service";
 import { SetupStateStore } from "./state";
 import type { ProvisioningDeps, SetupHttp } from "./steps";
@@ -22,17 +23,39 @@ import { SetupWorker } from "./worker";
  *                                 SETUP_BUILDER_KEY answer the first two questions (still checked)
  *   node dist/setup/main kit      print the backup kit again
  *   node dist/setup/main support  print the setup half of the support report
+ *   node dist/setup/main migrate  bring the volumes up to this version's layout (idempotent)
+ *   node dist/setup/main cleanup-legacy  empty the old single config volume, kept for rollback
  */
 const env = (name: string, fallback: string): string => process.env[name] || fallback;
 
-const CONFIG_DIR = env("SETUP_CONFIG_DIR", "/config");
+/** One volume per consumer (deploy/compose.yml); only setup mounts all of them. */
+const WALLET_CONFIG_DIR = env("SETUP_WALLET_CONFIG_DIR", "/config-wallet");
+const MANAGER_CONFIG_DIR = env("SETUP_MANAGER_CONFIG_DIR", "/config-manager");
+const STATE_DIR = env("SETUP_STATE_DIR", "/state");
+/** The single `config` volume of earlier versions; mounted only by the migrate service. */
+const LEGACY_CONFIG_DIR = env("SETUP_LEGACY_CONFIG_DIR", "/legacy-config");
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
 /** Where the builder reaches the wallet manager (and its admin UI) from outside the stack. */
 const MANAGER_PUBLIC_URL = env("SETUP_MANAGER_PUBLIC_URL", `http://localhost:${MANAGER_PORT}`);
 
 async function main(): Promise<void> {
-  const store = new SetupStateStore(CONFIG_DIR);
-  const journal = new Journal(CONFIG_DIR, () => knownSecrets(store.load()));
+  // Volume maintenance needs neither the database password nor a store, so it comes first.
+  const say = (line: string): void => void console.log(line);
+  const dirs = {
+    legacy: LEGACY_CONFIG_DIR,
+    wallet: WALLET_CONFIG_DIR,
+    manager: MANAGER_CONFIG_DIR,
+    state: STATE_DIR,
+  };
+  switch (process.argv[2]) {
+    case "migrate":
+      return runMigrations(dirs, say);
+    case "cleanup-legacy":
+      return cleanupLegacy(LEGACY_CONFIG_DIR, say);
+  }
+
+  const store = new SetupStateStore(STATE_DIR);
+  const journal = new Journal(STATE_DIR, () => knownSecrets(store.load()));
   const deps = provisioningDeps(store, journal);
   const service = new SetupService(deps, journalledFetch(journal), `${MANAGER_PUBLIC_URL}/admin`);
 
@@ -66,7 +89,9 @@ async function main(): Promise<void> {
       return runDashboard(options);
     }
     default:
-      console.error(`Unknown command "${process.argv[2]}". Use setup, kit or support.`);
+      console.error(
+        `Unknown command "${process.argv[2]}". Use setup, kit, support, migrate or cleanup-legacy.`,
+      );
       process.exitCode = 2;
   }
 }
@@ -82,7 +107,8 @@ function provisioningDeps(store: SetupStateStore, journal: Journal): Provisionin
     http: journalledHttp(journal),
     report: (event) => journal.append(event),
     store,
-    writeConfig: (inputs) => writeInstallConfig(CONFIG_DIR, inputs),
+    writeConfig: (inputs) =>
+      writeInstallConfig({ wallet: WALLET_CONFIG_DIR, manager: MANAGER_CONFIG_DIR }, inputs),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     walletUrl: env("SETUP_WALLET_URL", `http://dpm-wallet:${WALLET_PORT}`),
     managerUrl: env("SETUP_MANAGER_URL", `http://dpm-wallet-manager:${MANAGER_PORT}`),
