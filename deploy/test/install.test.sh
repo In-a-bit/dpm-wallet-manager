@@ -108,8 +108,11 @@ d3f="$T/i3f"; out="$(run "$d3f" DPM_CUSTODY_ALLOW_INSECURE= 2>&1)"; rc=$?
 check "file:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "Refusing to download" && nothing_written "$d3f"'
 d3g="$T/i3g"; out="$(run "$d3g" DPM_CUSTODY_ALLOW_INSECURE= DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
 check "http:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && nothing_written "$d3g"'
-# The embedded key (no override) is a placeholder in the source tree: nothing verifies against it.
-d3h="$T/i3h"; out="$(run "$d3h" DPM_CUSTODY_RELEASE_PUBKEY= 2>&1)"; rc=$?
+# An installer still carrying the placeholder key (no override) verifies nothing.
+ph="$T/placeholder"; mkdir -p "$ph"
+sed 's/^RELEASE_KEY_IS_PLACEHOLDER=0$/RELEASE_KEY_IS_PLACEHOLDER=1/' "$HERE/install.sh" >"$ph/install.sh"
+d3h="$T/i3h"
+out="$(env DPM_CUSTODY_DIR="$d3h" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_ALLOW_INSECURE=1 DPM_CUSTODY_NO_START=1 DPM_CUSTODY_MANAGER_PORT="$PORT" sh "$ph/install.sh" </dev/null 2>&1)"; rc=$?
 check "placeholder embedded key: refused, and says why" '[ $rc -ne 0 ] && echo "$out" | grep -q "placeholder release key" && nothing_written "$d3h"'
 # Embedding a real key (scripts/embed-release-key.sh) makes that key the one that counts.
 emb="$T/embedded"; mkdir -p "$emb"

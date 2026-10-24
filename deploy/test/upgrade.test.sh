@@ -231,8 +231,12 @@ out="$(INSECURE= run "$d" upgrade --yes)"; rc=$?
 check "1a file:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && unchanged "$d" && ! has "$d.events" " pull"'
 out="$(INSECURE= REL_URL=http://example.test/rel run "$d" upgrade --yes)"; rc=$?
 check "1a http:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && unchanged "$d"'
+# An install whose dpm-custody still carries the placeholder key (no override) verifies nothing.
+d="$T/c1ph"; make_install "$d" 1.0.0 0.1.0 1.0.0
+sed -i 's/^RELEASE_KEY_IS_PLACEHOLDER=0$/RELEASE_KEY_IS_PLACEHOLDER=1/' "$d/dpm-custody" "$d.orig.dpm-custody"
 out="$(PUBKEY= run "$d" upgrade --yes)"; rc=$?
-check "1a embedded placeholder key: refused, and says why" '[ $rc -ne 0 ] && echo "$out" | grep -q "placeholder release key" && unchanged "$d"'
+check "1a embedded placeholder key: refused, and says why" '[ $rc -ne 0 ] && echo "$out" | grep -q "placeholder release key" && unchanged "$d" && ! has "$d.events" " pull"'
+d="$T/c1"
 
 # 1b. a release without SHA256SUMS is refused by upgrade
 cp -r "$T/rel" "$T/rel-nosums"; rm "$T/rel-nosums/SHA256SUMS"

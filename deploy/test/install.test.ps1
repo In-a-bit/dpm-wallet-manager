@@ -197,7 +197,11 @@ $d = Join-Path $T "s6"; $r = Invoke-Installer $d @{ DPM_CUSTODY_ALLOW_INSECURE =
 Check "file:// refused without DPM_CUSTODY_ALLOW_INSECURE" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "Refusing to download"))
 $d = Join-Path $T "s7"; $r = Invoke-Installer $d @{ DPM_CUSTODY_ALLOW_INSECURE = $null; DPM_CUSTODY_RELEASES_URL = "http://example.test/rel" }
 Check "http:// refused without DPM_CUSTODY_ALLOW_INSECURE" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "https:// only"))
-$d = Join-Path $T "s8"; $r = Invoke-Installer $d @{ DPM_CUSTODY_RELEASE_PUBKEY = $null }
+# An installer still carrying the placeholder key (no override) verifies nothing.
+$ph = Join-Path $T "placeholder"; New-Item -ItemType Directory $ph | Out-Null
+(Get-Content (Join-Path $Here "install.ps1") -Raw) -replace '(?m)^\$ReleaseKeyIsPlaceholder = \$false', '$ReleaseKeyIsPlaceholder = $true' |
+  Set-Content -NoNewline (Join-Path $ph "install.ps1")
+$d = Join-Path $T "s8"; $r = Invoke-Installer $d @{ DPM_CUSTODY_RELEASE_PUBKEY = $null } (Join-Path $ph "install.ps1")
 Check "placeholder embedded key: refused, and says why" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "placeholder release key"))
 # Embedding a real key (scripts/embed-release-key.sh) makes it the one that counts.
 $emb = Join-Path $T "embedded"; New-Item -ItemType Directory $emb | Out-Null
