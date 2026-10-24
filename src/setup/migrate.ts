@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
 import { convertExistingInstall, type Connect } from "./db-roles";
+import { SetupStateStore } from "./state";
 
 /**
  * `setup migrate`: brings an install's volumes up to the layout this version expects. It runs
@@ -43,7 +44,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { name: "split-config-volumes", run: splitConfigVolumes },
   {
     name: "database-roles",
-    run: (dirs, say, services) => convertExistingInstall(dirs, services.connect, say),
+    run: (dirs, say, services) =>
+      convertExistingInstall(dirs, services.connect, say, rememberPassword(dirs.state)),
   },
 ];
 
@@ -56,6 +58,24 @@ export async function runMigrations(
     say(`[migrate] ${migration.name}`);
     await migration.run(dirs, (line) => say(`[migrate]   ${line}`), services);
   }
+}
+
+/**
+ * Keeps a service's database password in setup's saved secrets, when setup has any, so it is
+ * masked in support output and a later write-config reuses it instead of rotating it under a
+ * running service. An install that has not been set up yet has no secrets to add to.
+ */
+function rememberPassword(stateDir: string) {
+  return (service: "wallet" | "manager", password: string): void => {
+    const store = new SetupStateStore(stateDir);
+    const state = store.load();
+    if (!state.secrets) return;
+    const field = service === "wallet" ? "walletDbPassword" : "managerDbPassword";
+    if (state.secrets[field] === password) return;
+    store.update((next) => {
+      if (next.secrets) next.secrets[field] = password;
+    });
+  };
 }
 
 /**

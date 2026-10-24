@@ -24,20 +24,35 @@ export type SqlClient = { query(sql: string): Promise<unknown>; end(): Promise<v
 /** Opens an administrator (superuser) connection to the named database. */
 export type Connect = (database: string) => Promise<SqlClient>;
 
-export type RoleSpec = { role: string; database: string; password: string };
+export type RoleSpec = {
+  role: string;
+  database: string;
+  password: string;
+  /** Built-in roles to be a member of, e.g. `pg_read_all_stats`. */
+  memberOf?: string[];
+};
+
+/** What the manager's storage monitor needs to read the size of dpm-wallet's database. */
+const MANAGER_MEMBER_OF = ["pg_read_all_stats"];
 
 const NAME = /^[a-z][a-z0-9_]*$/;
 
 /** The cluster-wide half: the role itself, its password and the ownership of its database. */
-export function roleSql({ role, database, password }: RoleSpec): string[] {
+export function roleSql({ role, database, password, memberOf = [] }: RoleSpec): string[] {
   assertName(role);
   assertName(database);
   return [
     `DO $dpm$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${role}') THEN CREATE ROLE ${role} LOGIN; END IF; END $dpm$`,
-    `ALTER ROLE ${role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(password)}`,
+    // A SCRAM verifier computed here, not the password: a failing statement is logged by Postgres
+    // with its text, and that must not be a password.
+    `ALTER ROLE ${role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD ${quoteLiteral(scramVerifier(password))}`,
     `ALTER DATABASE ${database} OWNER TO ${role}`,
     // Only the owner (and the superuser) may connect: the other service's role is turned away.
     `REVOKE ALL ON DATABASE ${database} FROM PUBLIC`,
+    ...memberOf.map((builtIn) => {
+      assertName(builtIn);
+      return `GRANT ${builtIn} TO ${role}`;
+    }),
   ];
 }
 
@@ -103,54 +118,73 @@ export async function applyServiceRoles(connect: Connect, secrets: InstallSecret
     role: MANAGER_DB_ROLE,
     database: MANAGER_DATABASE,
     password: secrets.managerDbPassword,
+    memberOf: MANAGER_MEMBER_OF,
   });
 }
 
 /**
- * `setup migrate` for an install made before the roles existed: any service whose env file still
- * connects as someone else gets its role, a fresh password and a rewritten DATABASE_URL. A service
- * already on its role is left alone, so this is safe to repeat. Postgres is contacted only when
- * there is something to convert.
+ * `setup migrate` for an install made before the roles existed, and a check on every start after:
+ *  - a service whose env file connects as someone else gets its role, a fresh password and a
+ *    rewritten DATABASE_URL;
+ *  - a service already on its role has the role (re)applied with the password already in its
+ *    env file, so a Postgres that lost the role (recreated data volume, restored backup) or
+ *    objects the superuser created after a rollback are put right, without rotating anything.
+ * Postgres is contacted only for a service that has a DATABASE_URL. `remember` is told every
+ * service password so setup can mask it and not rotate it later.
  */
 export async function convertExistingInstall(
   dirs: { wallet: string; manager: string },
   connect: Connect | undefined,
   say: (line: string) => void,
+  remember: (service: "wallet" | "manager", password: string) => void = () => undefined,
 ): Promise<void> {
   const targets = [
     {
+      service: "wallet" as const,
       file: path.join(dirs.wallet, WALLET_ENV_FILE),
       role: WALLET_DB_ROLE,
       database: WALLET_DATABASE,
+      memberOf: [],
     },
     {
+      service: "manager" as const,
       file: path.join(dirs.manager, MANAGER_ENV_FILE),
       role: MANAGER_DB_ROLE,
       database: MANAGER_DATABASE,
+      memberOf: MANAGER_MEMBER_OF,
     },
   ];
   for (const target of targets) {
     if (!fs.existsSync(target.file)) continue;
     const text = fs.readFileSync(target.file, "utf8");
     const user = databaseUser(text);
-    if (user === undefined || user === target.role) {
-      say(
-        `${target.role}: ${user === undefined ? "no DATABASE_URL to convert" : "already in use"}`,
-      );
+    if (user === undefined) {
+      say(`${target.role}: no DATABASE_URL to convert`);
+      continue;
+    }
+    const { service, role, database, memberOf } = target;
+    if (user === role) {
+      const existing = databasePassword(text);
+      if (!connect || existing === undefined) {
+        say(`${role}: in use (not checked: no administrator credentials)`);
+        continue;
+      }
+      await applyRole(connect, { role, database, password: existing, memberOf });
+      remember(service, existing);
+      say(`${role}: in use, checked`);
       continue;
     }
     if (!connect)
       throw new Error("Database administrator credentials are needed to create the service roles");
     const password = crypto.randomBytes(24).toString("hex");
-    await applyRole(connect, { role: target.role, database: target.database, password });
+    await applyRole(connect, { role, database, password, memberOf });
     // The file is rewritten only after the role exists; a crash in between just repeats this.
-    const url = databaseUrl({ user: target.role, password }, target.database);
+    const url = databaseUrl({ user: role, password }, database);
     const mode = fs.statSync(target.file).mode & 0o777;
     fs.writeFileSync(target.file, withDatabaseUrl(text, url), { mode });
     fs.chmodSync(target.file, mode);
-    say(
-      `${target.role}: created, ${target.database} handed over, ${path.basename(target.file)} updated`,
-    );
+    remember(service, password);
+    say(`${role}: created, ${database} handed over, ${path.basename(target.file)} updated`);
   }
 }
 
@@ -158,6 +192,27 @@ export async function convertExistingInstall(
 export function databaseUser(envText: string): string | undefined {
   const match = /^DATABASE_URL='postgres(?:ql)?:\/\/([^:@/]*)[:@]/m.exec(envText);
   return match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
+}
+
+/** The password in an env file's DATABASE_URL, or undefined. */
+export function databasePassword(envText: string): string | undefined {
+  const match = /^DATABASE_URL='postgres(?:ql)?:\/\/[^:@/]*:([^@/]*)@/m.exec(envText);
+  return match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
+}
+
+/**
+ * A SCRAM-SHA-256 verifier for `password`, in the form Postgres stores: with it in ALTER ROLE the
+ * server never sees (or logs) the password itself, and a client logs in with the password as usual.
+ */
+export function scramVerifier(password: string): string {
+  const iterations = 4096;
+  const salt = crypto.randomBytes(16);
+  const salted = crypto.pbkdf2Sync(password.normalize("NFKC"), salt, iterations, 32, "sha256");
+  const hmac = (key: Buffer, data: string) =>
+    crypto.createHmac("sha256", key).update(data).digest();
+  const storedKey = crypto.createHash("sha256").update(hmac(salted, "Client Key")).digest();
+  const serverKey = hmac(salted, "Server Key");
+  return `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
 }
 
 export function withDatabaseUrl(envText: string, url: string): string {

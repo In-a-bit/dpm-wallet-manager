@@ -71,9 +71,13 @@ export class StorageSampleRepository {
     const manager: { bytes: string }[] = await this.samples.query(
       `SELECT pg_database_size(current_database())::text AS bytes`,
     );
-    const wallet: { bytes: string }[] = await this.samples.query(
-      `SELECT pg_database_size(datname)::text AS bytes FROM pg_database WHERE datname = 'dpm_wallet'`,
-    );
+    // The other service's database: this role may not be allowed to measure it (it needs
+    // pg_read_all_stats, which setup grants). One unreadable size must not fail the whole sample.
+    const wallet: { bytes: string }[] = await this.samples
+      .query(
+        `SELECT pg_database_size(datname)::text AS bytes FROM pg_database WHERE datname = 'dpm_wallet'`,
+      )
+      .catch(() => []);
     return {
       manager: Number(manager[0]?.bytes ?? 0),
       wallet: wallet[0] ? Number(wallet[0].bytes) : null,

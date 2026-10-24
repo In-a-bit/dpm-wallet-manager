@@ -9,13 +9,19 @@ import { MANAGER_ENV_FILE, WALLET_ENV_FILE } from "./config-writer";
 import {
   applyRole,
   convertExistingInstall,
+  databasePassword,
   databaseUser,
+  scramVerifier,
   ownershipSql,
   roleSql,
   withDatabaseUrl,
   type Connect,
 } from "./db-roles";
 import { runAll } from "./migrate";
+import { generateInstallSecrets, withDbPasswords } from "./secrets";
+import { SetupStateStore } from "./state";
+import { knownSecrets } from "./support";
+import { StorageSampleRepository } from "../db/repositories/storage-sample.repo";
 import { startHarness } from "../testing/harness";
 import { createTestDatabase } from "../testing/pg-test-db";
 
@@ -26,9 +32,21 @@ describe("role SQL", () => {
     const sql = roleSql(spec).join("\n");
     expect(sql).toContain("CREATE ROLE wallet_app LOGIN");
     expect(sql).toContain("NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS");
-    expect(sql).toContain("PASSWORD 'pa''ss'");
+    // A SCRAM verifier, never the password: a failed statement is logged by Postgres with its text.
+    expect(sql).toMatch(
+      /PASSWORD 'SCRAM-SHA-256\$4096:[A-Za-z0-9+/=]+\$[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+'/,
+    );
+    expect(sql).not.toContain("pa'ss");
+    expect(sql).not.toContain("pa''ss");
     expect(sql).toContain("ALTER DATABASE dpm_wallet OWNER TO wallet_app");
     expect(sql).toContain("REVOKE ALL ON DATABASE dpm_wallet FROM PUBLIC");
+  });
+
+  it("lets only the roles asked for read all stats", () => {
+    expect(roleSql(spec).join("\n")).not.toContain("pg_read_all_stats");
+    expect(roleSql({ ...spec, memberOf: ["pg_read_all_stats"] })).toContain(
+      "GRANT pg_read_all_stats TO wallet_app",
+    );
   });
 
   it("never reassigns by owner, which would take the other database along", () => {
@@ -38,6 +56,15 @@ describe("role SQL", () => {
   it("refuses a name that is not a plain identifier", () => {
     expect(() => roleSql({ ...spec, role: "x; DROP DATABASE y" })).toThrow(/Unsafe/);
     expect(() => ownershipSql("Bad-Name")).toThrow(/Unsafe/);
+  });
+});
+
+describe("scramVerifier", () => {
+  it("has the shape and the keys Postgres stores for SCRAM-SHA-256", () => {
+    const verifier = scramVerifier("secret");
+    const match = /^SCRAM-SHA-256\$(\d+):([^$]+)\$([^:]+):(.+)$/.exec(verifier);
+    expect(match).not.toBeNull();
+    expect(scramVerifier("secret")).not.toBe(verifier); // fresh salt each time
   });
 });
 
@@ -94,9 +121,32 @@ describe("convertExistingInstall", () => {
     expect(fs.statSync(path.join(d.wallet, WALLET_ENV_FILE)).mode & 0o777).toBe(0o600);
     expect(first.statements.some((sql) => sql.includes("OWNER TO manager_app"))).toBe(true);
 
-    const second = recorder();
-    await convertExistingInstall(d, second.connect, () => undefined);
-    expect(second.statements).toEqual([]);
+    // The manager's account may measure dpm-wallet's database (storage monitoring does).
+    expect(
+      first.statements.some((sql) => sql.includes("GRANT pg_read_all_stats TO manager_app")),
+    ).toBe(true);
+    expect(
+      first.statements.some((sql) => sql.includes("GRANT pg_read_all_stats TO wallet_app")),
+    ).toBe(false);
+  });
+
+  it("re-applies a role the env file already names, with the password it has, rotating nothing", async () => {
+    const d = dirs();
+    seed(d);
+    await convertExistingInstall(d, recorder().connect, () => undefined);
+    const before = fs.readFileSync(path.join(d.wallet, WALLET_ENV_FILE), "utf8");
+    const remembered: string[] = [];
+    const again = recorder();
+    await convertExistingInstall(
+      d,
+      again.connect,
+      () => undefined,
+      (service, password) => remembered.push(`${service}:${password}`),
+    );
+    // Repaired against Postgres every time (the role may be gone), the file untouched.
+    expect(again.statements.some((sql) => sql.includes("CREATE ROLE wallet_app"))).toBe(true);
+    expect(fs.readFileSync(path.join(d.wallet, WALLET_ENV_FILE), "utf8")).toBe(before);
+    expect(remembered).toContain(`wallet:${databasePassword(before)}`);
   });
 
   it("does not contact Postgres for a fresh install with no env files, or fail without access", async () => {
@@ -106,6 +156,26 @@ describe("convertExistingInstall", () => {
     await expect(convertExistingInstall(d, undefined, () => undefined)).rejects.toThrow(
       /administrator credentials/,
     );
+  });
+
+  it("saves the generated passwords in setup's secrets, when setup has any", async () => {
+    const d = { ...dirs(), legacy: fs.mkdtempSync(path.join(os.tmpdir(), "dpm-roles-")) };
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), "dpm-roles-"));
+    fs.writeFileSync(
+      path.join(d.legacy, WALLET_ENV_FILE),
+      "DATABASE_URL='postgres://dpm:super@postgres:5432/dpm_wallet'\n",
+    );
+    const store = new SetupStateStore(state);
+    store.update((s) => {
+      s.secrets = generateInstallSecrets("dev");
+      delete (s.secrets as Partial<typeof s.secrets>).walletDbPassword;
+    });
+    await runAll({ ...d, state }, () => undefined, { connect: recorder().connect });
+    const written = databasePassword(fs.readFileSync(path.join(d.wallet, WALLET_ENV_FILE), "utf8"));
+    expect(store.load().secrets?.walletDbPassword).toBe(written);
+    // So it is masked like every other secret, and a later write-config does not rotate it.
+    expect(knownSecrets(store.load())).toContain(written);
+    expect(withDbPasswords(store.load().secrets as never).walletDbPassword).toBe(written);
   });
 
   it("runs as a setup migrate step, after the volumes are split", async () => {
@@ -267,6 +337,64 @@ describe("service roles in Postgres", () => {
       await db.drop();
       const admin = await open(adminUrl);
       await admin.query(`DROP ROLE IF EXISTS ${role}`);
+      await admin.end();
+    }
+  });
+
+  it("lets the manager's role measure both databases, so storage sampling keeps working", async () => {
+    // The wallet database is looked up by its real name, so this needs the name to be free here.
+    const admin = await open(adminUrl);
+    const taken = await admin.query(`SELECT 1 FROM pg_database WHERE datname = 'dpm_wallet'`);
+    if (taken.rowCount) {
+      await admin.end();
+      return; // someone's real database: never take it over
+    }
+    const walletRole = `t_ws_${suffix}`;
+    const managerRole = `t_ms_${suffix}`;
+    const managerDb = await createTestDatabase();
+    const walletPassword = randomBytes(12).toString("hex");
+    const managerPassword = randomBytes(12).toString("hex");
+    await admin.query(`CREATE DATABASE dpm_wallet`);
+    try {
+      await applyRole(connect, {
+        role: walletRole,
+        database: "dpm_wallet",
+        password: walletPassword,
+      });
+      await applyRole(connect, {
+        role: managerRole,
+        database: nameOf(managerDb.url),
+        password: managerPassword,
+        memberOf: ["pg_read_all_stats"],
+      });
+      const harness = await startHarness({
+        DATABASE_URL: withDb(adminUrl, nameOf(managerDb.url), managerRole, managerPassword),
+      });
+      try {
+        const sizes = await harness.app.get(StorageSampleRepository).databaseSizes();
+        expect(sizes.manager).toBeGreaterThan(0);
+        expect(sizes.wallet).toBeGreaterThan(0);
+      } finally {
+        await harness.close();
+      }
+
+      // Without the grant the wallet size is unreadable; the sample still goes ahead with null.
+      await admin.query(`REVOKE pg_read_all_stats FROM ${managerRole}`);
+      const limited = await startHarness({
+        DATABASE_URL: withDb(adminUrl, nameOf(managerDb.url), managerRole, managerPassword),
+      });
+      try {
+        const sizes = await limited.app.get(StorageSampleRepository).databaseSizes();
+        expect(sizes.manager).toBeGreaterThan(0);
+        expect(sizes.wallet).toBeNull();
+      } finally {
+        await limited.close();
+      }
+    } finally {
+      await managerDb.drop();
+      await admin.query(`DROP DATABASE IF EXISTS dpm_wallet WITH (FORCE)`);
+      await admin.query(`DROP ROLE IF EXISTS ${walletRole}`);
+      await admin.query(`DROP ROLE IF EXISTS ${managerRole}`);
       await admin.end();
     }
   });

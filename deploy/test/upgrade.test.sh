@@ -228,6 +228,9 @@ d="$T/c7"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(PS_ARRAY=1 run "$d" upgrade --yes)"; rc=$?
 ev="$d.events"
 check "7 happy: exit 0 and success message" '[ $rc -eq 0 ] && echo "$out" | grep -q "Upgraded to 1.1.0"'
+# The database-roles migration step runs inside this `setup node dist/setup/main migrate` call: it
+# is the service that holds the Postgres superuser credentials (the others are given none).
+check "7 happy: migrate (and so database-roles) runs in the setup service, after the switch, before up" 'grep -q "run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate" "$ev" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" "at-up")" ]'
 check "7 happy: backup before pull before up" '[ "$(line_of "$ev" pg_dumpall)" -lt "$(line_of "$ev" " pull")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" " up -d")" ]'
 check "7 happy: pull uses new tag, before .prev and switch" 'has "$ev" "at-pull compose=# compose old prev=no tag=1.1.0@$D1"'
 check "7 happy: at up, .prev written (600), marker written, switched" 'has "$ev" "at-up compose=# compose 1.1.0 marker=yes prev=-rw------- $"'
@@ -283,6 +286,12 @@ if command -v git >/dev/null 2>&1 && [ -n "$REAL_DOCKER" ] &&
   cp "$T/dpm-custody.v022" "$d/dpm-custody"; chmod +x "$d/dpm-custody"
   out="$(REL_URL="file://$rel" USE_REAL_COMPOSE=1 run "$d" upgrade --yes)"; rc=$?
   check "7a v0.2.2 dpm-custody upgrades to this release's compose.yml: gate passes, no rollback" '[ $rc -eq 0 ] && echo "$out" | grep -q "Upgraded to 1.1.0" && [ "$(grep -c " up -d" "$d.events")" -eq 1 ] && cmp -s "$d/compose.yml" "$rel/compose.yml"'
+  # The upgrade's migrate call is only meaningful if the setup service can reach Postgres as the
+  # superuser: it has the credentials and waits for the server. Asked of the real release compose.yml.
+  check "7a setup (where database-roles runs) has the Postgres superuser and waits for postgres" '"$REAL_DOCKER" compose --env-file "$d/.env" -f "$rel/compose.yml" config --format json 2>/dev/null | python3 -c "
+import json, sys
+s = json.load(sys.stdin)[\"services\"][\"setup\"]
+sys.exit(0 if \"POSTGRES_PASSWORD\" in s[\"environment\"] and s[\"depends_on\"][\"postgres\"][\"condition\"] == \"service_healthy\" else 1)"'
   check "7a the release's compose.yml has no one-shot service (a v0.2.2 gate would fail on it)" '! grep -q "restart: \"no\"" "$rel/compose.yml"'
 else
   echo "skip - 7a (needs git history with v0.2.2 and docker)"
