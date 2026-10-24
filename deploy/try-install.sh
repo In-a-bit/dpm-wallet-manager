@@ -86,6 +86,9 @@ try:
 except Exception: pass' "$1"
 }
 
+# sha256_of FILE... prints sha256sum-format lines with whichever tool exists.
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
+
 # http <method> <url> [curl args...] prints the body, then the status code on its own last line.
 http() {
   local method="$1" url="$2"
@@ -123,7 +126,7 @@ install_env() { sed -n "s/^$1=//p" "$INSTALL_DIR/.env" 2>/dev/null | tail -n 1; 
 
 check_tools() {
   step "Tools"
-  for tool in docker curl python3; do
+  for tool in docker curl python3 openssl; do
     command -v "$tool" >/dev/null || fail "$tool is not installed."
   done
   docker info >/dev/null 2>&1 || fail "Docker is not running." "Start it and run this again."
@@ -307,14 +310,27 @@ install() {
   source="$(mktemp -d)"
   cp "$SCRIPT_DIR/compose.yml" "$SCRIPT_DIR/dpm-custody" "$source/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$IMAGE_TAG" "$IMAGE_TAG" >"$source/versions.env"
+  # The installer only accepts a signed release. This rehearsal signs its files with a throwaway
+  # key and tells the installer to trust that key (DPM_CUSTODY_RELEASE_PUBKEY, rehearsals only);
+  # the public half is kept in the install folder for rehearsing `dpm-custody upgrade` too.
+  local key="$source/.rehearsal-key.pem"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$key" 2>/dev/null
+  openssl pkey -in "$key" -pubout -out "$source/rehearsal-release.pub"
+  (cd "$source" && sha256_of compose.yml versions.env dpm-custody >SHA256SUMS)
+  openssl dgst -sha256 -sign "$key" -out "$source/SHA256SUMS.sig" "$source/SHA256SUMS"
+  rm -f "$key"
   # The installer goes on to setup in this terminal, with the two answers checked above preset.
   local status=0
   DPM_CUSTODY_DIR="$INSTALL_DIR" DPM_CUSTODY_SOURCE="$source" \
+    DPM_CUSTODY_RELEASE_PUBKEY="$source/rehearsal-release.pub" \
     DPM_CUSTODY_MANAGER_PORT="$manager_port" DPM_CUSTODY_NAME="$INSTALL_NAME" \
     SETUP_PLATFORM_URL="$PLATFORM" SETUP_BUILDER_KEY="$BUILDER_KEY" \
     sh "$SCRIPT_DIR/install.sh" || status=$?
+  [ -d "$INSTALL_DIR" ] && cp "$source/rehearsal-release.pub" "$INSTALL_DIR/rehearsal-release.pub"
   rm -rf "$source"
   [ "$status" = 0 ] || exit "$status"
+  ok "installed from a rehearsal release signed with a throwaway key"
+  printf '  To rehearse an upgrade: cd %s && DPM_CUSTODY_RELEASE_PUBKEY=rehearsal-release.pub DPM_CUSTODY_ALLOW_INSECURE=1 DPM_CUSTODY_RELEASES_URL=file:///path/to/signed-release ./dpm-custody upgrade\n' "$INSTALL_DIR"
 }
 
 offer_verify() {

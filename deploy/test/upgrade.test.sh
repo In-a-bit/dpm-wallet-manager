@@ -107,6 +107,16 @@ chmod +x "$T/faketar/tar"
 export FAKE_TAR_DIR="$T/faketar"
 export PATH="$T/bin:$PATH"
 
+# ---- signing --------------------------------------------------------------------------------
+# A throwaway key pair (and a second, wrong one). The installed dpm-custody checks the release's
+# SHA256SUMS.sig against key.pub through DPM_CUSTODY_RELEASE_PUBKEY, or against the key embedded
+# in it (see case 18).
+openssl ecparam -name prime256v1 -genkey -noout -out "$T/key.pem" 2>/dev/null
+openssl pkey -in "$T/key.pem" -pubout -out "$T/key.pub"
+openssl ecparam -name prime256v1 -genkey -noout -out "$T/other.pem" 2>/dev/null
+# sign_release DIR [KEY] signs DIR/SHA256SUMS the way CI does.
+sign_release() { openssl dgst -sha256 -sign "${2:-$T/key.pem}" -out "$1/SHA256SUMS.sig" "$1/SHA256SUMS"; }
+
 # ---- fixtures -------------------------------------------------------------------------------
 # make_release DIR VERSION MIN WALLET_TAG MANAGER_TAG
 make_release() {
@@ -116,6 +126,7 @@ make_release() {
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\nRELEASE_VERSION=%s\nMIN_UPGRADE_FROM=%s\n' "$4" "$5" "$2" "$3" >"$r/versions.env"
   { cat "$HERE/dpm-custody"; echo "# release $2"; } >"$r/dpm-custody"
   (cd "$r" && sha256 compose.yml versions.env dpm-custody >SHA256SUMS)
+  sign_release "$r"
 }
 # make_install DIR VERSION(or "none") WALLET_TAG MANAGER_TAG
 make_install() {
@@ -143,6 +154,7 @@ run() {
   local d="$1"; shift
   : >"$d.events"
   EVENTS="$d.events" DPM_CUSTODY_RELEASES_URL="${REL_URL:-file://$T/rel}" DPM_CUSTODY_HEALTH_TIMEOUT="${TIMEOUT:-10}" \
+    DPM_CUSTODY_RELEASE_PUBKEY="${PUBKEY-$T/key.pub}" DPM_CUSTODY_ALLOW_INSECURE="${INSECURE-1}" \
     bash "$d/dpm-custody" "$@" </dev/null 2>&1
 }
 line_of() { grep -n -- "$2" "$1" | head -n 1 | cut -d: -f1; }
@@ -157,6 +169,23 @@ out="$(REL_URL="file://$T/rel-bad" run "$d" upgrade --yes)"; rc=$?
 check "1 bad checksum: exits non-zero" '[ $rc -ne 0 ]'
 check "1 bad checksum: says so and that nothing changed" 'echo "$out" | grep -q "SHA256SUMS" && echo "$out" | grep -qi "nothing was changed"'
 check "1 bad checksum: files unchanged, no pull/up, no .prev, no upgrade.tmp" 'unchanged "$d" && ! has "$d.events" " pull" && ! has "$d.events" " up -d" && [ ! -e "$d/compose.yml.prev" ] && [ ! -e "$d/upgrade.tmp" ]'
+
+# 1a. signature checks: missing, wrong key, altered sums, http refused; nothing changes, no pull
+cp -r "$T/rel" "$T/rel-nosig"; rm "$T/rel-nosig/SHA256SUMS.sig"
+out="$(REL_URL="file://$T/rel-nosig" run "$d" upgrade --yes)"; rc=$?
+check "1a missing signature: refused, files unchanged, no pull" '[ $rc -ne 0 ] && echo "$out" | grep -q "SHA256SUMS.sig" && unchanged "$d" && ! has "$d.events" " pull"'
+cp -r "$T/rel" "$T/rel-wrongkey"; sign_release "$T/rel-wrongkey" "$T/other.pem"
+out="$(REL_URL="file://$T/rel-wrongkey" run "$d" upgrade --yes)"; rc=$?
+check "1a signed by another key: refused, files unchanged, no pull" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && unchanged "$d" && ! has "$d.events" " pull"'
+cp -r "$T/rel" "$T/rel-altered"; echo "0000000000000000000000000000000000000000000000000000000000000000  extra" >>"$T/rel-altered/SHA256SUMS"
+out="$(REL_URL="file://$T/rel-altered" run "$d" upgrade --yes)"; rc=$?
+check "1a SHA256SUMS altered after signing: refused, files unchanged" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && unchanged "$d" && ! has "$d.events" " pull"'
+out="$(INSECURE= run "$d" upgrade --yes)"; rc=$?
+check "1a file:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && unchanged "$d" && ! has "$d.events" " pull"'
+out="$(INSECURE= REL_URL=http://example.test/rel run "$d" upgrade --yes)"; rc=$?
+check "1a http:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && unchanged "$d"'
+out="$(PUBKEY= run "$d" upgrade --yes)"; rc=$?
+check "1a embedded placeholder key: refused, and says why" '[ $rc -ne 0 ] && echo "$out" | grep -q "placeholder release key" && unchanged "$d"'
 
 # 1b. a release without SHA256SUMS is refused by upgrade
 cp -r "$T/rel" "$T/rel-nosums"; rm "$T/rel-nosums/SHA256SUMS"
@@ -249,6 +278,7 @@ if command -v git >/dev/null 2>&1 && [ -n "$REAL_DOCKER" ] &&
   printf 'DPM_WALLET_TAG=0.2.0\nDPM_WALLET_MANAGER_TAG=1.1.0\nRELEASE_VERSION=1.1.0\nMIN_UPGRADE_FROM=\n' >"$rel/versions.env"
   cp "$HERE/dpm-custody" "$rel/dpm-custody"
   (cd "$rel" && sha256 compose.yml versions.env dpm-custody >SHA256SUMS)
+  sign_release "$rel"
   d="$T/c7a"; make_install "$d" 0.2.2 0.1.0 0.2.2
   cp "$T/dpm-custody.v022" "$d/dpm-custody"; chmod +x "$d/dpm-custody"
   out="$(REL_URL="file://$rel" USE_REAL_COMPOSE=1 run "$d" upgrade --yes)"; rc=$?
@@ -305,7 +335,7 @@ check "8d a good upgrade leaves no stash" '[ $rc -eq 0 ] && [ -z "$(ls -a "$d" |
 # 17. SIGHUP (dropped SSH session) during the health gate: the run still completes its rollback
 d="$T/c17"; make_install "$d" 1.0.0 0.1.0 1.0.0
 : >"$d.events"
-EVENTS="$d.events" DPM_CUSTODY_RELEASES_URL="file://$T/rel" DPM_CUSTODY_HEALTH_TIMEOUT=10 \
+EVENTS="$d.events" DPM_CUSTODY_RELEASES_URL="file://$T/rel" DPM_CUSTODY_RELEASE_PUBKEY="$T/key.pub" DPM_CUSTODY_ALLOW_INSECURE=1 DPM_CUSTODY_HEALTH_TIMEOUT=10 \
   HEALTH_BY_UP="healthy unhealthy healthy" HUP_PIDFILE="$T/c17.pid" \
   sh -c 'echo $$ >"$1"; shift; exec "$@"' _ "$T/c17.pid" bash "$d/dpm-custody" upgrade --yes </dev/null >"$T/c17.out" 2>&1
 rc=$?
@@ -408,6 +438,17 @@ out="$(STORAGE_FAIL=1 run "$d" status)"; rc=$?
 check "20 storage: a failing call prints nothing and status succeeds" '[ $rc -eq 0 ] && ! echo "$out" | grep -q "Storage:"'
 out="$(STORAGE_OUT='' run "$d" status)"; rc=$?
 check "20 storage: no sample yet prints nothing" '[ $rc -eq 0 ] && ! echo "$out" | grep -q "Storage:"'
+
+# 18. the key embedded in the INSTALLED dpm-custody is the one that counts, not the new release's
+emb="$T/embedded"; mkdir -p "$emb"
+cp "$HERE/install.sh" "$HERE/install.ps1" "$HERE/dpm-custody" "$emb/"
+DEPLOY_DIR="$emb" sh "$HERE/../scripts/embed-release-key.sh" "$T/key.pub" >/dev/null
+d="$T/c18"; make_install "$d" 1.0.0 0.1.0 1.0.0; cp "$emb/dpm-custody" "$d/dpm-custody"
+out="$(PUBKEY= run "$d" upgrade --yes)"; rc=$?
+check "18 embedded key verifies a release signed with its private half" '[ $rc -eq 0 ] && echo "$out" | grep -q "Upgraded to 1.1.0"'
+d="$T/c18b"; make_install "$d" 1.0.0 0.1.0 1.0.0; cp "$emb/dpm-custody" "$d/dpm-custody"
+out="$(PUBKEY= REL_URL="file://$T/rel-wrongkey" run "$d" upgrade --yes)"; rc=$?
+check "18 embedded key rejects a release signed by another key, even if its own script carries that key" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && ! has "$d.events" " pull"'
 
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 

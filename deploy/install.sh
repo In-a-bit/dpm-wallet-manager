@@ -12,8 +12,12 @@
 #
 # DPM_CUSTODY_RELEASE=v1.2.3 installs that release instead of the latest.
 # DPM_CUSTODY_RELEASES_URL replaces the download base (…/releases/latest/download or
-# …/releases/download/<tag>); file:// works. Downloads are checked against the release's
-# SHA256SUMS. DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
+# …/releases/download/<tag>). Downloads are checked against the release's SHA256SUMS, which must
+# carry a valid signature (SHA256SUMS.sig, ECDSA P-256, checked with openssl against the public key
+# below); a release without either is refused. Only https:// is accepted, unless
+# DPM_CUSTODY_ALLOW_INSECURE=1 (file:// and http:// for a local rehearsal), and
+# DPM_CUSTODY_RELEASE_PUBKEY=/path/to/public.pem checks against that key instead (rehearsals only).
+# DPM_CUSTODY_NO_START=1 stops after the files and .env are written.
 # DPM_CUSTODY_MANAGER_PORT moves the wallet manager's port (default 3000). A new install checks
 # the port first and stops, naming a free one, when another program or container has it.
 # DPM_CUSTODY_NAME names the install (default dpm-custody): its containers, volumes and network
@@ -27,6 +31,17 @@ RELEASE="${DPM_CUSTODY_RELEASE:-latest}"
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
 MANAGER_PORT="${DPM_CUSTODY_MANAGER_PORT:-3000}"
 NAME="${DPM_CUSTODY_NAME:-dpm-custody}"
+
+# >>> release public key >>>
+# PLACEHOLDER: no private key exists for this one. Replace it with the real key (see
+# scripts/release-signing-key.sh) in install.sh, install.ps1 and dpm-custody; until then no
+# release can be verified, so none can be installed or upgraded to.
+RELEASE_KEY_IS_PLACEHOLDER=1
+RELEASE_PUBKEY='-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAmHIZwcph401VXfbdEQCsT5VUeke
+b/nekspBGcW/P3518k+tqluQyqTRi8Y7R7jA6zxSdQwNYVFy41HokCfzCQ==
+-----END PUBLIC KEY-----'
+# <<< release public key <<<
 
 say() { printf '%s\n' "$*"; }
 fail() {
@@ -61,13 +76,27 @@ releases_base() {
   fi
 }
 
+# require_secure_url URL refuses anything but https://, except for a local rehearsal.
+require_secure_url() {
+  case "$1" in
+    https://*) ;;
+    *) [ "${DPM_CUSTODY_ALLOW_INSECURE:-}" = 1 ] ||
+      fail "Refusing to download from $1: releases are fetched over https:// only. (DPM_CUSTODY_ALLOW_INSECURE=1 allows file:// and http:// for a local rehearsal; never use it on a real install.)" ;;
+  esac
+}
+
 # fetch_file NAME downloads one release file into the staging folder.
 fetch_file() {
   if [ -n "${DPM_CUSTODY_SOURCE:-}" ]; then
     cp "$DPM_CUSTODY_SOURCE/$1" "$STAGE/$1" || fail "Could not copy $1 from $DPM_CUSTODY_SOURCE."
     return
   fi
-  curl -fsSL "$(releases_base)/$1" -o "$STAGE/$1" || fail "Could not download $1. Check the internet connection."
+  url="$(releases_base)/$1"
+  require_secure_url "$url"
+  case "$url" in
+    https://*) curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$STAGE/$1" ;;
+    *) curl -fsSL "$url" -o "$STAGE/$1" ;;
+  esac || fail "Could not download $1 ($url). Check the internet connection."
 }
 
 # sha_check runs the available checksum tool over a sums file, in the staging folder.
@@ -81,41 +110,35 @@ sha_check() {
   fi
 }
 
-# verify_files NAME... checks the staged files against the release's SHA256SUMS. A release
-# without one (older releases) is accepted with a warning; a mismatch aborts.
-verify_files() {
-  # Only a real "not found" means the release has no SHA256SUMS; any other failure aborts.
-  rm -f "$STAGE/SHA256SUMS"
-  if [ -n "${DPM_CUSTODY_SOURCE:-}" ]; then
-    if [ -e "$DPM_CUSTODY_SOURCE/SHA256SUMS" ]; then
-      cp "$DPM_CUSTODY_SOURCE/SHA256SUMS" "$STAGE/SHA256SUMS" || fail "Could not read SHA256SUMS from $DPM_CUSTODY_SOURCE."
-    fi
+# verify_signature checks SHA256SUMS against SHA256SUMS.sig with the release public key: the
+# embedded one, or DPM_CUSTODY_RELEASE_PUBKEY (a PEM file) for a rehearsal.
+verify_signature() {
+  command -v openssl >/dev/null 2>&1 ||
+    fail "openssl is needed to check the release signature and was not found. Install it, then run this again."
+  if [ -n "${DPM_CUSTODY_RELEASE_PUBKEY:-}" ]; then
+    [ -r "$DPM_CUSTODY_RELEASE_PUBKEY" ] || fail "DPM_CUSTODY_RELEASE_PUBKEY ($DPM_CUSTODY_RELEASE_PUBKEY) is not a readable file."
+    cp "$DPM_CUSTODY_RELEASE_PUBKEY" "$STAGE/release.pub"
   else
-    sums_url="$(releases_base)/SHA256SUMS"
-    case "$sums_url" in
-      file://*)
-        if [ -e "${sums_url#file://}" ]; then
-          curl -sS "$sums_url" -o "$STAGE/SHA256SUMS" || fail "Could not download SHA256SUMS ($sums_url). Nothing was installed."
-        fi
-        ;;
-      *)
-        code="$(curl -sSL -o "$STAGE/SHA256SUMS" -w '%{http_code}' "$sums_url")" ||
-          fail "Could not download SHA256SUMS ($sums_url). Check the internet connection. Nothing was installed."
-        case "$code" in
-          200) ;;
-          404) rm -f "$STAGE/SHA256SUMS" ;;
-          *) fail "Could not download SHA256SUMS ($sums_url): HTTP $code. Nothing was installed." ;;
-        esac
-        ;;
-    esac
+    printf '%s\n' "$RELEASE_PUBKEY" >"$STAGE/release.pub"
   fi
-  if [ -e "$STAGE/SHA256SUMS" ] && [ ! -s "$STAGE/SHA256SUMS" ]; then
-    fail "SHA256SUMS was downloaded but is empty or unreadable. Nothing was installed."
+  if ! openssl dgst -sha256 -verify "$STAGE/release.pub" -signature "$STAGE/SHA256SUMS.sig" "$STAGE/SHA256SUMS" >/dev/null 2>&1; then
+    if [ "$RELEASE_KEY_IS_PLACEHOLDER" = 1 ] && [ -z "${DPM_CUSTODY_RELEASE_PUBKEY:-}" ]; then
+      fail "This installer still carries a placeholder release key, so no signature can be valid. Nothing was installed. Tell the platform team."
+    fi
+    fail "The release's signature (SHA256SUMS.sig) does not match its SHA256SUMS. Nothing was installed. Do not use this download; tell the platform team."
   fi
-  if [ ! -e "$STAGE/SHA256SUMS" ]; then
-    say "  ! This release has no SHA256SUMS; the downloads could not be checked."
-    return 0
-  fi
+}
+
+# verify_files NAME... checks the staged files against the release's SHA256SUMS, after checking
+# the signature on it. A release without SHA256SUMS or SHA256SUMS.sig, a bad signature or a
+# mismatch aborts before anything is installed.
+verify_files() {
+  rm -f "$STAGE/SHA256SUMS" "$STAGE/SHA256SUMS.sig"
+  fetch_file SHA256SUMS
+  fetch_file SHA256SUMS.sig
+  [ -s "$STAGE/SHA256SUMS" ] || fail "SHA256SUMS was downloaded but is empty or unreadable. Nothing was installed."
+  [ -s "$STAGE/SHA256SUMS.sig" ] || fail "SHA256SUMS.sig was downloaded but is empty. Nothing was installed."
+  verify_signature
   : >"$STAGE/SHA256SUMS.use"
   for f in "$@"; do
     line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"

@@ -107,6 +107,17 @@ backup_failed() {
 # rollback puts back compose.yml and dpm-custody from *.prev, and in .env only the image tags and
 # DPM_CUSTODY_VERSION, then `up -d` and the same health wait. It never restores a database.
 
+# >>> release public key >>>
+# PLACEHOLDER: no private key exists for this one. Replace it with the real key (see
+# scripts/release-signing-key.sh) in install.sh, install.ps1 and dpm-custody; until then no
+# release can be verified, so none can be installed or upgraded to.
+RELEASE_KEY_IS_PLACEHOLDER=1
+RELEASE_PUBKEY='-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAmHIZwcph401VXfbdEQCsT5VUeke
+b/nekspBGcW/P3518k+tqluQyqTRi8Y7R7jA6zxSdQwNYVFy41HokCfzCQ==
+-----END PUBLIC KEY-----'
+# <<< release public key <<<
+
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
 STAGE="upgrade.tmp"
 # The .env keys an upgrade changes, and the only ones a rollback puts back.
@@ -303,34 +314,63 @@ sha_check() {
   fi
 }
 
-# fetch_release BASE downloads the release files into upgrade.tmp/ and checks them against the
-# release's SHA256SUMS. Unlike the installer, an upgrade requires SHA256SUMS: every release that
-# has this command also has one.
+# fetch_one BASE NAME downloads one release file into upgrade.tmp/. Only https:// is accepted
+# (DPM_CUSTODY_ALLOW_INSECURE=1 allows file:// and http:// for a local rehearsal).
+fetch_one() {
+  local url="$1/$2"
+  case "$url" in
+    https://*) curl -fsSL --proto '=https' --tlsv1.2 "$url" -o "$STAGE/$2" 2>/dev/null ;;
+    *)
+      [ "${DPM_CUSTODY_ALLOW_INSECURE:-}" = 1 ] ||
+        stop_unchanged "Refusing to download from $url: releases are fetched over https:// only." \
+          "(DPM_CUSTODY_ALLOW_INSECURE=1 allows file:// and http:// for a local rehearsal; never use it on a real install.)"
+      curl -fsSL "$url" -o "$STAGE/$2" 2>/dev/null
+      ;;
+  esac
+}
+
+# verify_signature checks SHA256SUMS against SHA256SUMS.sig with the public key embedded in this
+# (the installed) dpm-custody, or DPM_CUSTODY_RELEASE_PUBKEY (a PEM file) for a rehearsal. The new
+# release's own script is never trusted to check itself.
+verify_signature() {
+  command -v openssl >/dev/null 2>&1 ||
+    stop_unchanged "openssl is needed to check the release signature and was not found."
+  if [ -n "${DPM_CUSTODY_RELEASE_PUBKEY:-}" ]; then
+    [ -r "$DPM_CUSTODY_RELEASE_PUBKEY" ] ||
+      stop_unchanged "DPM_CUSTODY_RELEASE_PUBKEY ($DPM_CUSTODY_RELEASE_PUBKEY) is not a readable file."
+    cp "$DPM_CUSTODY_RELEASE_PUBKEY" "$STAGE/release.pub"
+  else
+    printf '%s\n' "$RELEASE_PUBKEY" >"$STAGE/release.pub"
+  fi
+  if ! openssl dgst -sha256 -verify "$STAGE/release.pub" -signature "$STAGE/SHA256SUMS.sig" "$STAGE/SHA256SUMS" >/dev/null 2>&1; then
+    if [ "$RELEASE_KEY_IS_PLACEHOLDER" = 1 ] && [ -z "${DPM_CUSTODY_RELEASE_PUBKEY:-}" ]; then
+      stop_unchanged "This dpm-custody still carries a placeholder release key, so no signature can be valid." \
+        "Tell the platform team."
+    fi
+    stop_unchanged "The release's signature (SHA256SUMS.sig) does not match its SHA256SUMS." \
+      "Do not use this download; tell the platform team."
+  fi
+}
+
+# fetch_release BASE downloads the release files into upgrade.tmp/, checks the signature on its
+# SHA256SUMS, then the files against it. An upgrade requires both SHA256SUMS and its signature.
 fetch_release() {
-  local base="$1" f code line
+  local base="$1" f line
   rm -rf "$STAGE"
   (umask 077 && mkdir "$STAGE") || stop_unchanged "Could not create $(pwd)/$STAGE."
   for f in compose.yml versions.env dpm-custody; do
-    curl -fsSL "$base/$f" -o "$STAGE/$f" 2>/dev/null ||
+    fetch_one "$base" "$f" ||
       stop_unchanged "Could not download $f from $base." "Check the internet connection and the version name, then try again."
   done
-  case "$base" in
-    file://*)
-      curl -fsS "$base/SHA256SUMS" -o "$STAGE/SHA256SUMS" 2>/dev/null ||
-        stop_unchanged "This release has no readable SHA256SUMS ($base/SHA256SUMS), so the download cannot be checked."
-      ;;
-    *)
-      code="$(curl -sSL -o "$STAGE/SHA256SUMS" -w '%{http_code}' "$base/SHA256SUMS")" ||
-        stop_unchanged "Could not download SHA256SUMS ($base/SHA256SUMS)." "Check the internet connection, then try again."
-      case "$code" in
-        200) ;;
-        404) stop_unchanged "This release has no SHA256SUMS, so the download cannot be checked and the upgrade stops." \
-          "Ask the platform team for a release that has one." ;;
-        *) stop_unchanged "Could not download SHA256SUMS ($base/SHA256SUMS): HTTP $code." "Try again later." ;;
-      esac
-      ;;
-  esac
+  fetch_one "$base" SHA256SUMS ||
+    stop_unchanged "This release has no readable SHA256SUMS ($base/SHA256SUMS), so the download cannot be checked and the upgrade stops." \
+      "Ask the platform team for a release that has one."
+  fetch_one "$base" SHA256SUMS.sig ||
+    stop_unchanged "This release has no readable signature ($base/SHA256SUMS.sig), so the download cannot be trusted and the upgrade stops." \
+      "Ask the platform team for a release that has one."
   [ -s "$STAGE/SHA256SUMS" ] || stop_unchanged "SHA256SUMS was downloaded but is empty."
+  [ -s "$STAGE/SHA256SUMS.sig" ] || stop_unchanged "SHA256SUMS.sig was downloaded but is empty."
+  verify_signature
   : >"$STAGE/SHA256SUMS.use"
   for f in compose.yml versions.env dpm-custody; do
     line="$(grep -E "^[0-9a-fA-F]{64}  \*?$f\$" "$STAGE/SHA256SUMS" | head -n 1 || true)"

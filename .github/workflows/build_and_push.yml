@@ -122,6 +122,30 @@ jobs:
           sha256sum install.sh install.ps1 compose.yml versions.env dpm-custody > SHA256SUMS
           cat SHA256SUMS
 
+      # Signs SHA256SUMS (ECDSA P-256, DER) so install.sh, install.ps1 and dpm-custody can tell this
+      # release from a tampered one. The private key is a repository secret; see
+      # scripts/release-signing-key.sh. The signature is checked here against the public key
+      # embedded in the installers, so a wrong key or a placeholder fails the release instead of
+      # shipping one nobody can install.
+      - name: Sign the checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -eu
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY is not set. Create the key with scripts/release-signing-key.sh."
+            exit 1
+          fi
+          umask 077
+          KEY="$RUNNER_TEMP/release-signing-key.pem"
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$KEY"
+          openssl dgst -sha256 -sign "$KEY" -out deploy/SHA256SUMS.sig deploy/SHA256SUMS
+          rm -f "$KEY"
+          sed -n "/^RELEASE_PUBKEY='/,/^-----END PUBLIC KEY-----'/p" deploy/install.sh \
+            | sed "s/^RELEASE_PUBKEY='//; s/'\$//" > "$RUNNER_TEMP/release.pub"
+          openssl dgst -sha256 -verify "$RUNNER_TEMP/release.pub" -signature deploy/SHA256SUMS.sig deploy/SHA256SUMS \
+            || { echo "::error::The signature does not verify against the public key embedded in deploy/install.sh. Is the embedded key the one for RELEASE_SIGNING_KEY?"; exit 1; }
+
       - name: Attach install files to the release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -132,3 +156,4 @@ jobs:
             deploy/versions.env
             deploy/dpm-custody
             deploy/SHA256SUMS
+            deploy/SHA256SUMS.sig

@@ -2,8 +2,9 @@
 # existing-install re-run. A `docker` shim on PATH answers instead of Docker, so no container runs.
 # The shim is a shell script, so this runs under PowerShell 7 on Linux or macOS, e.g. from the
 # repo root:
-#   docker run --rm -v "$PWD/deploy:/deploy:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \
-#     pwsh -NoProfile -File /deploy/test/install.test.ps1
+#   docker run --rm -v "$PWD:/repo:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \
+#     pwsh -NoProfile -File /repo/deploy/test/install.test.ps1
+# It needs openssl and sh on PATH (to sign the throwaway release, like CI does, and to embed a key).
 $ErrorActionPreference = "Stop"
 $Here = Split-Path -Parent $PSScriptRoot
 $T = Join-Path ([System.IO.Path]::GetTempPath()) ("ps1-test-" + [guid]::NewGuid().ToString("N"))
@@ -21,6 +22,18 @@ $sums = foreach ($f in "compose.yml", "versions.env", "dpm-custody") {
   "$((Get-FileHash -Algorithm SHA256 (Join-Path $Rel $f)).Hash.ToLower())  $f"
 }
 Set-Content (Join-Path $Rel "SHA256SUMS") $sums
+
+# A throwaway signing key pair, and a second one for a signature by the wrong key. The installer
+# checks SHA256SUMS.sig against key.pub through DPM_CUSTODY_RELEASE_PUBKEY. Signed with openssl
+# (DER ECDSA over SHA-256), as CI does, so this also proves the DER -> .NET signature conversion.
+$Key = Join-Path $T "key.pem"; $PubKey = Join-Path $T "key.pub"; $Other = Join-Path $T "other.pem"
+openssl ecparam -name prime256v1 -genkey -noout -out $Key 2>$null
+openssl pkey -in $Key -pubout -out $PubKey
+openssl ecparam -name prime256v1 -genkey -noout -out $Other 2>$null
+function Sign-Release($keyFile = $Key) {
+  openssl dgst -sha256 -sign $keyFile -out (Join-Path $Rel "SHA256SUMS.sig") (Join-Path $Rel "SHA256SUMS")
+}
+Sign-Release
 
 # docker shim: logs every call; `compose ls` lists $EXISTING_NAME, `ps -aq`/`inspect` report a
 # container publishing $CLAIMED_PORT; everything else succeeds.
@@ -48,15 +61,16 @@ $Port = Get-FreePort
 
 # Runs the installer in a child pwsh (it calls exit) with the given variables; returns its output
 # and exit code. Variables not given are cleared, so cases do not leak into each other.
-function Invoke-Installer($dir, [hashtable]$vars = @{}) {
+function Invoke-Installer($dir, [hashtable]$vars = @{}, $script = (Join-Path $Here "install.ps1")) {
   $all = @{
+    DPM_CUSTODY_RELEASE_PUBKEY = $PubKey; DPM_CUSTODY_ALLOW_INSECURE = "1"
     DPM_CUSTODY_DIR = $dir; DPM_CUSTODY_RELEASES_URL = "file://$Rel"; DPM_CUSTODY_NO_START = "1"
     DPM_CUSTODY_MANAGER_PORT = "$Port"; DPM_CUSTODY_NAME = $null; DPM_CUSTODY_SOURCE = $null
     EXISTING_NAME = $null; CLAIMED_PORT = $null; SETUP_PLATFORM_URL = $null; SETUP_BUILDER_KEY = $null
   }
   foreach ($k in $vars.Keys) { $all[$k] = $vars[$k] }
   foreach ($k in $all.Keys) { [Environment]::SetEnvironmentVariable($k, $all[$k]) }
-  $out = pwsh -NoProfile -File (Join-Path $Here "install.ps1") 2>&1 | Out-String
+  $out = pwsh -NoProfile -File $script 2>&1 | Out-String
   @{ Out = $out; Code = $LASTEXITCODE }
 }
 function Test-Empty($dir) { -not (Test-Path $dir) -or -not (Get-ChildItem $dir -Force) }
@@ -119,6 +133,45 @@ $before = Get-FileHash "$d/.env"
 $r = Invoke-Installer $d @{ DPM_CUSTODY_NAME = "something-else"; DPM_CUSTODY_MANAGER_PORT = "1" }
 Check "re-run: exits 0, ignores name and port" ($r.Code -eq 0)
 Check "re-run: .env byte-identical" ((Get-FileHash "$d/.env").Hash -eq $before.Hash)
+
+# 8. signatures and transport. Every refusal writes nothing.
+Copy-Item (Join-Path $Rel "SHA256SUMS") (Join-Path $T "signed.sums"); Copy-Item (Join-Path $Rel "SHA256SUMS.sig") (Join-Path $T "signed.sig")
+function Restore-Release { Copy-Item (Join-Path $T "signed.sums") (Join-Path $Rel "SHA256SUMS") -Force; Copy-Item (Join-Path $T "signed.sig") (Join-Path $Rel "SHA256SUMS.sig") -Force }
+
+Remove-Item (Join-Path $Rel "SHA256SUMS"), (Join-Path $Rel "SHA256SUMS.sig")
+$d = Join-Path $T "s1"; $r = Invoke-Installer $d
+Check "missing SHA256SUMS: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "SHA256SUMS"))
+Restore-Release; Remove-Item (Join-Path $Rel "SHA256SUMS.sig")
+$d = Join-Path $T "s2"; $r = Invoke-Installer $d
+Check "missing signature: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "SHA256SUMS.sig"))
+Restore-Release; Sign-Release $Other
+$d = Join-Path $T "s3"; $r = Invoke-Installer $d
+Check "signature by another key: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "does not match"))
+Restore-Release; [System.IO.File]::WriteAllBytes((Join-Path $Rel "SHA256SUMS.sig"), [byte[]](1,2,3))
+$d = Join-Path $T "s4"; $r = Invoke-Installer $d
+Check "garbage signature: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "does not match"))
+Restore-Release; Add-Content (Join-Path $Rel "SHA256SUMS") ("0" * 64 + "  extra")
+$d = Join-Path $T "s5"; $r = Invoke-Installer $d
+Check "SHA256SUMS changed after signing: refused, nothing written" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "does not match"))
+Restore-Release
+$d = Join-Path $T "s6"; $r = Invoke-Installer $d @{ DPM_CUSTODY_ALLOW_INSECURE = $null }
+Check "file:// refused without DPM_CUSTODY_ALLOW_INSECURE" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "Refusing to download"))
+$d = Join-Path $T "s7"; $r = Invoke-Installer $d @{ DPM_CUSTODY_ALLOW_INSECURE = $null; DPM_CUSTODY_RELEASES_URL = "http://example.test/rel" }
+Check "http:// refused without DPM_CUSTODY_ALLOW_INSECURE" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "https:// only"))
+$d = Join-Path $T "s8"; $r = Invoke-Installer $d @{ DPM_CUSTODY_RELEASE_PUBKEY = $null }
+Check "placeholder embedded key: refused, and says why" (($r.Code -ne 0) -and (Test-Empty $d) -and ($r.Out -match "placeholder release key"))
+# Embedding a real key (scripts/embed-release-key.sh) makes it the one that counts.
+$emb = Join-Path $T "embedded"; New-Item -ItemType Directory $emb | Out-Null
+foreach ($f in "install.sh", "install.ps1", "dpm-custody") { Copy-Item (Join-Path $Here $f) (Join-Path $emb $f) }
+$env:DEPLOY_DIR = $emb
+sh (Join-Path $Here "../scripts/embed-release-key.sh") $PubKey | Out-Null
+$env:DEPLOY_DIR = $null
+$d = Join-Path $T "s9"; $r = Invoke-Installer $d @{ DPM_CUSTODY_RELEASE_PUBKEY = $null } (Join-Path $emb "install.ps1")
+Check "embedded real key verifies a release signed with its private half" (($r.Code -eq 0) -and (Test-Path "$d/.env"))
+Sign-Release $Other
+$d = Join-Path $T "s10"; $r = Invoke-Installer $d @{ DPM_CUSTODY_RELEASE_PUBKEY = $null } (Join-Path $emb "install.ps1")
+Check "embedded real key rejects a release signed by another key" (($r.Code -ne 0) -and (Test-Empty $d))
+Restore-Release
 
 Remove-Item $T -Recurse -Force
 if ($script:Fails -eq 0) { Write-Host "all passed" } else { Write-Host "$($script:Fails) failed"; exit 1 }

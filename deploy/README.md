@@ -71,7 +71,7 @@ It puts the files in the `dpm-custody` folder in your home folder, downloads and
 service, then opens the **setup dashboard** in the same window.
 
 Running the installer again is always safe. On an existing install it only refreshes the
-`dpm-custody` command (checked against the release's `SHA256SUMS`) and starts the service. It
+`dpm-custody` command (checked against the release's signed `SHA256SUMS`) and starts the service. It
 never changes `compose.yml`, `versions.env` or `.env`, so the name and port options below
 apply only to a new install.
 
@@ -89,8 +89,10 @@ needed for a normal install.
 | `SETUP_PLATFORM_URL`       | (asked)            | Answers setup's first question, the platform address. Still checked.                                     |
 | `SETUP_BUILDER_KEY`        | (asked)            | Answers setup's second question, your builder key. Still checked. Prefer pasting it when asked.          |
 | `DPM_CUSTODY_NO_START`     | (unset)            | `1` writes the files and `.env`, then stops before starting anything.                                    |
-| `DPM_CUSTODY_RELEASES_URL` | the GitHub release | Download the installer files from here instead (`file://` works). For testing.                           |
+| `DPM_CUSTODY_RELEASES_URL` | the GitHub release | Download the installer files from here instead. Must be `https://` unless the next option is set. Testing. |
 | `DPM_CUSTODY_SOURCE`       | (unset)            | Copy the installer files from this local folder instead of downloading them. For testing.                |
+| `DPM_CUSTODY_ALLOW_INSECURE` | (unset)          | `1` allows `file://` and `http://` release URLs. Local rehearsals only; never on a real install.         |
+| `DPM_CUSTODY_RELEASE_PUBKEY` | the embedded key | A PEM public key to check the release signature against instead. Local rehearsals only.                 |
 
 The name may use lowercase letters, digits, `-` and `_`, and must start with a letter or digit.
 A name another install on this machine already uses, running or stopped, is refused.
@@ -300,9 +302,11 @@ install folder. Read that file to see how it ended.
 It runs these steps in order. Until the switch, nothing in the install changes, and any problem
 stops the upgrade with the install running as before:
 
-1. Downloads the release's `compose.yml`, `versions.env` and `dpm-custody` into `upgrade.tmp/`
-   and checks them against its `SHA256SUMS`. A release without `SHA256SUMS`, or a file that does
-   not match, stops the upgrade.
+1. Downloads the release's `compose.yml`, `versions.env` and `dpm-custody` into `upgrade.tmp/`,
+   checks the signature on its `SHA256SUMS` (`SHA256SUMS.sig`) with the public key embedded in
+   the dpm-custody you are running, then checks the files against `SHA256SUMS`. A release without
+   `SHA256SUMS` or its signature, a bad signature or a file that does not match stops the
+   upgrade. Downloads must be `https://` (TLS 1.2 or newer).
 2. Checks that the release is newer than the installed version (`DPM_CUSTODY_VERSION` in `.env`)
    and that the install is not below the release's `MIN_UPGRADE_FROM`. If it is, the message
    names the version to upgrade to first. It also checks that every service is healthy now, and
@@ -552,13 +556,41 @@ so a fresh install can come up and reach setup.
 
 ### Release files and checks
 
-Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody` and
-a `SHA256SUMS` file. The installer checks every file it downloads against `SHA256SUMS` and stops
-without writing anything if one differs. A release without `SHA256SUMS` (the download answers
-"not found") installs with a warning; any other failure to fetch it stops the install.
-`SHA256SUMS` protects against corrupt or mixed downloads, not against a compromised release.
-`versions.env` pins both images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`,
-which the installer writes to `.env` as `DPM_CUSTODY_VERSION`.
+Each release carries `install.sh`, `install.ps1`, `compose.yml`, `versions.env`, `dpm-custody`, a
+`SHA256SUMS` file and `SHA256SUMS.sig`, a signature over `SHA256SUMS`. `versions.env` pins both
+images by digest (`<version>@sha256:...`) and records `RELEASE_VERSION`, which the installer writes
+to `.env` as `DPM_CUSTODY_VERSION`.
+
+**What is checked, in order.** The installer and `dpm-custody upgrade` download over `https://` only
+(`curl --proto '=https' --tlsv1.2`; PowerShell uses TLS 1.2). They fetch `SHA256SUMS` and
+`SHA256SUMS.sig`, and stop, writing nothing, if either is missing or empty. They verify the
+signature, then check each file they downloaded against `SHA256SUMS`. Re-running the installer on an
+existing install does the same before it replaces `dpm-custody`.
+
+**Signing (ECDSA P-256).** CI signs `SHA256SUMS` with the private key stored as the repository
+secret `RELEASE_SIGNING_KEY`, and attaches `SHA256SUMS.sig` (DER) to the release; before attaching, it
+checks the signature against the public key embedded in `install.sh`, so a wrong key fails the
+release. The public key is embedded in `install.sh` (verified with `openssl dgst -sha256 -verify`),
+`install.ps1` (verified with .NET `ECDsa`; Windows PowerShell 5.1 needs .NET Framework 4.7 or
+newer) and `dpm-custody`. An upgrade is checked with the key in the dpm-custody you already run, never with
+the new release's own copy. Windows PowerShell 5.1 itself has not been tried; PowerShell 7 is tested.
+
+**Hand-off: the embedded key is a placeholder.** No private key exists for it, so until the real
+key is embedded no release can be installed or upgraded to. To set it up (these commands are only
+printed, none is run):
+
+```sh
+sh scripts/release-signing-key.sh     # prints: key generation, `gh secret set RELEASE_SIGNING_KEY`, embedding
+```
+
+Then commit the three changed files (`sh scripts/embed-release-key.sh <public key>` does the
+embedding) and cut a release. Keep the private key offline. Installs made from the v0.2.2
+installer do not verify signatures: re-run the new installer once on them (Step 1) so they carry
+the key, then `dpm-custody upgrade` is checked from then on.
+
+**Rehearsals.** `DPM_CUSTODY_RELEASE_PUBKEY` (a PEM file) and `DPM_CUSTODY_ALLOW_INSECURE=1` let
+the installer and `dpm-custody upgrade` use a local release folder signed with a throwaway key.
+`deploy/try-install.sh` does that for you. They are not for a real install.
 
 ---
 
@@ -758,12 +790,17 @@ for ref in dpm-wallet:1.0.0 dpm-wallet-manager:1.0.0 dpm-wallet:1.1.0 dpm-wallet
   docker push $R/$ref
 done
 
-# one release folder per version, as CI would publish it
+# one release folder per version, as CI would publish it, signed with a throwaway key
+# (releases are always signed; the install is told to trust this key, for rehearsals only)
+openssl ecparam -name prime256v1 -genkey -noout -out /tmp/dpm-rehearsal.pem
+openssl pkey -in /tmp/dpm-rehearsal.pem -pubout -out /tmp/dpm-rehearsal.pub
+export DPM_CUSTODY_RELEASE_PUBKEY=/tmp/dpm-rehearsal.pub DPM_CUSTODY_ALLOW_INSECURE=1
 make_release() {
   D=/tmp/dpm-releases/$1; mkdir -p "$D"
   cp deploy/compose.yml deploy/dpm-custody deploy/install.sh deploy/install.ps1 "$D/"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\nRELEASE_VERSION=%s\nMIN_UPGRADE_FROM=\n' "$1" "$1" "$1" >"$D/versions.env"
   (cd "$D" && sha256sum compose.yml versions.env dpm-custody install.sh install.ps1 >SHA256SUMS)
+  openssl dgst -sha256 -sign /tmp/dpm-rehearsal.pem -out "$D/SHA256SUMS.sig" "$D/SHA256SUMS"
 }
 make_release 1.0.0
 make_release 1.1.0
@@ -780,7 +817,8 @@ The first `upgrade 1.0.0` says "installed version unknown" (a try install has no
 1.0.0. To see the automatic rollback, build a 1.2.0 whose manager exits at boot, push it, make
 its release folder and upgrade to it with `DPM_CUSTODY_HEALTH_TIMEOUT=120`: it rolls back to
 1.1.0 by itself. On macOS use `shasum -a 256` for `sha256sum`. When done:
-`docker rm -f dpm-registry`, and remove the `DPM_IMAGE_REGISTRY` line from the install's `.env`.
+`docker rm -f dpm-registry`, remove the `DPM_IMAGE_REGISTRY` line from the install's `.env`,
+`unset DPM_CUSTODY_RELEASE_PUBKEY DPM_CUSTODY_ALLOW_INSECURE` and delete `/tmp/dpm-rehearsal.*`.
 
 ### 8. Crash test (optional)
 
@@ -857,12 +895,17 @@ docker build -t "ghcr.io/in-a-bit/dpm-wallet-manager:$TAG" .
 SRC=$(mktemp -d)
 cp deploy/compose.yml deploy/dpm-custody "$SRC/"
 printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\n' "$TAG" "$TAG" > "$SRC/versions.env"
-DPM_CUSTODY_DIR=~/dpm-custody-try DPM_CUSTODY_SOURCE="$SRC" \
+# releases are signed: sign this one with a throwaway key and tell the installer to trust it
+openssl ecparam -name prime256v1 -genkey -noout -out "$SRC.pem"
+openssl pkey -in "$SRC.pem" -pubout -out "$SRC.pub"
+(cd "$SRC" && sha256sum compose.yml versions.env dpm-custody >SHA256SUMS)   # shasum -a 256 on macOS
+openssl dgst -sha256 -sign "$SRC.pem" -out "$SRC/SHA256SUMS.sig" "$SRC/SHA256SUMS"
+DPM_CUSTODY_DIR=~/dpm-custody-try DPM_CUSTODY_SOURCE="$SRC" DPM_CUSTODY_RELEASE_PUBKEY="$SRC.pub" \
   DPM_CUSTODY_MANAGER_PORT=3001 SETUP_PLATFORM_URL="$PLATFORM" sh deploy/install.sh
 ```
 
-Without a `SHA256SUMS` in `$SRC` the installer warns that the files could not be checked. That is
-expected here.
+The installer only accepts a signed release, hence the throwaway key; `try-install.sh` does the
+same for you.
 
 **6. Setup.** The installer goes straight on to the setup dashboard. `SETUP_PLATFORM_URL` has
 already answered the platform question, so:
@@ -957,12 +1000,12 @@ install before announcing the release.
 None of these start real containers or touch a platform.
 
 ```sh
-bash deploy/test/install.test.sh     # install.sh: checksums, options (name, port), re-runs
+bash deploy/test/install.test.sh     # install.sh: checksums and signatures, options (name, port), re-runs
 bash deploy/test/upgrade.test.sh     # dpm-custody upgrade and rollback, every failure path
 
 # install.ps1, under PowerShell 7 in a container (or `pwsh -File …` where PowerShell is installed)
-docker run --rm -v "$PWD/deploy:/deploy:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \
-  pwsh -NoProfile -File /deploy/test/install.test.ps1
+docker run --rm -v "$PWD:/repo:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \
+  pwsh -NoProfile -File /repo/deploy/test/install.test.ps1
 ```
 
 Each prints one `ok` or `FAIL` line per check and ends with `all passed`. For a real install,

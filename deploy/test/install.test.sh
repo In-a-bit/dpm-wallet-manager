@@ -15,7 +15,14 @@ sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else sh
 # set_version FILE VERSION rewrites RELEASE_VERSION portably (no sed -i).
 set_version() { sed "s/^RELEASE_VERSION=.*/RELEASE_VERSION=$2/" "$1" >"$1.tmp" && mv "$1.tmp" "$1"; }
 SUMFILES="install.sh install.ps1 compose.yml versions.env dpm-custody"
-resum() { (cd "$rel" && sha256 $SUMFILES >SHA256SUMS); }
+# A throwaway signing key pair (and a second one, for a signature by the wrong key). The
+# installer checks SHA256SUMS.sig against key.pub through DPM_CUSTODY_RELEASE_PUBKEY.
+openssl ecparam -name prime256v1 -genkey -noout -out "$T/key.pem" 2>/dev/null
+openssl pkey -in "$T/key.pem" -pubout -out "$T/key.pub"
+openssl ecparam -name prime256v1 -genkey -noout -out "$T/other.pem" 2>/dev/null
+# sign [KEY] signs the release's current SHA256SUMS (DER ECDSA over SHA-256, like CI).
+sign() { openssl dgst -sha256 -sign "${1:-$T/key.pem}" -out "$rel/SHA256SUMS.sig" "$rel/SHA256SUMS"; }
+resum() { (cd "$rel" && sha256 $SUMFILES >SHA256SUMS); sign; }
 
 mkdir -p "$T/bin"
 cat >"$T/bin/docker" <<'S'
@@ -46,6 +53,7 @@ PORT="$(free_port)"
 run() { # dir, extra env...
   local d="$1"; shift
   env DPM_CUSTODY_DIR="$d" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_NO_START=1 \
+    DPM_CUSTODY_RELEASE_PUBKEY="$T/key.pub" DPM_CUSTODY_ALLOW_INSECURE=1 \
     DPM_CUSTODY_MANAGER_PORT="$PORT" "$@" \
     sh "$HERE/install.sh" </dev/null
 }
@@ -54,6 +62,7 @@ run() { # dir, extra env...
 cp "$rel/SHA256SUMS" "$T/good.sums"
 # corrupt the digest of a downloaded file (dpm-custody)
 awk '/ dpm-custody$/{ $0 = "0" substr($0, 2) } {print}' "$T/good.sums" >"$rel/SHA256SUMS"
+sign   # validly signed, so it is the checksum that fails
 d1="$T/i1"
 out="$(run "$d1" 2>&1)"; rc=$?
 check "wrong SHA256SUMS exits non-zero" '[ $rc -ne 0 ]'
@@ -61,7 +70,7 @@ check "wrong SHA256SUMS writes no .env" '[ ! -e "$d1/.env" ]'
 check "wrong SHA256SUMS writes no files" '[ -z "$(ls -A "$d1" 2>/dev/null)" ]'
 
 # 2. correct checksums install
-cp "$T/good.sums" "$rel/SHA256SUMS"
+cp "$T/good.sums" "$rel/SHA256SUMS"; sign
 out="$(run "$d1" 2>&1)"; rc=$?
 check "correct SHA256SUMS exits 0" '[ $rc -eq 0 ]'
 check "files written" '[ -f "$d1/compose.yml" ] && [ -f "$d1/versions.env" ] && [ -x "$d1/dpm-custody" ]'
@@ -69,13 +78,50 @@ check ".env has version from versions.env" 'grep -qx "DPM_CUSTODY_VERSION=9.9.9"
 check ".env has password and tags" 'grep -q "^POSTGRES_PASSWORD=.\{32\}$" "$d1/.env" && grep -q "^DPM_WALLET_TAG=" "$d1/.env"'
 check "NO_START: no compose up" '! grep -q " up " "$DOCKER_LOG"'
 
-# 3. no SHA256SUMS: warning, proceeds; version unknown when RELEASE_VERSION empty
-rm "$rel/SHA256SUMS"; cp "$HERE/versions.env" "$rel/versions.env"
+# 3. signature and sums are mandatory; every refusal writes nothing
+cp "$HERE/versions.env" "$rel/versions.env"; resum
 d3="$T/i3"
 out="$(run "$d3" 2>&1)"; rc=$?
-check "no SHA256SUMS proceeds" '[ $rc -eq 0 ] && [ -f "$d3/.env" ]'
-check "no SHA256SUMS warns" 'echo "$out" | grep -q "no SHA256SUMS"'
-check "empty RELEASE_VERSION -> unknown" 'grep -qx "DPM_CUSTODY_VERSION=unknown" "$d3/.env"'
+check "empty RELEASE_VERSION -> unknown" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTODY_VERSION=unknown" "$d3/.env"'
+nothing_written() { [ ! -e "$1/.env" ] && [ -z "$(ls -A "$1" 2>/dev/null)" ]; }
+cp "$rel/SHA256SUMS" "$T/signed.sums"; cp "$rel/SHA256SUMS.sig" "$T/signed.sig"
+restore() { cp "$T/signed.sums" "$rel/SHA256SUMS"; cp "$T/signed.sig" "$rel/SHA256SUMS.sig"; }
+
+rm "$rel/SHA256SUMS" "$rel/SHA256SUMS.sig"
+d3a="$T/i3a"; out="$(run "$d3a" 2>&1)"; rc=$?
+check "missing SHA256SUMS: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "SHA256SUMS" && nothing_written "$d3a"'
+restore; rm "$rel/SHA256SUMS.sig"
+d3b="$T/i3b"; out="$(run "$d3b" 2>&1)"; rc=$?
+check "missing signature: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "SHA256SUMS.sig" && nothing_written "$d3b"'
+restore; sign "$T/other.pem"
+d3c="$T/i3c"; out="$(run "$d3c" 2>&1)"; rc=$?
+check "signature by another key: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && nothing_written "$d3c"'
+restore; printf 'garbage' >"$rel/SHA256SUMS.sig"
+d3d="$T/i3d"; out="$(run "$d3d" 2>&1)"; rc=$?
+check "garbage signature: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && nothing_written "$d3d"'
+restore; { cat "$rel/SHA256SUMS"; echo "0000000000000000000000000000000000000000000000000000000000000000  extra"; } >"$rel/SHA256SUMS.new"; mv "$rel/SHA256SUMS.new" "$rel/SHA256SUMS"
+d3e="$T/i3e"; out="$(run "$d3e" 2>&1)"; rc=$?
+check "SHA256SUMS changed after signing: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && nothing_written "$d3e"'
+restore
+d3f="$T/i3f"; out="$(run "$d3f" DPM_CUSTODY_ALLOW_INSECURE= 2>&1)"; rc=$?
+check "file:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "Refusing to download" && nothing_written "$d3f"'
+d3g="$T/i3g"; out="$(run "$d3g" DPM_CUSTODY_ALLOW_INSECURE= DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
+check "http:// refused without DPM_CUSTODY_ALLOW_INSECURE" '[ $rc -ne 0 ] && echo "$out" | grep -q "https:// only" && nothing_written "$d3g"'
+# The embedded key (no override) is a placeholder in the source tree: nothing verifies against it.
+d3h="$T/i3h"; out="$(run "$d3h" DPM_CUSTODY_RELEASE_PUBKEY= 2>&1)"; rc=$?
+check "placeholder embedded key: refused, and says why" '[ $rc -ne 0 ] && echo "$out" | grep -q "placeholder release key" && nothing_written "$d3h"'
+# Embedding a real key (scripts/embed-release-key.sh) makes that key the one that counts.
+emb="$T/embedded"; mkdir -p "$emb"
+cp "$HERE/install.sh" "$HERE/install.ps1" "$HERE/dpm-custody" "$emb/"
+DEPLOY_DIR="$emb" sh "$HERE/../scripts/embed-release-key.sh" "$T/key.pub" >/dev/null
+d3i="$T/i3i"
+out="$(env DPM_CUSTODY_DIR="$d3i" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_ALLOW_INSECURE=1 DPM_CUSTODY_NO_START=1 DPM_CUSTODY_MANAGER_PORT="$PORT" sh "$emb/install.sh" </dev/null 2>&1)"; rc=$?
+check "embedded real key verifies a release signed with its private half" '[ $rc -eq 0 ] && [ -f "$d3i/.env" ]'
+sign "$T/other.pem"
+d3j="$T/i3j"
+out="$(env DPM_CUSTODY_DIR="$d3j" DPM_CUSTODY_RELEASES_URL="file://$rel" DPM_CUSTODY_ALLOW_INSECURE=1 DPM_CUSTODY_NO_START=1 DPM_CUSTODY_MANAGER_PORT="$PORT" sh "$emb/install.sh" </dev/null 2>&1)"; rc=$?
+check "embedded real key rejects a release signed by another key" '[ $rc -ne 0 ] && nothing_written "$d3j"'
+restore
 
 # 4. existing-install re-run: only dpm-custody replaced, .env byte-identical
 cp "$T/good.sums" "$rel/SHA256SUMS"; set_version "$rel/versions.env" 9.9.9
@@ -124,9 +170,17 @@ check "unreadable SHA256SUMS aborts, nothing written" '[ $rc -ne 0 ] && [ ! -e "
 mkdir -p "$T/curlbin"
 cat >"$T/curlbin/curl" <<'S'
 #!/bin/sh
-out=""; url=""; wcode=0
+out=""; url=""; wcode=0; fail_on_http=0
+echo "$*" >>"${CURL_LOG:-/dev/null}"
 while [ $# -gt 0 ]; do
-  case "$1" in -o) out="$2"; shift ;; -w) wcode=1; shift ;; -*) ;; *) url="$1" ;; esac
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -w) wcode=1; shift ;;
+    --proto) shift ;;
+    -*f*) fail_on_http=1 ;;
+    -*) ;;
+    *) url="$1" ;;
+  esac
   shift
 done
 # The installer's port check: nothing answers on loopback (curl's "could not connect").
@@ -134,6 +188,7 @@ case "$url" in http://127.0.0.1:*) exit 7 ;; esac
 name="${url##*/}"
 code=200
 [ "$name" = SHA256SUMS ] && code="$SUMS_CODE"
+[ "$code" != 200 ] && [ "$fail_on_http" = 1 ] && exit 22
 [ "$code" = 200 ] && cp "$REL/$name" "$out"
 [ "$code" != 200 ] && : >"$out"
 [ "$wcode" = 1 ] && printf '%s' "$code"
@@ -142,7 +197,11 @@ S
 chmod +x "$T/curlbin/curl"
 d7="$T/i7"
 out="$(PATH="$T/curlbin:$PATH" REL="$rel" SUMS_CODE=404 run "$d7" DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
-check "HTTP 404 SHA256SUMS: warns and proceeds" '[ $rc -eq 0 ] && [ -f "$d7/.env" ] && echo "$out" | grep -q "no SHA256SUMS"'
+check "HTTP 404 SHA256SUMS: refused, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not download SHA256SUMS" && nothing_written "$d7"'
+# An https release is fetched with curl restricted to https and TLS 1.2.
+d7b="$T/i7b"; : >"$T/curl.log"
+out="$(PATH="$T/curlbin:$PATH" CURL_LOG="$T/curl.log" REL="$rel" SUMS_CODE=200 run "$d7b" DPM_CUSTODY_RELEASES_URL=https://example.test/rel 2>&1)"; rc=$?
+check "https release: fetched with --proto =https --tlsv1.2" '[ $rc -eq 0 ] && grep -q "https://example.test/rel/SHA256SUMS.sig" "$T/curl.log" && grep -- "example.test" "$T/curl.log" | grep -q -- "--proto =https" && grep -- "example.test" "$T/curl.log" | grep -q -- "--tlsv1.2"'
 d8="$T/i8"
 out="$(PATH="$T/curlbin:$PATH" REL="$rel" SUMS_CODE=500 run "$d8" DPM_CUSTODY_RELEASES_URL=http://example.test/rel 2>&1)"; rc=$?
 check "HTTP 500 SHA256SUMS: aborts, nothing written" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not download SHA256SUMS" && [ -z "$(ls -A "$d8" 2>/dev/null)" ]'
