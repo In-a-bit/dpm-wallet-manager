@@ -100,10 +100,13 @@ export class ApiKeyService {
     });
 
     const expiresAt = new Date(Date.now() + graceSeconds * 1000).toISOString();
+    // With no grace the old key is revoked now, through the same locked check as a revoke: the
+    // replacement just minted counts as usable, so this cannot strand the install, but it must not
+    // race another revoke's count either.
     const rotated =
       graceSeconds > 0
         ? await this.keys.setExpiry(existing.id, expiresAt)
-        : await this.keys.revoke(existing.id, new Date().toISOString());
+        : (await this.keys.revokeUnlessLastAdmin(existing.id, new Date().toISOString())).key;
 
     await this.audit.record({
       actor,

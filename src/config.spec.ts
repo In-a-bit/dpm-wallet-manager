@@ -111,6 +111,11 @@ describe("loadConfig session cookie and API docs", () => {
         .uiCookieSecure,
     ).toBe(false);
     expect(load({ UI_COOKIE_SECURE: "true" }).uiCookieSecure).toBe(true);
+    // Existing installs wrote these spellings.
+    expect(load({ UI_COOKIE_SECURE: "1" }).uiCookieSecure).toBe(true);
+    expect(load({ UI_COOKIE_SECURE: "TRUE" }).uiCookieSecure).toBe(true);
+    expect(load({ UI_COOKIE_SECURE: "0" }).uiCookieSecure).toBe(false);
+    expect(load({ UI_COOKIE_SECURE: "False" }).uiCookieSecure).toBe(false);
     expect(() => load({ UI_COOKIE_SECURE: "yes" })).toThrow(/UI_COOKIE_SECURE/);
   });
 

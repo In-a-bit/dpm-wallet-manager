@@ -115,10 +115,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 }
 
 function parseCookieSecure(env: NodeJS.ProcessEnv): boolean {
-  if (optional(env.UI_COOKIE_SECURE) !== undefined) {
-    return (
-      parseEnum("UI_COOKIE_SECURE", env.UI_COOKIE_SECURE, ["true", "false"], "false") === "true"
-    );
+  const explicit = optional(env.UI_COOKIE_SECURE)?.toLowerCase();
+  if (explicit !== undefined) {
+    if (explicit === "true" || explicit === "1") return true;
+    if (explicit === "false" || explicit === "0") return false;
+    throw new Error("UI_COOKIE_SECURE must be one of true, false, 1, 0");
   }
   return optional(env.MANAGER_PUBLIC_URL)?.toLowerCase().startsWith("https://") === true;
 }
