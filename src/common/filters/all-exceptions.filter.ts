@@ -43,6 +43,15 @@ function toResponse(err: unknown): { status: number; body: unknown; code: string
   if (err instanceof HttpException) {
     return { status: err.getStatus(), body: err.getResponse(), code: err.name };
   }
+  // The body parser's own refusals (415 for a compressed body, 413, malformed JSON) are
+  // `http-errors`: a client status and a message that is safe to show.
+  if (isClientHttpError(err)) {
+    return {
+      status: err.status,
+      body: { statusCode: err.status, message: err.message },
+      code: err.name,
+    };
+  }
   return {
     status: ERROR_STATUS.INTERNAL_ERROR,
     body: envelope("INTERNAL_ERROR", "Unexpected error"),
@@ -52,4 +61,10 @@ function toResponse(err: unknown): { status: number; body: unknown; code: string
 
 function envelope(code: ErrorCode, message: string): ErrorEnvelope {
   return { error: { code, message } };
+}
+
+function isClientHttpError(err: unknown): err is Error & { status: number } {
+  if (!(err instanceof Error)) return false;
+  const { status, expose } = err as { status?: unknown; expose?: unknown };
+  return expose === true && typeof status === "number" && status >= 400 && status < 500;
 }

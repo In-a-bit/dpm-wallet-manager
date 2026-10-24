@@ -17,7 +17,9 @@ const MAX_BODY_SIZE = "64kb";
  */
 export function configureApp(app: NestExpressApplication, config: Config): void {
   app.getHttpAdapter().getInstance().disable("x-powered-by");
-  app.useBodyParser("json", { limit: MAX_BODY_SIZE });
+  // `inflate: false` refuses Content-Encoding bodies (415) before auth, so a small compressed
+  // payload can never expand past the cap (body-parser GHSA-27r3-jxmh-p828).
+  app.useBodyParser("json", { limit: MAX_BODY_SIZE, inflate: false });
   app.setGlobalPrefix(BASE_PATH);
   serveAdminUi(app);
   // An explicit allowlist rather than `*`: the browser has to send X-API-Key, and a wildcard
