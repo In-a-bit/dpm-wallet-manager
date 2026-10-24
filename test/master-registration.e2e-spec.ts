@@ -65,7 +65,7 @@ describe("platform wallet registration", () => {
     expect(registrationCalls(harness)).toHaveLength(2);
   });
 
-  it("lets only an admin change a platform wallet's registration", async () => {
+  it("lets only an admin de-register a platform wallet; an operator may still register", async () => {
     const created = await harness.post("/v1/platform/operations-wallet", { body: {} });
 
     const asOperator = await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
@@ -76,9 +76,16 @@ describe("platform wallet registration", () => {
       body: { registered: true },
     });
 
+    // Provisioning (e.g. a backend's operations-wallet fallback) registers with an operator key.
+    const registerAsOperator = await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
+      body: { registered: true },
+      apiKey: harness.operatorKey,
+    });
+
     expect(asOperator.status).toBe(403);
     expect(asOperator.body.error.code).toBe("FORBIDDEN");
     expect(asAdmin.status).toBe(200);
+    expect(registerAsOperator.status).toBe(200);
   });
 
   it("rejects a non-boolean registered flag", async () => {

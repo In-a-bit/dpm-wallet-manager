@@ -224,10 +224,11 @@ export class WalletsService {
    */
   async setDpmRegistered(id: string, registered: boolean, actor: Actor): Promise<Wallet> {
     const wallet = await this.getReady(id);
-    // The master and operations wallets carry the platform's money; flipping their registration
-    // (which gates every meta-transaction) is an administrator's call, not an operator's.
-    if (PLATFORM_KINDS.has(wallet.kind) && actor.role !== "admin") {
-      throw forbidden("Changing the DPM registration of a platform wallet requires an admin key");
+    // De-registering the master or operations wallet would lock every meta-transaction they
+    // sign, so that is an administrator's call. Registering (or re-registering) stays with the
+    // operator: provisioning does it routinely and must keep working with an operator key.
+    if (!registered && PLATFORM_KINDS.has(wallet.kind) && actor.role !== "admin") {
+      throw forbidden("De-registering a platform wallet requires an admin key");
     }
     const upstream = await this.upstream.setDpmRegistered(wallet.ref, registered);
     const updated = await this.wallets.setDpmRegistered(
