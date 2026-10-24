@@ -485,11 +485,16 @@ export class ArchiveService implements OnModuleDestroy {
   }
 }
 
-/** A cutoff must be a timestamp at least a day old; returned normalised to ISO 8601 UTC. */
+/** Records younger than this cannot be archived, and so never deleted. */
+export const MIN_ARCHIVE_AGE_DAYS = 30;
+
+/** A cutoff must be a timestamp at least 30 days old; returned normalised to ISO 8601 UTC. */
 function checkedCutoff(before: string): string {
   const at = Date.parse(before);
   if (Number.isNaN(at)) throw validationFailed("before must be an ISO 8601 timestamp");
-  if (at > Date.now() - DAY_MS) throw validationFailed("before must be at least 1 day ago");
+  if (at > Date.now() - MIN_ARCHIVE_AGE_DAYS * DAY_MS) {
+    throw validationFailed(`before must be at least ${MIN_ARCHIVE_AGE_DAYS} days ago`);
+  }
   return new Date(at).toISOString();
 }
 

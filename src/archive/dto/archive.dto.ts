@@ -17,14 +17,14 @@ const COUNTS_EXAMPLE = {
 };
 
 export class CreateArchiveDto {
-  /** The cutoff: important records created before it are archived. At least 1 day ago. */
+  /** The cutoff: important records created before it are archived. At least 30 days ago. */
   @ApiProperty({ format: "date-time", example: "2026-07-01T00:00:00Z" })
   @IsIsoTimestamp()
   before!: string;
 }
 
 export class ArchivePreviewQueryDto {
-  /** The cutoff to count for. At least 1 day ago. */
+  /** The cutoff to count for. At least 30 days ago. */
   @ApiProperty({ format: "date-time", example: "2026-07-01T00:00:00Z" })
   @IsIsoTimestamp()
   before!: string;

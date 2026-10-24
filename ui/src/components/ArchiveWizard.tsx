@@ -8,6 +8,8 @@ import { useToast } from "./Toasts";
 export const isOpen = (a: Archive) => a.status === "pending" || a.status === "downloaded" || a.status === "deleting";
 
 const DAY_MS = 86_400_000;
+/** Server minimum is 30 days; one more keeps any time zone's date on the right side. */
+const MIN_ARCHIVE_DAYS = 31;
 const toDateInput = (d: Date) => d.toISOString().slice(0, 10);
 const NOTE = "Keep the file somewhere safe, off this machine.";
 /**
@@ -79,7 +81,7 @@ export function ArchiveWizard({
   onChanged: () => void;
 }) {
   const toast = useToast();
-  const [date, setDate] = useState(() => toDateInput(new Date(Date.now() - reminderDays * DAY_MS)));
+  const [date, setDate] = useState(() => toDateInput(new Date(Date.now() - Math.max(reminderDays, MIN_ARCHIVE_DAYS) * DAY_MS)));
   const [edited, setEdited] = useState(false);
   const [preview, setPreview] = useState<Record<string, number> | null>(null);
   const [busy, setBusy] = useState(false);
@@ -91,9 +93,9 @@ export function ArchiveWizard({
   const [scopeChanged, setScopeChanged] = useState(false);
 
   // The reminder loads after first render; follow it until the owner picks a date.
-  const shownDate = edited ? date : toDateInput(new Date(Date.now() - reminderDays * DAY_MS));
+  const shownDate = edited ? date : toDateInput(new Date(Date.now() - Math.max(reminderDays, MIN_ARCHIVE_DAYS) * DAY_MS));
   const before = `${shownDate}T00:00:00.000Z`;
-  const maxDate = toDateInput(new Date(Date.now() - 2 * DAY_MS));
+  const maxDate = toDateInput(new Date(Date.now() - MIN_ARCHIVE_DAYS * DAY_MS));
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
@@ -194,7 +196,7 @@ export function ArchiveWizard({
 
       {loaded && !open && (
         <>
-          <Field label="Archive records older than" hint={`Defaults to ${reminderDays} days ago. Must be at least two days ago.`}>
+          <Field label="Archive records older than" hint={`Defaults to ${Math.max(reminderDays, MIN_ARCHIVE_DAYS)} days ago. Must be at least ${MIN_ARCHIVE_DAYS} days ago.`}>
             <input
               type="date"
               value={shownDate}

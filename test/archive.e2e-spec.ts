@@ -10,9 +10,9 @@ import type { OperationKind } from "../src/db/entities";
 import { startHarness, type Harness } from "../src/testing/harness";
 
 const DAY = 24 * 60 * 60_000;
-const OLD = new Date(Date.now() - 10 * DAY).toISOString();
+const OLD = new Date(Date.now() - 60 * DAY).toISOString();
 const RECENT = new Date(Date.now() - 60 * 60_000).toISOString();
-const BEFORE = new Date(Date.now() - 3 * DAY).toISOString();
+const BEFORE = new Date(Date.now() - 40 * DAY).toISOString();
 
 const OPS = "manager.operations";
 const AUDIT = "manager.audit_events";
@@ -165,11 +165,15 @@ describe("archives", () => {
     expect(preview.body).toEqual({ tables: { [OPS]: 3, [AUDIT]: 3, [WALLET]: 4 } });
   });
 
-  it("refuses a cutoff less than a day old", async () => {
-    const recent = new Date(Date.now() - 60 * 60_000).toISOString();
-    expect((await harness.post("/v1/archives", { body: { before: recent } })).status).toBe(400);
-    const preview = await harness.get("/v1/archives/preview", { query: { before: recent } });
-    expect(preview.status).toBe(400);
+  it("refuses a cutoff less than 30 days old", async () => {
+    for (const age of [60 * 60_000, 29 * DAY]) {
+      const recent = new Date(Date.now() - age).toISOString();
+      expect((await harness.post("/v1/archives", { body: { before: recent } })).status).toBe(400);
+      const preview = await harness.get("/v1/archives/preview", { query: { before: recent } });
+      expect(preview.status).toBe(400);
+    }
+    const ok = new Date(Date.now() - 31 * DAY).toISOString();
+    expect((await harness.get("/v1/archives/preview", { query: { before: ok } })).status).toBe(200);
   });
 
   it("creates an archive with a fixed scope and a 6-character code", async () => {
