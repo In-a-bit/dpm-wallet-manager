@@ -271,12 +271,25 @@ waits = [n for n in ("dpm-wallet", "dpm-wallet-manager")
 versions = dict(l.strip().split("=", 1) for l in open(sys.argv[2]) if "=" in l and not l.startswith("#"))
 pg = svc["postgres"]["image"]
 bad_pg = not (pg == "postgres:" + versions["POSTGRES_TAG"] and "-trixie@sha256:" in pg and "alpine" not in pg)
+# Hardening: the app services (and tools) drop every capability, cannot gain privileges and have a
+# read-only root filesystem; Postgres keeps only what its entrypoint needs; Postgres sits on an
+# internal network alone (no route out), dpm-wallet and the manager bridge it to the default
+# network, and tools has no network at all.
+hardened = ("dpm-wallet", "dpm-wallet-manager", "setup")
+weak = [n for n in hardened if not (svc[n].get("cap_drop") == ["ALL"] and "no-new-privileges:true" in svc[n].get("security_opt", []) and svc[n].get("read_only") is True and not svc[n].get("cap_add"))]
+pg_svc = svc["postgres"]
+weak_pg = pg_svc.get("cap_drop") != ["ALL"] or "no-new-privileges:true" not in pg_svc.get("security_opt", []) or set(pg_svc.get("cap_add", [])) - {"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"}
+nets = {n: set(svc[n].get("networks", {"default": None})) for n in svc}
+net_defs = json.load(open(sys.argv[1]))["networks"]
+bad_net = (nets["postgres"] != {"backend"} or net_defs["backend"].get("internal") is not True
+           or not {"backend", "default"} <= nets["dpm-wallet"] or not {"backend", "default"} <= nets["dpm-wallet-manager"]
+           or not {"backend", "default"} <= nets["setup"] or net_defs.get("default", {}).get("internal"))
 # Only setup (and postgres) holds the database superuser; the services get their own roles from
 # the env files setup writes, and setup waits for postgres to create them.
 env_of = lambda n: svc[n].get("environment", {})
 leak = [n for n in ("dpm-wallet", "dpm-wallet-manager") if any(k.startswith("POSTGRES_") for k in env_of(n))]
 setup_waits_pg = svc["setup"]["depends_on"].get("postgres", {}).get("condition") == "service_healthy"
-sys.exit(1 if bad or bad_pg or oneshot or waits or leak or not setup_waits_pg or "healthcheck" not in svc["setup"] else 0)
+sys.exit(1 if weak or weak_pg or bad_net or bad or bad_pg or oneshot or waits or leak or not setup_waits_pg or "healthcheck" not in svc["setup"] else 0)
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi
@@ -291,7 +304,7 @@ PY
       docker compose -f "$HERE/compose.yml" --profile tools config --format json 2>/dev/null | python3 -c '
 import json, sys
 t = json.load(sys.stdin)["services"]["tools"]
-sys.exit(0 if t["logging"]["driver"] == "none" and not t.get("volumes") and not t.get("environment") and t["restart"] == "no" else 1)'; then
+sys.exit(0 if t["logging"]["driver"] == "none" and not t.get("volumes") and not t.get("environment") and t["restart"] == "no" and t.get("network_mode") == "none" and t.get("cap_drop") == ["ALL"] and t.get("read_only") is True else 1)'; then
       ok "compose: the tools helper has no log driver, no volumes, no environment"
     else bad "compose: the tools helper has no log driver, no volumes, no environment"; fi
 

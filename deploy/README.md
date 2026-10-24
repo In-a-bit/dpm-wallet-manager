@@ -157,7 +157,10 @@ again. Finished steps aren't repeated.
 
 If it keeps stopping, run `~/dpm-custody/dpm-custody support`. It writes one file with
 everything support needs: the checklist, what each step did and when, the state of each service,
-and their recent logs. Keys in it are masked, so it's safe to email. Send that file to the
+and their recent logs. The file is readable by you only. Keys in it are masked, so it's safe to email:
+the install's own secrets (every key, password and token in its settings, the database passwords)
+and any 64-digit hex value (such as an encryption key) are hidden wherever they appear, and image
+digests are left as they are. Send that file to the
 platform team, with the **reference** shown on the dashboard.
 
 ## Step 3: Check it works
@@ -468,6 +471,15 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
 - **Services:** Postgres, dpm-wallet, dpm-wallet-manager and a setup service. All come from the
   public images `ghcr.io/in-a-bit/dpm-wallet` and `ghcr.io/in-a-bit/dpm-wallet-manager`. See
   `compose.yml`.
+- **Container hardening:** every container drops all Linux capabilities and cannot gain
+  privileges (`no-new-privileges`); dpm-wallet, the manager and setup also run with a read-only
+  root filesystem (a tmpfs for `/tmp`; the volumes are the only writable places). Postgres keeps
+  only the five capabilities its entrypoint needs to own its data directory and then drop to its
+  own user, and is not read-only (Compose cannot put its init script into a read-only container).
+  Postgres is alone on an internal network, so it has no route out and cannot be reached from
+  outside the stack; dpm-wallet, the manager and setup are on that network and on the default
+  one (dpm-wallet needs it to reach Turnkey and the platform, setup the platform, the manager for
+  its published port). The `tools` helper has no network at all.
 - **Network exposure:** only the manager API is published, on `127.0.0.1:$MANAGER_PORT`. Setup
   has no port: it runs in a terminal, inside its container. To reach the manager from another
   host, set `MANAGER_BIND=0.0.0.0` in `.env` and put TLS in front of it. dpm-wallet and Postgres

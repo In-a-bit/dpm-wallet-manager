@@ -33,9 +33,15 @@ env_value() { sed -n "s/^$1=//p" "${2:-.env}" | tail -n 1; }
 
 # cmd_support writes everything support needs into one file, with keys masked: setup's own report
 # (checklist, journal, service checks) plus what only the host knows (Docker, containers, logs).
+# The file is created owner-only (umask 077), not made so afterwards, and every value that the
+# install's own configuration marks as a secret is masked wherever it appears.
 cmd_support() {
-  local file
+  local file secrets old_umask
+  old_umask="$(umask)"
+  umask 077
   file="support-$(date +%Y%m%d-%H%M%S).txt"
+  secrets="$(mktemp)"
+  collect_secrets >"$secrets" 2>/dev/null || true
   echo "Writing $file ..."
   {
     echo "DPM custody support report"
@@ -57,9 +63,56 @@ cmd_support() {
       echo "== Logs: $service (last 200 lines) =="
       compose logs --no-color --tail 200 "$service" 2>&1
     done
-  } | mask_keys >"$file"
+  } | mask_secrets "$secrets" | mask_keys >"$file"
+  rm -f "$secrets"
+  umask "$old_umask"
   chmod 600 "$file"
   echo "Done. Send $(pwd)/$file to the platform team."
+}
+
+# collect_secrets prints, one per line, the secret values this install is configured with: the
+# database password from .env, and every value in the services' env files whose name says key,
+# secret, password or token, plus the password inside each DATABASE_URL (these hold the database
+# role passwords). The env files are read through the setup container, which mounts them.
+collect_secrets() {
+  env_value POSTGRES_PASSWORD
+  compose exec -T setup sh -c 'cat /config-wallet/*.env /config-manager/*.env 2>/dev/null' | awk '
+    {
+      i = index($0, "="); if (i < 2) next
+      name = substr($0, 1, i - 1); val = substr($0, i + 1)
+      sub(/^\047/, "", val); sub(/\047$/, "", val)
+      if (name ~ /(KEY|SECRET|PASSWORD|TOKEN)/ && name !~ /_ENV$/) print val
+      if (name ~ /URL/ && val ~ /:\/\/[^:@\/]*:[^@\/]*@/) {
+        u = val; sub(/^[^:]*:\/\/[^:@\/]*:/, "", u); sub(/@.*/, "", u); print u
+      }
+    }'
+}
+
+# mask_secrets FILE masks every value listed in FILE (one per line) wherever it appears, and any
+# run of 64 or more hex digits (encryption keys are 64 hex) unless it is an image digest
+# (sha256:...). A value shows only its last 4 characters when long, nothing when short.
+mask_secrets() {
+  awk -v secrets="$1" '
+    function shown(v) { return length(v) >= 16 ? "…" substr(v, length(v) - 3) : "***" }
+    BEGIN {
+      while ((getline line < secrets) > 0) if (length(line) >= 6) vals[++n] = line
+      close(secrets)
+    }
+    {
+      for (k = 1; k <= n; k++) {
+        v = vals[k]; out = ""; rest = $0
+        while ((p = index(rest, v)) > 0) { out = out substr(rest, 1, p - 1) shown(v); rest = substr(rest, p + length(v)) }
+        $0 = out rest
+      }
+      out = ""; rest = $0
+      while (match(rest, /[0-9a-fA-F]+/)) {
+        run = substr(rest, RSTART, RLENGTH); before = substr(rest, 1, RSTART - 1)
+        seen = out before
+        if (RLENGTH >= 64 && substr(seen, length(seen) - 6) != "sha256:") run = "…" substr(run, length(run) - 3)
+        out = out before run; rest = substr(rest, RSTART + RLENGTH)
+      }
+      print out rest
+    }'
 }
 
 # mask_keys hides any key that may still appear in a service log, keeping its last 4 characters.

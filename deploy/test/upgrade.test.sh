@@ -85,6 +85,8 @@ case "$args" in
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
+  *"cat /config-wallet"*) printf '%s\n' "${PLANT_ENV:-}"; exit 0 ;;
+  *" logs "*) printf '%s\n' "${PLANT_LOG:-}"; exit 0 ;;
   *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; [ -n "${OLD_IMAGE_SCRUB:-}" ] && exit 2; exit 0 ;;
   *"setup node dist/setup/main backup-recipient"*)
     [ -n "${SETUP_DOWN:-}" ] && { echo "service setup is not running" >&2; exit 1; }
@@ -631,6 +633,28 @@ check "22 and the next command does not scrub again" '! has "$d.events" "$SCRUB"
 d="$T/c22d"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(run "$d" cleanup-legacy --yes)"
 check "22 cleanup-legacy and rollback do not trigger it" '! has "$d.events" "$SCRUB"'
+
+# 23. the support report: owner-only from the start, and every kind of secret masked
+HEX_A="$(printf 'a1b2c3d4%.0s' $(seq 8))"           # a 64-hex key in an env file
+HEX_B="$(printf 'e5f60718%.0s' $(seq 8))"           # a 64-hex value nobody configured
+HEX_DIGEST="$(printf '9c8d7e6f%.0s' $(seq 8))"      # an image digest: must survive
+PG_PW="PgPassWord-2026-planted"
+ROLE_PW="RolePw-planted-9f3c1d"
+TOKEN="tok-planted-abcdefghijk"
+WALLET_KEY="dpmw_0123456789abcdef0123456789abcdef01234567"
+RECOVERY="dpmbk_key_PLANTEDrecoveryKEYplantedFOURtwoXYZ"
+PLANT="encryption=$HEX_A random=$HEX_B pg=$PG_PW role=$ROLE_PW token=$TOKEN wallet=$WALLET_KEY recovery=$RECOVERY url=postgres://manager_app:$ROLE_PW@postgres:5432/dpm image=sha256:$HEX_DIGEST"
+d="$T/c23"; make_install "$d" 1.1.0 0.2.0 1.1.0
+sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$PG_PW/" "$d/.env"
+PLANT_ENV="$(printf "DPM_WALLET_ENCRYPTION_KEY='%s'\nDATABASE_URL='postgres://manager_app:%s@postgres:5432/dpm'\nSOME_API_TOKEN='%s'\nDPM_WALLET_API_KEY='%s'\nPORT='8090'\nDPM_WALLET_MANAGER_KEY_ENV='dev'\n" "$HEX_A" "$ROLE_PW" "$TOKEN" "$WALLET_KEY")"
+(umask 000; PLANT_ENV="$PLANT_ENV" PLANT_LOG="$PLANT" run "$d" support >/dev/null)
+rep="$(ls "$d"/support-*.txt | head -n 1)"
+check "23 support: the report is owner-only even under umask 000" '[ "$(mode_of "$rep")" = "-rw-------" ]'
+for secret in "$HEX_A" "$HEX_B" "$PG_PW" "$ROLE_PW" "$TOKEN" "$WALLET_KEY" "$RECOVERY"; do
+  check "23 support: a planted secret ($(printf '%s' "$secret" | cut -c1-8)…) is masked everywhere" '! grep -qF -- "$secret" "$rep"'
+done
+check "23 support: an image digest is left readable, and the report still says what it did" 'grep -qF -- "sha256:$HEX_DIGEST" "$rep" && grep -q "DPM custody support report" "$rep"'
+check "23 support: short or ordinary values stay (port, mode names)" 'grep -q "role=…" "$rep" || grep -q "role=\*\*\*" "$rep"'
 
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 

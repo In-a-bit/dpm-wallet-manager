@@ -18,6 +18,15 @@
 # Migration is part of setup's start (not a separate one-shot service) because an upgrade is run by
 # the *old* dpm-custody, which requires every service in the new compose.yml to be running.
 #
+# Hardening. Every app service drops all Linux capabilities and cannot gain privileges, and runs
+# with a read-only root filesystem (a tmpfs for /tmp; the volumes are the only writable places).
+# Postgres keeps only the few capabilities its entrypoint needs to hand the data directory to its
+# own user and drop to it. Networks: `backend` is internal (no route out, none in) and holds
+# Postgres with the three services that use it, so the database can neither be reached nor reach
+# anything from outside; the services that must talk to the world (dpm-wallet to Turnkey and the
+# platform, setup to the platform, the manager for its published port) are also on `default`.
+# The `tools` helper has no network at all.
+#
 # Setup has no port: it is driven from a terminal with `./dpm-custody setup`, which runs inside
 # its container. The only port published is the wallet manager's API (3000), on loopback unless
 # MANAGER_BIND says otherwise. dpm-wallet and Postgres are reachable only inside this stack.
@@ -28,6 +37,15 @@ x-platform-host: &platform-host
   # A platform running on this same computer (the "Local" environment) is reached here.
   extra_hosts:
     - "host.docker.internal:host-gateway"
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+x-readonly: &readonly
+  read_only: true
+  tmpfs:
+    - /tmp
 
 # Every service keeps at most 5 container log files of 20 MB (100 MB per service), so a long-running
 # install cannot fill the disk with logs.
@@ -59,6 +77,14 @@ services:
     # its text indexes rebuilt: `setup migrate` does that once (src/setup/collation.ts).
     image: postgres:${POSTGRES_TAG:-18-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6}
     restart: unless-stopped
+    # The entrypoint starts as root to own the data directory (chown, also for a directory an
+    # Alpine image created as uid 70) and then switches to the postgres user: it needs exactly these.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
+    # Not read_only: Compose cannot place the init script below (a `configs` entry) into a
+    # read-only container, and Postgres writes its socket and logs-in-progress under /var/run.
+    networks: [backend]
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dpm}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is not set. Re-run the installer.}
@@ -78,7 +104,8 @@ services:
       retries: 20
 
   dpm-wallet:
-    <<: [*platform-host, *logging]
+    <<: [*platform-host, *logging, *hardening, *readonly]
+    networks: [backend, default]
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet:${DPM_WALLET_TAG:?DPM_WALLET_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     # Wait for setup's configuration, load it, then do what the image always does:
@@ -109,7 +136,8 @@ services:
     stop_grace_period: 30s
 
   dpm-wallet-manager:
-    <<: [*platform-host, *logging]
+    <<: [*platform-host, *logging, *hardening, *readonly]
+    networks: [backend, default]
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     command:
@@ -149,7 +177,8 @@ services:
   # Runs provisioning in the background once `./dpm-custody setup` has recorded the answers, so a
   # closed terminal never stops a setup half-way. The terminal app runs in here too (exec).
   setup:
-    <<: [*platform-host, *logging]
+    <<: [*platform-host, *logging, *hardening, *readonly]
+    networks: [backend, default]
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: unless-stopped
     # Migrate the volumes (idempotent; see src/setup/migrate.ts), mark it done, then run the worker.
@@ -200,6 +229,9 @@ services:
   # upgrade health gate ignores it.
   tools:
     profiles: ["tools"]
+    <<: *hardening
+    read_only: true
+    network_mode: none
     image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
     restart: "no"
     command: ["true"]
@@ -211,6 +243,10 @@ configs:
   create-manager-database:
     content: |
       CREATE DATABASE dpm_wallet_manager;
+
+networks:
+  backend:
+    internal: true
 
 volumes:
   pg-data:
