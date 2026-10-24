@@ -50,6 +50,11 @@ export const MIGRATIONS: readonly Migration[] = [
     // text indexes in the wrong order until they are rebuilt (collation.ts).
     name: "postgres-collation",
     run: async (dirs, say, services) => {
+      // The upgrade's own run happens against the OLD server, before the new Postgres is up, with
+      // the old services still using it: rebuilding then would be useless and would record the
+      // old C library. It is skipped there and runs when setup starts on the new server.
+      if (process.env.SETUP_SKIP_COLLATION === "1")
+        return say("skipped: the new server is not up yet");
       if (!services.connect) return say("no administrator access; not checked");
       await reindexForNewCollation(services.connect, dirs.state, say);
     },

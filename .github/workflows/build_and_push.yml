@@ -123,11 +123,15 @@ jobs:
           # Postgres is pinned by digest too: resolved now, written to versions.env and to the default
           # in compose.yml (which serves installs whose .env predates POSTGRES_TAG), so the two agree.
           PG_BASE="$(sed -n 's/^POSTGRES_TAG=//p' deploy/versions.env | sed 's/@.*//')"
+          if ! printf '%s' "$PG_BASE" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+            echo "::error::POSTGRES_TAG in deploy/versions.env has an unusable tag ('${PG_BASE}')."
+            exit 1
+          fi
           PG_DIGEST="$(docker buildx imagetools inspect "postgres:${PG_BASE}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-          case "$PG_DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *)
+          if ! printf '%s' "$PG_DIGEST" | grep -Eq '^sha256:[a-f0-9]{64}$'; then
             echo "::error::Could not resolve the digest of postgres:${PG_BASE} (got '${PG_DIGEST}')."
-            exit 1 ;;
-          esac
+            exit 1
+          fi
           sed -i "s|^POSTGRES_TAG=.*|POSTGRES_TAG=${PG_BASE}@${PG_DIGEST}|" deploy/versions.env
           sed -i "s|image: postgres:\${POSTGRES_TAG:-[^}]*}|image: postgres:\${POSTGRES_TAG:-${PG_BASE}@${PG_DIGEST}}|" deploy/compose.yml
           grep -qF "image: postgres:\${POSTGRES_TAG:-${PG_BASE}@${PG_DIGEST}}" deploy/compose.yml

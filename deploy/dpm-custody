@@ -690,7 +690,8 @@ print_restore_steps() {
   b="${b:-backups/<stamp>}"
   say ""
   say "  ✕ The previous version did not come up healthy either. Nothing more is done automatically:"
-  say "    the databases were not touched by the rollback."
+  say "    the rows in the databases were not touched by the rollback (their text indexes are rebuilt"
+  say "    when the Postgres image changes; if that failed, the services are stopped)."
   say "    1. Run ./dpm-custody support and send the file it writes to the platform team."
   say "    2. If the platform team asks you to restore the backup taken before the upgrade"
   say "       ($(pwd)/$b), follow \"Restoring a backup\" in the deploy README:"
@@ -703,6 +704,8 @@ print_restore_steps() {
 # rollback_now restores the *.prev files, starts the stack and waits for health. Shared by
 # `upgrade` (after a failed health gate) and `rollback`.
 rollback_now() {
+  local before after
+  before="$(pg_libc)"
   # The text-index rebuild setup records is keyed by the Postgres C library it saw (glibc, on the
   # Debian image). Going back to an Alpine release changes that, so forget the record while the
   # current setup container and its state volume are still in the compose.yml: the next upgrade
@@ -712,6 +715,17 @@ rollback_now() {
     say "  ✕ Could not put the previous files back (see the message above)."
     return 1
   fi
+  after="$(pg_libc)"
+  if [ "$before" != "$after" ]; then
+    # Rows written under one C library's sort order sit in indexes ordered by the other's; a
+    # Postgres on the other library reads them wrongly (missed rows, duplicate "unique" values).
+    # So the services stay stopped until the indexes are rebuilt, and a failure stops the rollback.
+    say "The Postgres image changes ($before to $after): rebuilding its text indexes before the services start ..."
+    if ! reindex_all_databases; then
+      say "  ✕ Could not rebuild the databases' text indexes (details in upgrade.log). The services are stopped."
+      return 1
+    fi
+  fi
   if ! compose up -d >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
     say "  ✕ Docker could not start the previous version (details in upgrade.log)."
     return 1
@@ -719,29 +733,36 @@ rollback_now() {
   # An older version now runs and may write the old config volume again, so the scrub of it that
   # was stamped as done must be done again by the next command of a newer dpm-custody.
   rm -f .legacy-scrubbed
-  reindex_if_musl
   health_gate
 }
 
-# reindex_if_musl: when the version just brought back runs Postgres on Alpine (musl), its text
-# indexes were last written under the Debian image's sort order. Rebuilding them here makes the
-# old version correct again; the databases are otherwise left as they are. Quiet and non-fatal.
-reindex_if_musl() {
-  local user version db i
+# pg_libc prints musl or glibc for the Postgres image that compose.yml and .env name right now:
+# the Alpine image is musl, anything else (Debian) glibc.
+pg_libc() {
+  case "$(compose config 2>/dev/null | sed -n 's/^ *image: \(postgres:.*\)$/\1/p' | head -n 1)" in
+    *alpine*) echo musl ;;
+    *) echo glibc ;;
+  esac
+}
+
+# reindex_all_databases stops the services that use Postgres, (re)starts it alone, and runs
+# REINDEX DATABASE on every database that accepts connections. Everything is logged to upgrade.log.
+reindex_all_databases() {
+  local user dbs db i log="${UPGRADE_LOG:-/dev/null}"
   user="$(env_value POSTGRES_USER)"
   user="${user:-dpm}"
-  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+  compose stop dpm-wallet dpm-wallet-manager setup >>"$log" 2>&1 || true
+  compose up -d --no-deps postgres >>"$log" 2>&1 || return 1
+  for i in $(seq 1 60); do
     compose exec -T postgres pg_isready -U "$user" >/dev/null 2>&1 && break
     sleep 2
+    [ "$i" -lt 60 ] || return 1
   done
-  version="$(compose exec -T postgres psql -U "$user" -d postgres -tAc 'select version()' 2>/dev/null)" || return 0
-  case "$version" in *musl*) ;; *) return 0 ;; esac
-  say "Rebuilding the databases' text indexes for the Alpine Postgres that is back ..."
-  for db in dpm_wallet dpm_wallet_manager; do
-    compose exec -T postgres psql -U "$user" -d "$db" -c "REINDEX DATABASE $db" >>"${UPGRADE_LOG:-/dev/null}" 2>&1 ||
-      say "  ! Could not rebuild the indexes of $db; run REINDEX DATABASE $db by hand."
+  dbs="$(compose exec -T postgres psql -U "$user" -d postgres -tAc 'select datname from pg_database where datallowconn order by 1' 2>>"$log")" || return 1
+  for db in $dbs; do
+    case "$db" in *[!A-Za-z0-9_]*) continue ;; esac
+    compose exec -T postgres psql -U "$user" -d "$db" -v ON_ERROR_STOP=1 -c "REINDEX DATABASE $db" >>"$log" 2>&1 || return 1
   done
-  return 0
 }
 
 on_upgrade_exit() {
@@ -1005,8 +1026,9 @@ cmd_upgrade() {
     rm -f "$MARKER"
     say ""
     say "  ✕ The upgrade to $target failed and was rolled back: the install runs $installed again."
-    say "    The images and files are the previous ones; the databases were not restored (they do not"
-    say "    need to be: a release's database changes only add)."
+    say "    The images and files are the previous ones; the rows in the databases were not restored (they do"
+    say "    not need to be: a release's database changes only add). If the Postgres image changed, its text"
+    say "    indexes were rebuilt for the previous one before the services started."
     say "    The backup taken before the upgrade is in $(pwd)/$BACKUP_DIR."
     say "    Run ./dpm-custody support and send the file it writes to the platform team."
     say ""
@@ -1026,7 +1048,7 @@ cmd_upgrade() {
 run_migrate() {
   say "Preparing the configuration volumes ..."
   compose stop setup >>"${UPGRADE_LOG:-/dev/null}" 2>&1 || true
-  if ! compose run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
+  if ! compose run --rm --no-deps -T -e SETUP_SKIP_COLLATION=1 -v config:/legacy-config:rw setup node dist/setup/main migrate >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
     say "  ✕ Could not prepare the configuration volumes (details in upgrade.log)."
     return 1
   fi

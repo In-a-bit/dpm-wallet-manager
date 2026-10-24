@@ -646,11 +646,15 @@ miss rows that are there. The first time setup starts on the new image (the upgr
 before the services start) it rebuilds the indexes of every database (`REINDEX DATABASE`; a few
 seconds for a small install, during which old services may see a brief lock), and records the C
 library it saw so it does not repeat. The Postgres data directory changes owner by itself (the
-image's entrypoint does it). Rolling back past this release puts the Alpine image back, whose sort order differs again:
-`dpm-custody rollback` (and the automatic rollback of a failed upgrade) then rebuilds the indexes
-of `dpm_wallet` and `dpm_wallet_manager` once the old version is up, and forgets the record above,
-so the next upgrade rebuilds them for Debian whichever `dpm-custody` drives it. If the message
-"Could not rebuild the indexes" appears, run `REINDEX DATABASE <name>` by hand.
+image's entrypoint does it). Rolling back past this release puts the Alpine image back, whose sort order differs again, and rows
+written meanwhile would land in indexes ordered by the wrong library (missed rows, duplicate
+"unique" values). So `dpm-custody rollback`, and the automatic rollback of a failed upgrade, first
+stop dpm-wallet, the manager and setup, start Postgres alone on the old image, run
+`REINDEX DATABASE` on every database, and only then start the stack; if that fails the services stay
+stopped and the restore steps are printed. It also forgets the record above, so the next upgrade
+rebuilds for Debian whichever `dpm-custody` drives it. If you ever put an Alpine image back by hand,
+stop dpm-wallet and the manager first, then run `REINDEX DATABASE <name>` in `dpm_wallet` and
+`dpm_wallet_manager` before starting them.
 
 **Signing (ECDSA P-256).** CI signs `SHA256SUMS` with the private key stored as the repository
 secret `RELEASE_SIGNING_KEY`, and attaches `SHA256SUMS.sig` (DER) to the release; before attaching, it
@@ -1092,7 +1096,8 @@ install before announcing the release.
 
 ## Testing the deploy scripts
 
-None of these start real containers or touch a platform.
+The first two and the PowerShell one use shims and start no containers; `postgres-switch.test.sh` starts
+two real Postgres containers on a throwaway volume (and needs the images pulled). None touches a platform.
 
 ```sh
 bash deploy/test/install.test.sh     # install.sh: checksums and signatures, options (name, port), re-runs

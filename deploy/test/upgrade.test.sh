@@ -84,6 +84,12 @@ case "$args" in
     printf '%s\n' "${STORAGE_OUT-warning|81.2|13}"
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
+  *" config")
+    # `compose config`: only the Postgres image line matters (to dpm-custody's pg_libc); the fake
+    # compose.yml says which one through a marker comment.
+    if grep -q "postgres-alpine" compose.yml 2>/dev/null; then echo "    image: postgres:18-alpine"; else echo "    image: postgres:18-trixie@sha256:abc"; fi ;;
+  *"exec -T postgres psql"*"datallowconn"*) printf 'postgres\ndpm_wallet\ndpm_wallet_manager\ntemplate1\n' ;;
+  *"exec -T postgres psql"*"REINDEX"*) [ -n "${FAIL_REINDEX:-}" ] && { echo "reindex failed" >&2; exit 1; }; exit 0 ;;
   *"exec -T postgres psql"*"version()"*) echo "${PG_VERSION:-PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc}" ;;
   *"exec -T postgres psql"*"REINDEX"*) ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
@@ -266,7 +272,7 @@ ev="$d.events"
 check "7 happy: exit 0 and success message" '[ $rc -eq 0 ] && echo "$out" | grep -q "Upgraded to 1.1.0"'
 # The database-roles migration step runs inside this `setup node dist/setup/main migrate` call: it
 # is the service that holds the Postgres superuser credentials (the others are given none).
-check "7 happy: migrate (and so database-roles) runs in the setup service, after the switch, before up" 'grep -q "run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate" "$ev" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" "at-up")" ]'
+check "7 happy: migrate (and so database-roles) runs in the setup service, after the switch, before up" 'grep -q "run --rm --no-deps -T -e SETUP_SKIP_COLLATION=1 -v config:/legacy-config:rw setup node dist/setup/main migrate" "$ev" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" "at-up")" ]'
 check "7 happy: backup before pull before up" '[ "$(line_of "$ev" pg_dumpall)" -lt "$(line_of "$ev" " pull")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" " up -d")" ]'
 check "7 happy: pull uses new tag, before .prev and switch" 'has "$ev" "at-pull compose=# compose old prev=no tag=1.1.0@$D1"'
 check "7 happy: at up, .prev written (600), marker written, switched" 'has "$ev" "at-up compose=# compose 1.1.0 marker=yes prev=-rw------- $"'
@@ -278,7 +284,7 @@ check "7 happy: .prev files hold the old ones, mode 600" 'cmp -s "$d/compose.yml
 check "7 happy: backup folder written, no upgrade.tmp left" '[ -n "$(ls "$d/backups" 2>/dev/null)" ] && [ ! -e "$d/upgrade.tmp" ]'
 check "7 happy: mentions rollback" 'echo "$out" | grep -q "dpm-custody rollback"'
 check "7 happy: the old setup worker is stopped before the volumes are migrated" '[ "$(line_of "$ev" "stop setup")" -lt "$(line_of "$ev" at-migrate)" ]'
-check "7 happy: setup migrate runs after the switch and before up, never in the old compose" 'has "$ev" "at-migrate compose=# compose 1.1.0 marker=yes" && has "$ev" "run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main migrate" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" " up -d")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" at-migrate)" ]'
+check "7 happy: setup migrate runs after the switch and before up, never in the old compose" 'has "$ev" "at-migrate compose=# compose 1.1.0 marker=yes" && has "$ev" "run --rm --no-deps -T -e SETUP_SKIP_COLLATION=1 -v config:/legacy-config:rw setup node dist/setup/main migrate" && [ "$(line_of "$ev" at-migrate)" -lt "$(line_of "$ev" " up -d")" ] && [ "$(line_of "$ev" " pull")" -lt "$(line_of "$ev" at-migrate)" ]'
 check "7 happy: cleanup-legacy hint printed" 'echo "$out" | grep -q "cleanup-legacy"'
 
 # 12. rollback after a good upgrade
@@ -399,17 +405,29 @@ check "8d rollback then returns to 1.0.0" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTOD
 out="$(run "$d" upgrade --yes)"; rc=$?
 check "8d a good upgrade leaves no stash" '[ $rc -eq 0 ] && [ -z "$(ls -a "$d" | grep "\.last$")" ]'
 
-# 12p. rolling back across the Postgres image change: the collation record is forgotten while the
-# new setup container still exists, and an Alpine Postgres gets its text indexes rebuilt
-d="$T/c12p"; make_install "$d" 1.0.0 0.1.0 1.0.0
+# 12p. rolling back across the Postgres image change (Debian -> Alpine): the collation record is
+# forgotten while the new setup container still exists, the services stop, Postgres is restarted
+# alone on the Alpine image, EVERY connectable database is reindexed, and only then does the stack start
+alpine_install() { make_install "$1" 1.0.0 0.1.0 1.0.0; echo "# postgres-alpine" >>"$1/compose.yml"; for f in compose.yml; do cp "$1/$f" "$1.orig.$f"; done; }
+d="$T/c12p"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"
-out="$(PG_VERSION='PostgreSQL 18.6 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0)' run "$d" rollback)"; rc=$?
+out="$(run "$d" rollback)"; rc=$?
 ev="$d.events"
-check "12p rollback: the collation record is removed before the files go back and the stack restarts" '[ $rc -eq 0 ] && has "$ev" "run --rm --no-deps -T setup rm -f /state/.collation-key" && [ "$(line_of "$ev" ".collation-key")" -lt "$(line_of "$ev" " up -d")" ]'
-check "12p rollback onto Alpine Postgres: both databases are reindexed" 'has "$ev" "REINDEX DATABASE dpm_wallet" && has "$ev" "REINDEX DATABASE dpm_wallet_manager"'
+check "12p rollback: the collation record is removed before the files go back" '[ $rc -eq 0 ] && has "$ev" "run --rm --no-deps -T setup rm -f /state/.collation-key"'
+check "12p rollback onto Alpine: services stop, then postgres starts alone, then every database is reindexed, then the stack starts" '
+  a=$(line_of "$ev" "stop dpm-wallet dpm-wallet-manager setup"); b=$(line_of "$ev" "up -d --no-deps postgres"); c=$(line_of "$ev" "REINDEX DATABASE postgres");
+  e=$(line_of "$ev" "REINDEX DATABASE template1"); f=$(grep -n " up -d$" "$ev" | tail -n 1 | cut -d: -f1);
+  [ -n "$a" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$e" ] && [ "$e" -lt "$f" ] && has "$ev" "REINDEX DATABASE dpm_wallet" && has "$ev" "REINDEX DATABASE dpm_wallet_manager"'
+d="$T/c12r"; alpine_install "$d"
+out="$(run "$d" upgrade --yes)"
+out="$(FAIL_REINDEX=1 run "$d" rollback)"; rc=$?
+check "12p a failed reindex stops the rollback: services stay stopped, restore steps printed, misleading wording gone" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not rebuild" && echo "$out" | grep -q "services are stopped" && ! echo "$out" | grep -q "touched by the rollback\.$" && [ "$(grep -c " up -d$" "$d.events")" -eq 0 ]'
 d="$T/c12q"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(run "$d" upgrade --yes)"; out="$(run "$d" rollback)"
-check "12q rollback onto a Debian Postgres: nothing is reindexed" '! has "$d.events" "REINDEX"'
+check "12q rollback with no image change (Debian both sides): nothing is reindexed, services are not stopped" '! has "$d.events" "REINDEX" && ! has "$d.events" "stop dpm-wallet"'
+d="$T/c12s"; alpine_install "$d"
+out="$(run "$d" upgrade --yes)"
+check "12s upgrade from Alpine: the upgrade's own migrate run skips the collation step (old server, old services running)" 'has "$d.events" "-e SETUP_SKIP_COLLATION=1"'
 
 # 17. SIGHUP (dropped SSH session) during the health gate: the run still completes its rollback
 d="$T/c17"; make_install "$d" 1.0.0 0.1.0 1.0.0

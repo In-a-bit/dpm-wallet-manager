@@ -5,6 +5,7 @@ import path from "node:path";
 import { Client } from "pg";
 
 import { COLLATION_MARKER, reindexForNewCollation } from "./collation";
+import { runMigrations } from "./migrate";
 import type { Connect } from "./db-roles";
 import { createTestDatabase } from "../testing/pg-test-db";
 
@@ -97,5 +98,25 @@ describe("reindexForNewCollation", () => {
       reindexForNewCollation(failing, stateDir, () => undefined, { databases: [nameOf(db.url)] }),
     ).rejects.toThrow("boom");
     expect(fs.existsSync(path.join(stateDir, COLLATION_MARKER))).toBe(false);
+  });
+
+  it("is skipped in the upgrade's own migrate run, which sees the old server and old services", async () => {
+    process.env.SETUP_SKIP_COLLATION = "1";
+    try {
+      const before = await indexFile(nameOf(db.url));
+      const lines: string[] = [];
+      const dirs = {
+        legacy: fs.mkdtempSync(path.join(os.tmpdir(), "dpm-collation-")),
+        wallet: fs.mkdtempSync(path.join(os.tmpdir(), "dpm-collation-")),
+        manager: fs.mkdtempSync(path.join(os.tmpdir(), "dpm-collation-")),
+        state: stateDir,
+      };
+      await runMigrations(dirs, (line) => lines.push(line), { connect });
+      expect(lines.join("\n")).toContain("skipped: the new server is not up yet");
+      expect(await indexFile(nameOf(db.url))).toBe(before);
+      expect(fs.existsSync(path.join(stateDir, COLLATION_MARKER))).toBe(false);
+    } finally {
+      delete process.env.SETUP_SKIP_COLLATION;
+    }
   });
 });
