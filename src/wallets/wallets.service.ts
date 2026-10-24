@@ -19,7 +19,7 @@ import {
   type WalletFilter,
   type WalletPage,
 } from "../db/repositories/wallet.repo";
-import { ManagerError, walletDisabled, walletNotFound, walletNotReady } from "../errors";
+import { forbidden, ManagerError, walletDisabled, walletNotFound, walletNotReady } from "../errors";
 import { logWarn } from "../observability/log";
 import { AuditLog } from "../observability/audit";
 import { AuditAction, AuditOutcome } from "../observability/audit-action";
@@ -224,6 +224,11 @@ export class WalletsService {
    */
   async setDpmRegistered(id: string, registered: boolean, actor: Actor): Promise<Wallet> {
     const wallet = await this.getReady(id);
+    // The master and operations wallets carry the platform's money; flipping their registration
+    // (which gates every meta-transaction) is an administrator's call, not an operator's.
+    if (PLATFORM_KINDS.has(wallet.kind) && actor.role !== "admin") {
+      throw forbidden("Changing the DPM registration of a platform wallet requires an admin key");
+    }
     const upstream = await this.upstream.setDpmRegistered(wallet.ref, registered);
     const updated = await this.wallets.setDpmRegistered(
       id,

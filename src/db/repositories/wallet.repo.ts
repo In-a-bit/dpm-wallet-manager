@@ -77,15 +77,17 @@ export class WalletRepository {
 
   /**
    * The funds-policy question, asked on every value-moving signature: does this address belong to
-   * the platform? Matches either address column case-insensitively, hitting the `lower(...)`
-   * indexes. Disabled wallets count — funds may still sit at the address, and treating it as
-   * external would let a transfer to it be refused for the wrong reason.
+   * the platform? Only a wallet's *proxy* address counts: that is where the platform's balances
+   * sit and what its own transfers target. A wallet's EOA is just a signer address, and sending
+   * funds there takes them out of the platform's accounts, so it is external. Matched
+   * case-insensitively on the `lower(...)` index. Disabled wallets count — funds may still sit at
+   * the address, and treating it as external would let a transfer to it be refused for the wrong
+   * reason.
    */
-  async isPlatformAddress(address: string): Promise<boolean> {
+  async isPlatformProxyAddress(address: string): Promise<boolean> {
     const count = await this.wallets
       .createQueryBuilder("w")
-      .where("lower(w.eoa_address) = lower(:address)", { address })
-      .orWhere("lower(w.proxy_address) = lower(:address)", { address })
+      .where("lower(w.proxy_address) = lower(:address)", { address })
       .getCount();
     return count > 0;
   }

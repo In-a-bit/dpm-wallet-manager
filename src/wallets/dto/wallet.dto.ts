@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from "@nestjs/swagger";
-import { IsIn, IsOptional } from "class-validator";
+import { IsBoolean, IsIn, IsOptional } from "class-validator";
 
 import { PaginationDto } from "../../common/dto/pagination.dto";
 import { IsExternalId, IsLabel, Trimmed } from "../../common/validation/decorators";
@@ -73,5 +73,6 @@ export class DpmRegisteredDto {
    */
   @ApiPropertyOptional({ default: true, example: true })
   @IsOptional()
+  @IsBoolean()
   registered: boolean = true;
 }

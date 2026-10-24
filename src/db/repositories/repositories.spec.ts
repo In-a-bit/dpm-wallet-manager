@@ -94,16 +94,17 @@ describe("repositories", () => {
       expect(ready?.proxyAddress).toBe("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045");
     });
 
-    it("recognises a platform address whatever its casing, and on either column", async () => {
-      expect(await wallets.isPlatformAddress("0x2791BCA1F2DE4661ED88A30C99A7A9449AA84174")).toBe(
-        true,
-      );
-      expect(await wallets.isPlatformAddress("0x4d97dcd97ec945f40cf65f87097ace5ea0476045")).toBe(
-        true,
-      );
-      expect(await wallets.isPlatformAddress("0x000000000000000000000000000000000000dEaD")).toBe(
-        false,
-      );
+    it("recognises a platform proxy address whatever its casing, and never an EOA", async () => {
+      expect(
+        await wallets.isPlatformProxyAddress("0x4d97dcd97ec945f40cf65f87097ace5ea0476045"),
+      ).toBe(true);
+      // The signer address is not a platform account: funds sent there leave the platform.
+      expect(
+        await wallets.isPlatformProxyAddress("0x2791BCA1F2DE4661ED88A30C99A7A9449AA84174"),
+      ).toBe(false);
+      expect(
+        await wallets.isPlatformProxyAddress("0x000000000000000000000000000000000000dEaD"),
+      ).toBe(false);
     });
 
     it("allows only one master wallet, in the database rather than the service", async () => {

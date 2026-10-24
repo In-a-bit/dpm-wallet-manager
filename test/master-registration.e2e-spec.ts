@@ -65,6 +65,33 @@ describe("platform wallet registration", () => {
     expect(registrationCalls(harness)).toHaveLength(2);
   });
 
+  it("lets only an admin change a platform wallet's registration", async () => {
+    const created = await harness.post("/v1/platform/operations-wallet", { body: {} });
+
+    const asOperator = await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
+      body: { registered: false },
+      apiKey: harness.operatorKey,
+    });
+    const asAdmin = await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
+      body: { registered: true },
+    });
+
+    expect(asOperator.status).toBe(403);
+    expect(asOperator.body.error.code).toBe("FORBIDDEN");
+    expect(asAdmin.status).toBe(200);
+  });
+
+  it("rejects a non-boolean registered flag", async () => {
+    const created = await harness.post("/v1/wallets", { body: { externalId: "customer-2" } });
+
+    const response = await harness.post(`/v1/wallets/${created.body.id}/dpm-registered`, {
+      body: { registered: "false" },
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe("VALIDATION_FAILED");
+  });
+
   it("leaves an ordinary wallet to be registered by an operator", async () => {
     const created = await harness.post("/v1/wallets", { body: { externalId: "customer-1" } });
 
