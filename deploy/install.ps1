@@ -207,7 +207,22 @@ function Write-InstallEnv {
     "MANAGER_PUBLIC_URL=http://localhost:$ManagerPort"
   ) + $versions + "DPM_CUSTODY_VERSION=$version"
   # UTF-8 without a BOM: Compose would read a BOM as part of the first variable's name.
-  [System.IO.File]::WriteAllLines((Join-Path $Dir ".env"), $lines, (New-Object System.Text.UTF8Encoding $false))
+  $envPath = Join-Path $Dir ".env"
+  [System.IO.File]::WriteAllLines($envPath, $lines, (New-Object System.Text.UTF8Encoding $false))
+  Protect-EnvFile $envPath
+}
+
+# Windows gives a new file the folder's inherited permissions, which usually include other local
+# users. .env holds the database password, so drop the inherited entries and leave the current
+# user alone with it. Windows only: elsewhere the file mode is the platform's business.
+# DPM_CUSTODY_ASSUME_WINDOWS=1 exists so deploy/test/install.test.ps1 can exercise this on Linux.
+function Protect-EnvFile([string]$path) {
+  if (($env:OS -ne "Windows_NT") -and ($env:DPM_CUSTODY_ASSUME_WINDOWS -ne "1")) { return }
+  icacls $path /inheritance:r /grant:r "$($env:USERNAME):F" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    Remove-Item $path -Force -ErrorAction SilentlyContinue
+    Fail "Could not restrict $path to your user (icacls exited $LASTEXITCODE), so it was removed: it holds the database password."
+  }
 }
 
 # Refuses a name another install on this machine already uses: Docker would treat the two as one,

@@ -19,18 +19,26 @@ fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
 field() { node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");const v=process.argv[1].split(".").reduce((a,k)=>a?.[k],o);console.log(v??"")})' "$1"; }
 
+# curl_key <key> <curl args...>: the API key goes to curl as a config on stdin, never as an
+# argument, so it is not visible in `ps` or /proc/*/cmdline.
+curl_key() {
+  local key="$1"
+  shift
+  printf 'header = "X-API-Key: %s"\n' "$key" | curl --config - "$@"
+}
+
 call() { # method path [body] [key]
   local method="$1" path="$2" body="${3:-}" key="${4:-$ADMIN_KEY}"
   if [ -n "$body" ]; then
-    curl -sS -X "$method" "$API$path" -H "X-API-Key: $key" -H 'Content-Type: application/json' -d "$body"
+    curl_key "$key" -sS -X "$method" "$API$path" -H 'Content-Type: application/json' -d "$body"
   else
-    curl -sS -X "$method" "$API$path" -H "X-API-Key: $key"
+    curl_key "$key" -sS -X "$method" "$API$path"
   fi
 }
 status() { # method path [body] [key]
   local method="$1" path="$2" body="${3:-}" key="${4:-$ADMIN_KEY}"
-  curl -sS -o /dev/null -w '%{http_code}' -X "$method" "$API$path" \
-    -H "X-API-Key: $key" -H 'Content-Type: application/json' ${body:+-d "$body"}
+  curl_key "$key" -sS -o /dev/null -w '%{http_code}' -X "$method" "$API$path" \
+    -H 'Content-Type: application/json' ${body:+-d "$body"}
 }
 
 # ── 0. liveness ──────────────────────────────────────────────────────────────

@@ -87,7 +87,7 @@ needed for a normal install.
 | `DPM_CUSTODY_NAME`         | `dpm-custody`      | The install's name. Its containers, volumes and network all start with it. Needed for two installs.      |
 | `DPM_CUSTODY_RELEASE`      | `latest`           | Install this release instead, e.g. `v1.2.3`.                                                             |
 | `SETUP_PLATFORM_URL`       | (asked)            | Answers setup's first question, the platform address. Still checked.                                     |
-| `SETUP_BUILDER_KEY`        | (asked)            | Answers setup's second question, your builder key. Still checked. Prefer pasting it when asked.          |
+| `SETUP_BUILDER_KEY`        | (asked)            | Answers setup's second question, your builder key. Still checked. Prefer pasting it when asked: set on a command line it lands in your shell history. |
 | `DPM_CUSTODY_NO_START`     | (unset)            | `1` writes the files and `.env`, then stops before starting anything.                                    |
 | `DPM_CUSTODY_RELEASES_URL` | the GitHub release | Download the installer files from here instead. Must be `https://` unless the next option is set. Testing. |
 | `DPM_CUSTODY_SOURCE`       | (unset)            | Copy the installer files from this local folder instead of downloading them. For testing.                |
@@ -653,9 +653,13 @@ check below tells you which one is missing; `deploy/try-install.sh` runs it for 
 **Pre-flight check** (replace the URL and key). The last line shows the status code:
 
 ```sh
-curl -s -w '\nHTTP %{http_code}\n' <dpm-api URL>/wallet-install/config \
-  -H 'X-Builder-Api-Private-Key: bld_sk_...'
+read -rsp 'Builder key: ' BUILDER_KEY; echo
+printf 'header = "X-Builder-Api-Private-Key: %s"\n' "$BUILDER_KEY" |
+  curl -s --config - -w '\nHTTP %{http_code}\n' <dpm-api URL>/wallet-install/config
 ```
+
+(The key goes to curl on stdin, not as an argument, so it never appears in `ps` or in your shell
+history. Do the same wherever a key is needed on a curl line.)
 
 | Answer                                                 | Meaning                                                   |
 | ------------------------------------------------------ | --------------------------------------------------------- |
@@ -705,7 +709,7 @@ install.
 ### 3. Options of try-install.sh
 
 ```text
-deploy/try-install.sh [options] [bld_sk_…]   check, then install and set up as a builder does
+deploy/try-install.sh [options]               check, then install and set up as a builder does
 deploy/try-install.sh verify [--dir DIR]      check a finished install (runs scripts/smoke.sh)
 deploy/try-install.sh clean  [--dir DIR]      remove the install, to start over
 ```
@@ -718,7 +722,12 @@ deploy/try-install.sh clean  [--dir DIR]      remove the install, to start over
 | `--images TAG`     | `main`                          | Use `ghcr.io/in-a-bit/*:TAG`: pulled, or the copy already on this machine.  |
 | `--dir DIR`        | `~/dpm-custody-try`             | Where to install. `verify` and `clean` need the same `--dir`.               |
 | `--name NAME`      | `dpm-custody`                   | The install's name (Docker project). Needed for two installs.               |
-| `bld_sk_…`         | asked (hidden)                  | The builder key, as the last argument. Prefer pasting it when asked.        |
+| `--builder-key-file FILE` | asked (hidden)           | Read the builder key from the first line of FILE. `SETUP_BUILDER_KEY` also works. |
+
+The builder key is never an argument (it would sit in `ps` and your shell history), and a
+`bld_sk_…` argument is refused. Paste it when asked, or use the file. Setting
+`SETUP_BUILDER_KEY=… ./deploy/try-install.sh …` also works, but then the key is in your shell
+history; prefer the other two. The script hands the key to curl on stdin only.
 
 The port is picked for you: 3000, or the next one that is free and not published by any other
 container. The setup dashboard shows it at the end, and it's `MANAGER_PORT` in the install's
@@ -879,14 +888,15 @@ read -rsp 'Builder key: ' BUILDER_KEY; echo
 **3. Pre-flight.**
 
 ```sh
-CONFIG=$(curl -s "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")
+# The key is given to curl on stdin (--config -), so it is in no command line.
+keyed() { printf 'header = "X-Builder-Api-Private-Key: %s"\n' "$BUILDER_KEY" | curl --config - "$@"; }
+CONFIG=$(keyed -s "$PLATFORM/wallet-install/config")
 echo "$CONFIG" | python3 -m json.tool
 GAMMA=$(echo "$CONFIG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["gamma_api"])')
 RELAYER=$(echo "$CONFIG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["relayer_api"])')
-curl -s -o /dev/null -w 'gamma-api: HTTP %{http_code}\n' -X POST "$GAMMA/custody/users" \
-  -H "X-Builder-Api-Private-Key: $BUILDER_KEY" -H 'Content-Type: application/json' -d '{}'
-curl -s -o /dev/null -w 'relayer-api: HTTP %{http_code}\n' "$RELAYER/contract-info" \
-  -H "X-Builder-Api-Private-Key: $BUILDER_KEY"
+keyed -s -o /dev/null -w 'gamma-api: HTTP %{http_code}\n' -X POST "$GAMMA/custody/users" \
+  -H 'Content-Type: application/json' -d '{}'
+keyed -s -o /dev/null -w 'relayer-api: HTTP %{http_code}\n' "$RELAYER/contract-info"
 ```
 
 This should print `gamma-api: HTTP 400` (the key was accepted and the empty body refused) and

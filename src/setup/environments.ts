@@ -61,7 +61,29 @@ export function resolveDpmApiUrl(env: Environment, customUrl?: string): string |
   if (!/^https?:\/\/[^\s/]+/.test(trimmed)) {
     return { error: "Enter the platform address, starting with https://" };
   }
+  if (!isSafePlatformUrl(trimmed)) {
+    return {
+      error:
+        "A platform address must use https://. Plain http:// is accepted only for a platform on " +
+        "this computer (localhost or host.docker.internal), because the builder key travels to it.",
+    };
+  }
   return trimmed;
+}
+
+/**
+ * Whether a platform address may be used. The builder key is sent to it, so plain `http://` is
+ * allowed only where the traffic never leaves this computer.
+ */
+export function isSafePlatformUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") return true;
+  return parsed.protocol === "http:" && PLAIN_HTTP_HOSTS.has(parsed.hostname);
 }
 
 /** The answers that name a platform by its address: a listed one by its id, any other as custom. */
@@ -73,6 +95,7 @@ export function environmentForUrl(url: string): { environment: EnvironmentId; cu
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const DOCKER_HOST = "host.docker.internal";
+const PLAIN_HTTP_HOSTS = new Set([...LOOPBACK_HOSTS, DOCKER_HOST]);
 
 /**
  * A platform running on this computer reports its services at `localhost`, which inside a

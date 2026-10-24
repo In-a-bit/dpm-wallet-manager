@@ -1,4 +1,4 @@
-import { toContainerUrl } from "./environments";
+import { isSafePlatformUrl, toContainerUrl } from "./environments";
 
 /** Header dpm-api authenticates a custody builder's own backend by. */
 export const BUILDER_KEY_HEADER = "X-Builder-Api-Private-Key";
@@ -113,6 +113,15 @@ async function jsonDetail(response: Response): Promise<string | undefined> {
 /** Every service URL the install is handed must be reachable from inside its containers. */
 function withContainerUrls(config: InstallConfig): InstallConfig {
   const { data_api: dataApi, ...services } = config.services;
+  // The platform names these addresses itself; one on plain http:// away from this computer would
+  // carry the builder key in the clear, so it is refused rather than installed.
+  for (const [name, url] of Object.entries(config.services)) {
+    if (typeof url !== "string" || !isSafePlatformUrl(url)) {
+      throw new SetupError(
+        `The platform gave an unsafe address for its ${name.replace(/_/g, "-")} service. Services must use https:// (http:// only for a platform on this computer). Ask the platform team to fix its PUBLIC_*_URL settings.`,
+      );
+    }
+  }
   return {
     ...config,
     services: {

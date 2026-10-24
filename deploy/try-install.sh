@@ -3,7 +3,7 @@
 # this computer, or a shared one such as dev. It installs exactly what a builder installs; only
 # where the images come from and which platform to join are yours to choose.
 #
-#   deploy/try-install.sh [options] [bld_sk_…]   check, then install and set up as a builder does
+#   deploy/try-install.sh [options]               check, then install and set up as a builder does
 #   deploy/try-install.sh verify [--dir DIR]      check a finished install (runs scripts/smoke.sh)
 #   deploy/try-install.sh clean [--dir DIR]       remove the install, to start over
 #
@@ -18,10 +18,16 @@
 #                       one segregated and one shared (see deploy/README.md):
 #                         --name dpm-custody-segregated --dir ~/dpm-custody-segregated
 #                         --name dpm-custody-shared     --dir ~/dpm-custody-shared
+#   --builder-key-file FILE   read the builder private key from FILE (its first line)
 #
 # The builder private key comes from that platform's backoffice (Custody Builders → create a
-# builder → New key); without it on the command line the script asks for it. Every answer is
-# checked as soon as it is given, and asked for again if it does not pass. No browser is needed.
+# builder → New key). It is never taken as an argument, so it cannot show up in `ps` or the shell
+# history: the script reads it from --builder-key-file, from $SETUP_BUILDER_KEY (the shell-history
+# caveat of setting it on the command line is yours), or asks for it with the typing hidden.
+# It reaches curl through a config on stdin, never on a command line.
+#
+# Every answer is checked as soon as it is given, and asked for again if it does not pass. No
+# browser is needed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -37,7 +43,8 @@ BUILD=false
 WALLET_SRC=""
 INSTALL_DIR="$HOME/dpm-custody-try"
 INSTALL_NAME="dpm-custody"
-BUILDER_KEY=""
+BUILDER_KEY="${SETUP_BUILDER_KEY:-}"
+BUILDER_KEY_FILE=""
 COMMAND=start
 
 step() { printf '\n▸ %s\n' "$*"; }
@@ -64,10 +71,13 @@ parse_args() {
       --wallet-src) WALLET_SRC="${2:?--wallet-src needs a folder}"; shift ;;
       --dir) INSTALL_DIR="${2:?--dir needs a folder}"; shift ;;
       --name) INSTALL_NAME="${2:?--name needs a name}"; shift ;;
+      --builder-key-file) BUILDER_KEY_FILE="${2:?--builder-key-file needs a file}"; shift ;;
       -h | --help | help) usage; exit 0 ;;
       -*) fail "Unknown option $1" "Run $0 --help" ;;
-      # Anything else is the key: a malformed one gets a message about keys, not the usage text.
-      *) BUILDER_KEY="$1" ;;
+      # A key given as an argument would sit in `ps` and the shell history; refuse it.
+      bld_sk_*) fail "Do not pass the builder key as an argument: it would be visible in ps and in your shell history." \
+        "Use --builder-key-file FILE, set SETUP_BUILDER_KEY, or leave it out and paste it when asked." ;;
+      *) fail "Unexpected argument $1" "Run $0 --help" ;;
     esac
     shift
   done
@@ -90,10 +100,18 @@ except Exception: pass' "$1"
 sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
 
 # http <method> <url> [curl args...] prints the body, then the status code on its own last line.
-http() {
-  local method="$1" url="$2"
-  shift 2
-  curl -s -X "$method" -w '\n%{http_code}' --max-time 15 "$url" "$@" || printf '\n000'
+http() { http_with_header "" "$@"; }
+
+# http_with_header <"Name: value" | ""> <method> <url> [curl args...] is http with one request
+# header that may be secret. It goes to curl as a config on stdin, never as an argument, so it
+# is not in `ps` or /proc/*/cmdline.
+http_with_header() {
+  local header="$1" method="$2" url="$3"
+  shift 3
+  header="${header//\\/\\\\}"
+  header="${header//\"/\\\"}"
+  { [ -z "$header" ] || printf 'header = "%s"\n' "$header"; } |
+    curl -s --config - -X "$method" -w '\n%{http_code}' --max-time 15 "$url" "$@" || printf '\n000'
 }
 status_of() { tail -n 1 <<<"$1"; }
 body_of() { sed '$d' <<<"$1"; }
@@ -197,9 +215,13 @@ platform_ok() {
 
 ask_builder_key() {
   step "Builder private key"
+  if [ -n "$BUILDER_KEY_FILE" ]; then
+    [ -r "$BUILDER_KEY_FILE" ] || fail "Cannot read $BUILDER_KEY_FILE."
+    BUILDER_KEY="$(head -n 1 "$BUILDER_KEY_FILE")"
+  fi
   while :; do
     if [ -z "$BUILDER_KEY" ]; then
-      can_ask || fail "No builder private key." "Pass it as the last argument."
+      can_ask || fail "No builder private key." "Use --builder-key-file FILE or set SETUP_BUILDER_KEY."
       printf "  From this platform's backoffice: Custody Builders → your builder → New key → Copy.\n"
       read -rsp "  Paste it here (it is not shown): " BUILDER_KEY
       printf '\n'
@@ -224,7 +246,7 @@ key_ok() {
     bld_sk_?*) ;;
     *) PROBLEM="That is not a builder private key: it should start with bld_sk_." && return 1 ;;
   esac
-  CONFIG="$(http GET "$PLATFORM/wallet-install/config" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
+  CONFIG="$(http_with_header "X-Builder-Api-Private-Key: $BUILDER_KEY" GET "$PLATFORM/wallet-install/config")"
   case "$(status_of "$CONFIG")" in
     200) ;;
     401) PROBLEM="The platform does not accept this key: check you copied all of it, that it was issued on this platform, and that it has not been revoked." && return 1 ;;
@@ -244,7 +266,7 @@ check_platform_apis() {
   gamma_api="$(body_of "$CONFIG" | json_path services.gamma_api)"
   relayer_api="$(body_of "$CONFIG" | json_path services.relayer_api)"
 
-  answer="$(http POST "$gamma_api/custody/users" -H "X-Builder-Api-Private-Key: $BUILDER_KEY" \
+  answer="$(http_with_header "X-Builder-Api-Private-Key: $BUILDER_KEY" POST "$gamma_api/custody/users" \
     -H 'Content-Type: application/json' -d '{}')"
   case "$(status_of "$answer")" in
     400) ok "gamma-api ($gamma_api) accepts the builder key for user registration" ;;
@@ -254,7 +276,7 @@ check_platform_apis() {
       "Check the platform's PUBLIC_GAMMA_API_URL is reachable from this machine." ;;
   esac
 
-  answer="$(http GET "$relayer_api/contract-info" -H "X-Builder-Api-Private-Key: $BUILDER_KEY")"
+  answer="$(http_with_header "X-Builder-Api-Private-Key: $BUILDER_KEY" GET "$relayer_api/contract-info")"
   case "$(status_of "$answer")" in
     200) ok "relayer-api ($relayer_api) accepts the builder key" ;;
     401) fail "relayer-api at $relayer_api does not accept the builder key." \
@@ -366,7 +388,7 @@ cmd_verify() {
   admin_key="$("$INSTALL_DIR/dpm-custody" backup-kit 2>/dev/null | sed -n 's/^Admin API key: *//p')" || true
   [ -n "$admin_key" ] ||
     fail "Setup has not been started yet." "Run it: $INSTALL_DIR/dpm-custody setup"
-  platform="$(http GET "http://localhost:$manager_port/v1/platform" -H "X-API-Key: $admin_key")"
+  platform="$(http_with_header "X-API-Key: $admin_key" GET "http://localhost:$manager_port/v1/platform")"
   [ "$(status_of "$platform")" = 200 ] ||
     fail "The wallet manager is not answering yet ($(status_of "$platform"))." \
       "Is setup finished? Continue it: $INSTALL_DIR/dpm-custody setup"
@@ -391,9 +413,12 @@ cmd_clean() {
   ok "removed. If setup was started, that builder now has a Turnkey sub-organization: use a new builder next time."
 }
 
-parse_args "$@"
-case "$COMMAND" in
-  start) cmd_start ;;
-  verify) cmd_verify ;;
-  clean) cmd_clean ;;
-esac
+# Sourced (by deploy/test/try-install.test.sh) only the functions are wanted.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  parse_args "$@"
+  case "$COMMAND" in
+    start) cmd_start ;;
+    verify) cmd_verify ;;
+    clean) cmd_clean ;;
+  esac
+fi
