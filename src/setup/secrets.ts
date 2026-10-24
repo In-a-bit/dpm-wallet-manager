@@ -15,7 +15,19 @@ export type InstallSecrets = {
    * first boot, whose minted key only reaches a log line — which redacts it.
    */
   adminKey: string;
+  /** Passwords of the least-privilege database roles each service connects as (db-roles.ts). */
+  walletDbPassword: string;
+  managerDbPassword: string;
 };
+
+/** Secrets saved by an earlier version have no database passwords; mint them when first needed. */
+export function withDbPasswords(secrets: InstallSecrets): InstallSecrets {
+  return {
+    ...secrets,
+    walletDbPassword: secrets.walletDbPassword ?? randomHex(24),
+    managerDbPassword: secrets.managerDbPassword ?? randomHex(24),
+  };
+}
 
 export function generateInstallSecrets(keyEnv: string): InstallSecrets {
   return {
@@ -23,6 +35,8 @@ export function generateInstallSecrets(keyEnv: string): InstallSecrets {
     walletEncryptionKey: randomHex(32),
     managerMasterKey: randomHex(32),
     adminKey: mintApiKey(keyEnv, "admin").key,
+    walletDbPassword: randomHex(24),
+    managerDbPassword: randomHex(24),
   };
 }
 

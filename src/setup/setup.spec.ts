@@ -133,7 +133,10 @@ describe("config writer", () => {
     });
     // The builder key is the install's only platform credential.
     expect(env).not.toHaveProperty("APP_API_KEY");
-    expect(env.DATABASE_URL).toBe("postgres://dpm:p%40ss%2Fword@postgres:5432/dpm_wallet");
+    // The service connects as its own role, never as the superuser in `inputs.database`.
+    expect(env.DATABASE_URL).toBe(
+      `postgres://wallet_app:${inputs.secrets.walletDbPassword}@postgres:5432/dpm_wallet`,
+    );
   });
 
   it("hands dpm-wallet the data-api URL when the platform has one", () => {
@@ -351,6 +354,7 @@ function provisioningDeps(
   return {
     http: stack.http,
     store: new SetupStateStore(dir),
+    provisionDbRoles: async () => undefined,
     writeConfig: (inputs) => written.push(inputs),
     sleep: async () => undefined,
     walletUrl: "http://wallet",
@@ -570,8 +574,9 @@ describe("step reporting", () => {
 
     await expect(provision(deps)).rejects.toThrow();
     const kinds = events.map((e) => `${e.type}:${"step" in e ? e.step : ""}`);
-    expect(kinds.slice(0, 3)).toEqual([
+    expect(kinds.slice(0, 4)).toEqual([
       "step.start:write-config",
+      "step.progress:write-config",
       "step.progress:write-config",
       "step.done:write-config",
     ]);

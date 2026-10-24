@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
+import { convertExistingInstall, type Connect } from "./db-roles";
 
 /**
  * `setup migrate`: brings an install's volumes up to the layout this version expects. It runs
@@ -22,16 +23,38 @@ export type MigrationDirs = {
   legacyWritable?: boolean;
 };
 
-type Migration = { name: string; run: (dirs: MigrationDirs, say: (line: string) => void) => void };
+/** What a migration may reach beyond the volumes. */
+export type MigrationServices = {
+  /** Administrator access to Postgres; absent where the superuser password is not available. */
+  connect?: Connect;
+};
 
+type Migration = {
+  name: string;
+  run: (
+    dirs: MigrationDirs,
+    say: (line: string) => void,
+    services: MigrationServices,
+  ) => void | Promise<void>;
+};
+
+/** In order: a later step may rely on an earlier one (the roles rewrite the copied env files). */
 export const MIGRATIONS: readonly Migration[] = [
   { name: "split-config-volumes", run: splitConfigVolumes },
+  {
+    name: "database-roles",
+    run: (dirs, say, services) => convertExistingInstall(dirs, services.connect, say),
+  },
 ];
 
-export function runMigrations(dirs: MigrationDirs, say: (line: string) => void): void {
+export async function runMigrations(
+  dirs: MigrationDirs,
+  say: (line: string) => void,
+  services: MigrationServices = {},
+): Promise<void> {
   for (const migration of MIGRATIONS) {
     say(`[migrate] ${migration.name}`);
-    migration.run(dirs, (line) => say(`[migrate]   ${line}`));
+    await migration.run(dirs, (line) => say(`[migrate]   ${line}`), services);
   }
 }
 
@@ -57,8 +80,12 @@ type Scrub = { name: string; run: (layout: ConfigLayout, say: (line: string) => 
 export const SCRUBS: readonly Scrub[] = [];
 
 /** The migrations, then the scrubs, then the legacy fingerprint (last, so a crash re-copies). */
-export function runAll(dirs: MigrationDirs, say: (line: string) => void): void {
-  runMigrations(dirs, say);
+export async function runAll(
+  dirs: MigrationDirs,
+  say: (line: string) => void,
+  services: MigrationServices = {},
+): Promise<void> {
+  await runMigrations(dirs, say, services);
   const legacy: ConfigLayout = { wallet: dirs.legacy, manager: dirs.legacy, state: dirs.legacy };
   const legacyWritable = dirs.legacyWritable ?? isWritable(dirs.legacy);
   for (const scrub of SCRUBS) {

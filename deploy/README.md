@@ -442,6 +442,14 @@ For anything else, run `dpm-custody support` and send the file it writes to the 
   gets the platform values from dpm-api
   `GET /wallet-install/config`, authenticated with the builder key, and generates every other
   secret itself.
+- **Database accounts:** the Postgres superuser (from `.env`) is used only by Postgres and setup.
+  Setup gives dpm-wallet and the manager an account each (`wallet_app`, `manager_app`: no
+  superuser, cannot create databases or roles), each owning only its own database, with its own
+  random password in that service's env file. An upgrade from a version that used the superuser
+  converts the install the first time setup starts: it creates the accounts, hands over the
+  databases and rewrites the env files. Rolling back to such a version uses the old `config`
+  volume, which still holds the superuser URL (the superuser can use the converted databases);
+  `dpm-custody cleanup-legacy` removes it.
 - **Credentials:** the builder private key (`X-Builder-Api-Private-Key`) is the install's only
   platform credential, so no platform-wide `APP_API_KEY` is handed out or configured. The
   platform accepts it without the app key only where an install needs it:

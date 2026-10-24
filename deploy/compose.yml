@@ -181,6 +181,12 @@ services:
       # The single volume of earlier versions, read-only: migrate copies from it. Only
       # `dpm-custody cleanup-legacy` mounts it writable, to empty it.
       - config:/legacy-config:ro
+    depends_on:
+      # Migration may have to create the services' database roles (an install from before them),
+      # and setup creates them for a new one: it is the only service that holds the superuser
+      # password. dpm-wallet and the manager get roles that own their own database and nothing else.
+      postgres:
+        condition: service_healthy
 
 configs:
   create-manager-database:

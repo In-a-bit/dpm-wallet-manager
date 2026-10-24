@@ -5,6 +5,9 @@ import { MANAGER_PORT, WALLET_PORT, writeInstallConfig } from "./config-writer";
 import { fetchHttp } from "./http";
 import { excerpt, Journal } from "./journal";
 import { liveStatus } from "./live-status";
+import { Client } from "pg";
+
+import { applyServiceRoles, type Connect } from "./db-roles";
 import { cleanupLegacy, runAll } from "./migrate";
 import { SetupService } from "./setup-service";
 import { SetupStateStore } from "./state";
@@ -35,6 +38,8 @@ const STATE_DIR = env("SETUP_STATE_DIR", "/state");
 /** The single `config` volume of earlier versions; mounted read-only by setup (writable only in `dpm-custody cleanup-legacy` and upgrade runs). */
 const LEGACY_CONFIG_DIR = env("SETUP_LEGACY_CONFIG_DIR", "/legacy-config");
 const READY_TIMEOUT_MS = 5 * 60 * 1000;
+/** About a minute of waiting for Postgres to accept connections. */
+const POSTGRES_ATTEMPTS = 30;
 /** Where the builder reaches the wallet manager (and its admin UI) from outside the stack. */
 const MANAGER_PUBLIC_URL = env("SETUP_MANAGER_PUBLIC_URL", `http://localhost:${MANAGER_PORT}`);
 
@@ -49,7 +54,7 @@ async function main(): Promise<void> {
   };
   switch (process.argv[2]) {
     case "migrate":
-      return runAll(dirs, say);
+      return runAll(dirs, say, { connect: adminConnect() });
     case "cleanup-legacy":
       return cleanupLegacy(LEGACY_CONFIG_DIR, say);
   }
@@ -103,16 +108,22 @@ const importEsm = new Function("specifier", "return import(specifier)") as <T>(
 ) => Promise<T>;
 
 function provisioningDeps(store: SetupStateStore, journal: Journal): ProvisioningDeps {
+  const database = {
+    user: env("POSTGRES_USER", "dpm"),
+    password: requiredEnv("POSTGRES_PASSWORD"),
+  };
   return {
     http: journalledHttp(journal),
     report: (event) => journal.append(event),
     store,
+    provisionDbRoles: (secrets) =>
+      applyServiceRoles(connectAs(database.user, database.password), secrets),
     writeConfig: (inputs) =>
       writeInstallConfig({ wallet: WALLET_CONFIG_DIR, manager: MANAGER_CONFIG_DIR }, inputs),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     walletUrl: env("SETUP_WALLET_URL", `http://dpm-wallet:${WALLET_PORT}`),
     managerUrl: env("SETUP_MANAGER_URL", `http://dpm-wallet-manager:${MANAGER_PORT}`),
-    database: { user: env("POSTGRES_USER", "dpm"), password: requiredEnv("POSTGRES_PASSWORD") },
+    database,
     readyTimeoutMs: READY_TIMEOUT_MS,
   };
 }
@@ -162,6 +173,33 @@ function journalledFetch(journal: Journal): typeof fetch {
       const error = err instanceof Error ? err.message : String(err);
       journal.append({ type: "http", method, url, ms: Date.now() - started, error });
       throw err;
+    }
+  };
+}
+
+/**
+ * Superuser access to Postgres, for the migrations: from the environment compose gives setup, or
+ * `undefined` where there is no password (a migration that needs it then says so).
+ */
+function adminConnect(): Connect | undefined {
+  const password = process.env.POSTGRES_PASSWORD;
+  return password ? connectAs(env("POSTGRES_USER", "dpm"), password) : undefined;
+}
+
+/** Waits for the server to accept connections: setup can start before Postgres does. */
+function connectAs(user: string, password: string): Connect {
+  const host = env("SETUP_POSTGRES_HOST", "postgres");
+  return async (database) => {
+    for (let attempt = 1; ; attempt++) {
+      const client = new Client({ host, port: 5432, user, password, database });
+      try {
+        await client.connect();
+        return client;
+      } catch (err) {
+        await client.end().catch(() => undefined);
+        if (attempt >= POSTGRES_ATTEMPTS) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
     }
   };
 }

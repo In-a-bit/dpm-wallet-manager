@@ -2,6 +2,7 @@ import type { DatabaseCredentials, InstallInputs } from "./config-writer";
 import { findEnvironment } from "./environments";
 import type { JournalEvent } from "./journal";
 import { SetupError } from "./platform-config";
+import { withDbPasswords, type InstallSecrets } from "./secrets";
 import type { SetupState, SetupStateStore } from "./state";
 
 /** The one header both services authenticate their callers by. */
@@ -20,6 +21,8 @@ export type ProvisioningDeps = {
   http: SetupHttp;
   store: SetupStateStore;
   writeConfig: (inputs: InstallInputs) => void;
+  /** Creates the services' database roles (db-roles.ts); the superuser connection stays here. */
+  provisionDbRoles: (secrets: InstallSecrets) => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   walletUrl: string;
   managerUrl: string;
@@ -168,11 +171,18 @@ async function runStep(step: Step, deps: ProvisioningDeps): Promise<void> {
 
 // ── steps ───────────────────────────────────────────────────────────────────
 
-async function writeConfig({ deps, state, progress }: StepContext): Promise<void> {
-  const { answers, platform, secrets } = requireConfigured(state);
+async function writeConfig({ deps, state, progress }: StepContext): Promise<StateChange> {
+  const { answers, platform, secrets: saved } = requireConfigured(state);
+  // Each service gets a database role of its own; the superuser is never written to them.
+  const secrets = withDbPasswords(saved);
+  progress("Creating a limited database account for each service");
+  await deps.provisionDbRoles(secrets);
   progress("Writing the settings files for the wallet service and the wallet manager");
   const keyEnv = findEnvironment(answers.environment)?.keyEnv ?? answers.environment;
   deps.writeConfig({ answers, platform, secrets, database: deps.database, keyEnv });
+  return (next) => {
+    next.secrets = secrets;
+  };
 }
 
 async function waitForWallet({ deps, progress }: StepContext): Promise<void> {

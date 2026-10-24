@@ -206,7 +206,12 @@ oneshot = [n for n, s in svc.items() if s.get("restart") != "unless-stopped"]
 # The services that read the volumes start only once setup has migrated them.
 waits = [n for n in ("dpm-wallet", "dpm-wallet-manager")
          if svc[n]["depends_on"].get("setup", {}).get("condition") != "service_healthy"]
-sys.exit(1 if bad or oneshot or waits or "healthcheck" not in svc["setup"] else 0)
+# Only setup (and postgres) holds the database superuser; the services get their own roles from
+# the env files setup writes, and setup waits for postgres to create them.
+env_of = lambda n: svc[n].get("environment", {})
+leak = [n for n in ("dpm-wallet", "dpm-wallet-manager") if any(k.startswith("POSTGRES_") for k in env_of(n))]
+setup_waits_pg = svc["setup"]["depends_on"].get("postgres", {}).get("condition") == "service_healthy"
+sys.exit(1 if bad or oneshot or waits or leak or not setup_waits_pg or "healthcheck" not in svc["setup"] else 0)
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi
