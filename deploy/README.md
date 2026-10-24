@@ -227,7 +227,7 @@ to that key as it is written (`databases.sql.sealed`, `config.tar.gz.sealed`, ..
 steals the `backups` folder, or this machine, cannot read them, and neither can you without the
 key. If the key is lost, the backups cannot be opened. An install made before this existed has no
 key, and its backups are plaintext with a warning: run `dpm-custody backup-key` once to create one
-(it shows the key once; the public half goes into `.env` as `DPM_BACKUP_RECIPIENT`). `backup-key
+(it shows the key once; the public half goes into `.env` as `DPM_BACKUP_RECIPIENT`, as it does after setup on a new install). If a backup cannot find out whether the install has a key (the setup service is down), it stops instead of writing a plaintext one. `backup-key
 --rotate` replaces it; backups made earlier still need the key they were encrypted with.
 `dpm-custody backup` keeps the newest 5 backups and removes older ones after a good backup;
 set `DPM_CUSTODY_KEEP_BACKUPS=10` (in the shell that runs it) to keep more. A backup that failed
@@ -399,7 +399,11 @@ docker compose --env-file .env -f compose.yml exec -T postgres \
   psql -U "$DB_USER" -d postgres -c 'DROP DATABASE dpm_wallet_manager' -c 'DROP DATABASE dpm_wallet'
 # Encrypted backup (files end in .sealed): backup-open asks for the backup recovery key, hidden as
 # you type, or reads it from the file named by DPM_BACKUP_RECOVERY_KEY_FILE. It works while the
-# stack is stopped.
+# stack is stopped. It decrypts the file twice: a first pass to nowhere proves the whole file
+# authentic, so a truncated or altered one is refused before it outputs a single byte (decrypted
+# data would otherwise stream into psql before the final check, and half of it could be applied).
+# `pipefail` makes a failure there stop the restore.
+set -o pipefail
 ./dpm-custody backup-open "$B/databases.sql.sealed" | docker compose --env-file .env -f compose.yml exec -T postgres \
   psql -U "$DB_USER" -d postgres
 # A plaintext backup (older installs, no recovery key) is restored from the file directly:
@@ -407,8 +411,18 @@ docker compose --env-file .env -f compose.yml exec -T postgres \
 ./dpm-custody start
 ```
 
-`./dpm-custody backup-open "$B/config.tar.gz.sealed" >config.tar.gz` opens the other files the same
-way (do not leave the decrypted copies lying around).
+Opening happens in a throwaway container with no log driver, so the decrypted data and the key never
+reach Docker's logs, and the key is passed on standard input, not as an argument or environment
+variable. The other files are restored the same way, straight into the volume without writing a
+decrypted copy to disk (only when the platform team asks; the configuration is not restored
+routinely):
+
+```sh
+./dpm-custody backup-open "$B/config.tar.gz.sealed" | \
+  docker compose --env-file .env -f compose.yml run --rm --no-deps -T setup tar -C / -xzf -
+./dpm-custody backup-open "$B/wallet-data.tar.gz.sealed" | \
+  docker compose --env-file .env -f compose.yml run --rm --no-deps -T dpm-wallet tar -C / -xzf -
+```
 
 The restore prints `role "dpm" already exists`. That is expected. The backup also holds the
 configuration (`config.tar.gz`) and the wallet data directory (`wallet-data.tar.gz`, which holds

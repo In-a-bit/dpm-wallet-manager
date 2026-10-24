@@ -9,7 +9,13 @@ import { pipeline } from "node:stream/promises";
 
 import { Client } from "pg";
 
-import { BackupCryptoError, generateRecoveryKeyPair, opener, sealer } from "./backup-crypto";
+import {
+  BackupCryptoError,
+  generateRecoveryKeyPair,
+  keyThenRest,
+  opener,
+  sealer,
+} from "./backup-crypto";
 
 import { applyServiceRoles, type Connect } from "./db-roles";
 import { removeBootstrapKey } from "./key-lifecycle";
@@ -224,8 +230,8 @@ function connectAs(user: string, password: string): Connect {
  * The backup helpers dpm-custody runs inside this container: stdin to stdout, so nothing is
  * written to the container's disk. Keys come from the environment, by name, never the command line.
  *
- *   backup-seal       encrypt to DPM_BACKUP_RECIPIENT (or --recipient)
- *   backup-open       decrypt with DPM_BACKUP_RECOVERY_KEY
+ *   backup-seal       encrypt to DPM_BACKUP_RECIPIENT (or --recipient); --require-input refuses empty input
+ *   backup-open       decrypt; the recovery key is the first line of stdin (--key-stdin)
  *   backup-keygen     print a new key pair: recipient=..., recovery_key=...
  *   backup-recipient  print the recipient setup holds, if any
  */
@@ -242,11 +248,18 @@ async function backupCommand(command: string, args: string[]): Promise<void> {
       const recipient =
         (flag >= 0 ? args[flag + 1] : undefined) ?? process.env.DPM_BACKUP_RECIPIENT;
       if (!recipient) throw new BackupCryptoError("No recipient: set DPM_BACKUP_RECIPIENT.");
-      await pipeline(process.stdin, sealer(recipient), process.stdout);
+      const requireInput = args.includes("--require-input");
+      await pipeline(process.stdin, sealer(recipient, { requireInput }), process.stdout);
     } else {
-      const key = process.env.DPM_BACKUP_RECOVERY_KEY;
-      if (!key) throw new BackupCryptoError("No recovery key: set DPM_BACKUP_RECOVERY_KEY.");
-      await pipeline(process.stdin, opener(key), process.stdout);
+      // The recovery key is the first line of stdin, never an argument or an environment variable
+      // (both are visible in `docker inspect`); the sealed backup follows it.
+      if (!args.includes("--key-stdin")) {
+        throw new BackupCryptoError(
+          "backup-open reads the recovery key from the first line of stdin.",
+        );
+      }
+      const { key, rest } = await keyThenRest(process.stdin);
+      await pipeline(rest, opener(key), process.stdout);
     }
   } catch (err) {
     console.error(`[backup] ${err instanceof Error ? err.message : String(err)}`);

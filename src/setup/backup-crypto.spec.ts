@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 
 import {
   BackupCryptoError,
+  keyThenRest,
   generateRecoveryKeyPair,
   opener,
   recipientOf,
@@ -99,6 +100,36 @@ describe("sealed backups", () => {
     await expect(
       open(recoveryKey, Buffer.from("not a backup at all, just text")),
     ).rejects.toThrow();
+  });
+
+  it("can refuse to seal nothing, which a failed dump or tar would otherwise look like", async () => {
+    await expect(run(sealer(recipient, { requireInput: true }), Buffer.alloc(0))).rejects.toThrow(
+      /Nothing to seal/,
+    );
+    const ok = await run(sealer(recipient, { requireInput: true }), Buffer.from("x"));
+    expect(await open(recoveryKey, ok)).toEqual(Buffer.from("x"));
+  });
+
+  it("reads the recovery key from the first line of a stream and passes the rest on untouched", async () => {
+    const payload = crypto.randomBytes(200_000);
+    const input = Readable.from([
+      Buffer.from(`${recoveryKey}\n`),
+      payload.subarray(0, 70_000),
+      payload.subarray(70_000),
+    ]);
+    const { key, rest } = await keyThenRest(input);
+    expect(key).toBe(recoveryKey);
+    const chunks: Buffer[] = [];
+    for await (const chunk of rest) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks)).toEqual(payload);
+    // Key and data in one chunk, and no key at all.
+    const joined = await keyThenRest(
+      Readable.from([Buffer.concat([Buffer.from("k\n"), Buffer.from("data")])]),
+    );
+    expect(joined.key).toBe("k");
+    await expect(keyThenRest(Readable.from([Buffer.from("no newline")]))).rejects.toThrow(
+      /first line/,
+    );
   });
 
   it("rejects malformed keys", () => {

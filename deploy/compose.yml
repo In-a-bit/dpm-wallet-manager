@@ -188,6 +188,20 @@ services:
       postgres:
         condition: service_healthy
 
+  # One-off helpers for secrets and decrypted backups: `dpm-custody backup-open` and `backup-key`
+  # run commands here with `compose run`. It has no log driver, so nothing it prints (a decrypted
+  # dump, a new recovery key) is kept in Docker's container logs, and it gets no volumes and no
+  # environment. A profile keeps `up` and `compose config --services` from ever seeing it, so the
+  # upgrade health gate ignores it.
+  tools:
+    profiles: ["tools"]
+    image: ${DPM_IMAGE_REGISTRY:-ghcr.io/in-a-bit}/dpm-wallet-manager:${DPM_WALLET_MANAGER_TAG:?DPM_WALLET_MANAGER_TAG is not set in .env. Re-run the installer.}
+    restart: "no"
+    command: ["true"]
+    user: "100:101"
+    logging:
+      driver: none
+
 configs:
   create-manager-database:
     content: |

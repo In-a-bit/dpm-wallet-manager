@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { Transform, type TransformCallback } from "node:stream";
+import { Readable, Transform, type TransformCallback } from "node:stream";
 
 /**
  * Sealed backups. A backup artifact is encrypted to a recovery public key kept on the install, so
@@ -47,7 +47,7 @@ export function recipientOf(recoveryKey: string): string {
 }
 
 /** Encrypts a stream to `recipient`. */
-export function sealer(recipient: string): Transform {
+export function sealer(recipient: string, options: { requireInput?: boolean } = {}): Transform {
   const recipientKey = importPublic(recipient);
   const ephemeral = crypto.generateKeyPairSync("x25519");
   const ephemeralPublic = rawPublic(ephemeral.publicKey);
@@ -65,6 +65,7 @@ export function sealer(recipient: string): Transform {
   let pending = Buffer.alloc(0);
   let counter = 0;
   let started = false;
+  let received = 0;
   const encrypt = (plain: Buffer, last: boolean): Buffer => {
     const cipher = crypto.createCipheriv("aes-256-gcm", key, nonce(counter++, last), {
       authTagLength: TAG_BYTES,
@@ -79,6 +80,7 @@ export function sealer(recipient: string): Transform {
         started = true;
         this.push(header);
       }
+      received += chunk.length;
       pending = Buffer.concat([pending, chunk]);
       // Strictly more than a chunk: whatever remains at the end is the last chunk, never empty
       // unless the whole input was.
@@ -89,6 +91,12 @@ export function sealer(recipient: string): Transform {
       callback();
     },
     flush(callback) {
+      // An artifact that came out empty is a failed dump or tar, not a backup: a sealed empty
+      // file is still 74 bytes, so the caller's "non-empty" check would never catch it.
+      if (options.requireInput && received === 0) {
+        callback(new BackupCryptoError("Nothing to seal: the input was empty."));
+        return;
+      }
       if (!started) this.push(header);
       this.push(encrypt(pending, true));
       callback();
@@ -223,4 +231,32 @@ function decode(text: string, prefix: string, what: string): Buffer {
   const raw = Buffer.from(text.slice(prefix.length), "base64url");
   if (raw.length !== KEY_BYTES) throw new BackupCryptoError(`That is not a backup ${what}.`);
   return raw;
+}
+
+/** Splits stdin into its first line (the recovery key) and everything after it, as a stream. */
+export async function keyThenRest(input: Readable): Promise<{ key: string; rest: Readable }> {
+  const iterator = input[Symbol.asyncIterator]() as AsyncIterator<Buffer>;
+  const MAX_KEY_LINE = 4096;
+  let head = Buffer.alloc(0);
+  for (;;) {
+    const newline = head.indexOf(10);
+    if (newline >= 0) {
+      const key = head.subarray(0, newline).toString("utf8").trim();
+      const remainder = head.subarray(newline + 1);
+      async function* rest(): AsyncGenerator<Buffer> {
+        if (remainder.length > 0) yield remainder;
+        for (;;) {
+          const next = await iterator.next();
+          if (next.done) return;
+          yield next.value;
+        }
+      }
+      return { key, rest: Readable.from(rest(), { objectMode: false }) };
+    }
+    if (head.length > MAX_KEY_LINE)
+      throw new BackupCryptoError("No recovery key on the first line of the input.");
+    const next = await iterator.next();
+    if (next.done) throw new BackupCryptoError("No recovery key on the first line of the input.");
+    head = Buffer.concat([head, next.value]);
+  }
 }

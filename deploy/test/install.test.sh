@@ -61,7 +61,7 @@ run() { # dir, extra env...
 # 1. wrong checksum aborts before anything is written
 cp "$rel/SHA256SUMS" "$T/good.sums"
 # corrupt the digest of a downloaded file (dpm-custody)
-awk '/ dpm-custody$/{ $0 = "0" substr($0, 2) } {print}' "$T/good.sums" >"$rel/SHA256SUMS"
+awk '/ dpm-custody$/{ $0 = (substr($0, 1, 1) == "0" ? "1" : "0") substr($0, 2) } {print}' "$T/good.sums" >"$rel/SHA256SUMS"
 sign   # validly signed, so it is the checksum that fails
 d1="$T/i1"
 out="$(run "$d1" 2>&1)"; rc=$?
@@ -274,6 +274,20 @@ sys.exit(1 if bad or oneshot or waits or leak or not setup_waits_pg or "healthch
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi
+
+    # The `tools` helper (decrypted backups, a new recovery key) is profile-only, so `up` and the
+    # upgrade health gate never see it, and it keeps nothing in Docker's logs and gets no volumes.
+    if PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
+      docker compose -f "$HERE/compose.yml" config --services 2>/dev/null | grep -qx tools; then
+      bad "compose: the tools helper is not part of the default services"
+    else ok "compose: the tools helper is not part of the default services"; fi
+    if PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
+      docker compose -f "$HERE/compose.yml" --profile tools config --format json 2>/dev/null | python3 -c '
+import json, sys
+t = json.load(sys.stdin)["services"]["tools"]
+sys.exit(0 if t["logging"]["driver"] == "none" and not t.get("volumes") and not t.get("environment") and t["restart"] == "no" else 1)'; then
+      ok "compose: the tools helper has no log driver, no volumes, no environment"
+    else bad "compose: the tools helper has no log driver, no volumes, no environment"; fi
 
     # Run setup's start script with a fake node: a failed migration must leave the container
     # running (so it is unhealthy and `up -d` fails), never exit; a good one marks the volume and

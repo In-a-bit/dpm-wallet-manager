@@ -83,15 +83,24 @@ case "$args" in
     [ -n "${STORAGE_FAIL:-}" ] && { echo "no such service" >&2; exit 1; }
     printf '%s\n' "${STORAGE_OUT-warning|81.2|13}"
     ;;
-  *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; echo "-- dump" ;;
+  *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
   *"setup node dist/setup/main scrub-legacy"*) [ -n "${FAIL_SCRUB:-}" ] && exit 1; exit 0 ;;
-  *"setup node dist/setup/main backup-recipient"*) [ -n "${FAKE_RECIPIENT:-}" ] && echo "$FAKE_RECIPIENT"; exit 0 ;;
+  *"setup node dist/setup/main backup-recipient"*)
+    [ -n "${SETUP_DOWN:-}" ] && { echo "service setup is not running" >&2; exit 1; }
+    [ -n "${OLD_IMAGE:-}" ] && { echo "Unknown command" >&2; exit 2; }
+    [ -n "${FAKE_RECIPIENT:-}" ] && echo "$FAKE_RECIPIENT"
+    exit 0 ;;
+  *" tools node dist/setup/main "*)
+    [ -f "$DIST_MAIN" ] || { echo "no compiled setup (see DIST_MAIN)" >&2; exit 3; }
+    cmd="${args##*dist/setup/main }"
+    exec node "$DIST_MAIN" $cmd ;;
   *"setup node dist/setup/main backup-"*)
     # The real implementation, from the compiled dist, so the sealed files are really sealed.
     [ -f "$DIST_MAIN" ] || { echo "no dist/setup/main.js (run npm run build)" >&2; exit 3; }
     cmd="${args##*dist/setup/main }"
-    exec node "$DIST_MAIN" "$cmd" ;;
+    # shellcheck disable=SC2086 # the command and its flags are separate words
+    exec node "$DIST_MAIN" $cmd ;;
   *"exec -T setup sh -c "*)
     # Run the script the way the container's sh would, against a fake /proc/mounts and a tar that
     # only reports its arguments, so a quoting mistake in dpm-custody fails here.
@@ -108,7 +117,21 @@ printf '#!/bin/sh\nexit 0\n' >"$T/bin/sleep"
 chmod +x "$T/bin/docker" "$T/bin/sleep"
 REAL_DOCKER="$(command -v docker || true)"
 export REAL_DOCKER
-export DIST_MAIN="$HERE/../dist/setup/main.js"
+# The sealed-backup cases run the real seal/open, compiled fresh from src/ (inside node_modules/.cache
+# so its requires resolve), so a stale or missing dist can never skip them. DPM_TEST_SKIP_SEALED=1
+# opts out explicitly.
+DIST_DIR="$HERE/../node_modules/.cache/dpm-upgrade-test-$$"
+if [ "${DPM_TEST_SKIP_SEALED:-}" != 1 ]; then
+  mkdir -p "$DIST_DIR" && trap 'rm -rf "$T" "$DIST_DIR"' EXIT
+  if "$HERE/../node_modules/.bin/tsc" -p "$HERE/../tsconfig.build.json" --outDir "$DIST_DIR" >"$T/tsc.log" 2>&1; then
+    export DIST_MAIN="$DIST_DIR/setup/main.js"
+  else
+    bad "building src for the sealed-backup cases failed: $(head -3 "$T/tsc.log")"
+    export DIST_MAIN="$DIST_DIR/missing.js"
+  fi
+else
+  export DIST_MAIN="$DIST_DIR/skipped.js"
+fi
 mkdir -p "$T/faketar"
 printf '#!/bin/sh\necho "TAR $*"\n' >"$T/faketar/tar"
 chmod +x "$T/faketar/tar"
@@ -300,7 +323,12 @@ if command -v git >/dev/null 2>&1 && [ -n "$REAL_DOCKER" ] &&
 import json, sys
 s = json.load(sys.stdin)[\"services\"][\"setup\"]
 sys.exit(0 if \"POSTGRES_PASSWORD\" in s[\"environment\"] and s[\"depends_on\"][\"postgres\"][\"condition\"] == \"service_healthy\" else 1)"'
-  check "7a the release's compose.yml has no one-shot service (a v0.2.2 gate would fail on it)" '! grep -q "restart: \"no\"" "$rel/compose.yml"'
+  # A v0.2.2 gate asks `compose config --services` (no profiles) and wants each one running: the
+  # services it sees must all be long-running; the profile-only `tools` helper must not be among them.
+  check "7a the release's compose.yml has no one-shot service in the default profile (a v0.2.2 gate would fail on it)" '"$REAL_DOCKER" compose --env-file "$d/.env" -f "$rel/compose.yml" config --format json 2>/dev/null | python3 -c "
+import json, sys
+svc = json.load(sys.stdin)[\"services\"]
+sys.exit(0 if svc and all(s.get(\"restart\") == \"unless-stopped\" for s in svc.values()) and \"tools\" not in svc else 1)"'
 else
   echo "skip - 7a (needs git history with v0.2.2 and docker)"
 fi
@@ -504,6 +532,38 @@ if [ -f "$DIST_MAIN" ]; then
   out="$(run "$d" backup-key)"; rc=$?
   check "21 backup-key again: refuses without --rotate" '[ $rc -eq 0 ] && echo "$out" | grep -q "already has a backup recovery key" && ! echo "$out" | grep -q "dpmbk_key_"'
 
+  # fail closed: a recipient that cannot be looked up must not turn into a plaintext backup
+  d="$T/c21g"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(SETUP_DOWN=1 run "$d" backup)"; rc=$?
+  check "21 setup unreachable: the backup stops before writing anything" '[ $rc -ne 0 ] && echo "$out" | grep -q "Nothing was backed up" && [ ! -e "$d/backups" ] || [ -z "$(ls -A "$d/backups" 2>/dev/null)" ]'
+  out="$(OLD_IMAGE=1 run "$d" backup)"; rc=$?
+  check "21 an image that does not know the command (exit 2) means no key: plaintext with the warning" '[ $rc -eq 0 ] && echo "$out" | grep -q "NOT encrypted"'
+  # the recipient setup holds is copied into .env, by backup and by dpm-custody setup
+  d="$T/c21h"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(FAKE_RECIPIENT="$RECIP" run "$d" backup)"
+  check "21 backup copies the recipient from setup into .env" 'grep -qx "DPM_BACKUP_RECIPIENT=$RECIP" "$d/.env"'
+  d="$T/c21i"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(FAKE_RECIPIENT="$RECIP" run "$d" setup)"
+  check "21 dpm-custody setup copies the recipient into .env when it finishes" 'grep -qx "DPM_BACKUP_RECIPIENT=$RECIP" "$d/.env"'
+  # nothing to seal is a failed dump, not an empty backup
+  d="$T/c21j"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(EMPTY_DUMP=1 FAKE_RECIPIENT="$RECIP" run "$d" backup)"; rc=$?
+  check "21 an empty dump is refused, not sealed into a 74-byte file" '[ $rc -ne 0 ] && ls -d "$d"/backups/*-incomplete >/dev/null 2>&1'
+  out="$(EMPTY_DUMP=1 run "$d" backup)"; rc=$?
+  check "21 an empty dump is refused in the plaintext case too" '[ $rc -ne 0 ]'
+  # a truncated sealed file is refused before a single byte is output (verified in a first pass)
+  d="$T/c21k"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(FAKE_RECIPIENT="$RECIP" run "$d" backup)"; b="$(ls -d "$d"/backups/[0-9]* | head -n 1)"
+  head -c 60 "$b/databases.sql.sealed" >"$T/short.sealed"; head -c "$(( $(wc -c <"$b/databases.sql.sealed") - 3 ))" "$b/databases.sql.sealed" >"$T/cut.sealed"
+  for f in short cut; do
+    opened="$(DPM_BACKUP_RECOVERY_KEY_FILE="$T/rkey" bash "$d/dpm-custody" backup-open "$T/$f.sealed" 2>/dev/null)"; rc=$?
+    check "21 a truncated sealed file ($f) is refused with no output at all" '[ $rc -ne 0 ] && [ -z "$opened" ]'
+  done
+  # the recovery key never reaches an argument or an environment variable
+  : >"$d.events"
+  DPM_BACKUP_RECOVERY_KEY_FILE="$T/rkey" EVENTS="$d.events" bash "$d/dpm-custody" backup-open "$b/databases.sql.sealed" >/dev/null 2>&1
+  check "21 backup-open puts the key on stdin only: it is in no docker argument" '! grep -qF -- "$RKEY" "$d.events" && grep -q "tools node dist/setup/main backup-open --key-stdin" "$d.events"'
+
   # prune: keep the newest N complete backups, only after a good backup
   d="$T/c19e"; make_install "$d" 1.1.0 0.2.0 1.1.0
   mkdir -p "$d/backups"
@@ -517,8 +577,11 @@ if [ -f "$DIST_MAIN" ]; then
   d="$T/c19f"; make_install "$d" 1.1.0 0.2.0 1.1.0; mkdir -p "$d/backups"; for n in 20200101-000001 20200101-000002 20200101-000003 20200101-000004 20200101-000005 20200101-000006; do mkdir "$d/backups/$n"; done
   out="$(run "$d" backup)"
   check "21 prune: default keeps 5" '[ "$(ls -1 "$d/backups" | wc -l | tr -d " ")" = 5 ]'
-else
-  echo "skip - 21 sealed backups (build first: npx nest build)"
+  d="$T/c21m"; make_install "$d" 1.1.0 0.2.0 1.1.0; mkdir -p "$d/backups"; mkdir "$d/backups/20200101-000001"
+  out="$(DPM_CUSTODY_KEEP_BACKUPS=00 run "$d" backup)"; rc=$?
+  check "21 prune: KEEP_BACKUPS=00 deletes nothing, and says so" '[ $rc -eq 0 ] && [ -d "$d/backups/20200101-000001" ] && [ "$(ls -1 "$d/backups" | wc -l | tr -d " ")" = 2 ] && echo "$out" | grep -q "not pruning"'
+elif [ "${DPM_TEST_SKIP_SEALED:-}" = 1 ]; then
+  echo "skip - 21 sealed backups (DPM_TEST_SKIP_SEALED=1)"
 fi
 
 # 22. spent credentials are scrubbed from the OLD config volume too, even after an upgrade run by an

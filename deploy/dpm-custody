@@ -72,21 +72,43 @@ mask_keys() {
 }
 
 # backup_recipient prints the public key backups are sealed to: DPM_BACKUP_RECIPIENT in .env, else
-# the one setup holds (made at install). Empty when the install has none.
+# the one setup holds (made at install), which it then copies into .env. Prints nothing when the
+# install has no key. It fails (non-zero) when setup cannot be asked: a backup must not quietly turn
+# into a plaintext one because a container is down. An image too old to know the command (exit 2)
+# means no key.
 backup_recipient() {
-  local r
+  local r rc
   r="$(env_value DPM_BACKUP_RECIPIENT)"
-  if [ -z "$r" ]; then
-    r="$(compose exec -T setup node dist/setup/main backup-recipient 2>/dev/null | tr -d '\r\n')" || r=""
+  if [ -n "$r" ]; then
+    printf '%s' "$r"
+    return 0
   fi
+  rc=0
+  r="$(compose exec -T setup node dist/setup/main backup-recipient 2>/dev/null)" || rc=$?
+  case "$rc" in
+    0) ;;
+    2) return 0 ;;
+    *) return 1 ;;
+  esac
+  r="$(printf '%s' "$r" | tr -d '\r\n')"
+  if [ -n "$r" ]; then set_env DPM_BACKUP_RECIPIENT "$r"; fi
   printf '%s' "$r"
+}
+
+# sync_backup_recipient copies the recipient setup made into .env, once, so finding it later does
+# not depend on setup running. Quiet; never fails the command that called it.
+sync_backup_recipient() {
+  [ -z "$(env_value DPM_BACKUP_RECIPIENT)" ] || return 0
+  backup_recipient >/dev/null 2>&1 || true
+  return 0
 }
 
 # save_artifact DIR NAME RECIPIENT reads stdin into DIR/NAME, or DIR/NAME.sealed when RECIPIENT is
 # set: encrypted inside the setup container, so the plaintext never touches this disk.
 save_artifact() {
   if [ -n "$3" ]; then
-    DPM_BACKUP_RECIPIENT="$3" compose exec -T -e DPM_BACKUP_RECIPIENT setup node dist/setup/main backup-seal >"$1/$2.sealed"
+    # --require-input: an empty dump or tar (a failed one) is refused, not sealed into a 74-byte file.
+    DPM_BACKUP_RECIPIENT="$3" compose exec -T -e DPM_BACKUP_RECIPIENT setup node dist/setup/main backup-seal --require-input >"$1/$2.sealed"
   else
     cat >"$1/$2"
   fi
@@ -95,11 +117,16 @@ save_artifact() {
 # prune_backups keeps the newest DPM_CUSTODY_KEEP_BACKUPS (default 5) complete backups and removes
 # the rest. Only called after a backup succeeded, so a failing backup never costs the old ones.
 prune_backups() {
-  local keep="${DPM_CUSTODY_KEEP_BACKUPS:-5}" old d
-  case "$keep" in '' | *[!0-9]* | 0) echo "DPM_CUSTODY_KEEP_BACKUPS must be a number of 1 or more; not pruning." >&2; return 0 ;; esac
+  local keep="${DPM_CUSTODY_KEEP_BACKUPS:-5}" current="${1:-}" old d
+  case "$keep" in '' | *[!0-9]*) keep=0 ;; *) keep=$((10#$keep)) ;; esac
+  if [ "$keep" -lt 1 ]; then
+    echo "DPM_CUSTODY_KEEP_BACKUPS must be a number of 1 or more; not pruning." >&2
+    return 0
+  fi
   old="$(for d in backups/[0-9]*; do case "$d" in *-incomplete) ;; *) [ -d "$d" ] && printf '%s\n' "$d" ;; esac; done |
     sort | awk -v k="$keep" '{ line[NR] = $0 } END { for (i = 1; i <= NR - k; i++) print line[i] }')" || return 0
   for d in $old; do
+    [ "$d" != "$current" ] || continue # never the backup just made
     case "$d" in backups/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) continue ;; esac
     rm -rf "$d" && echo "Removed old backup $d (keeping the newest $keep)."
   done
@@ -115,7 +142,11 @@ cmd_backup() {
   stamp="$(date +%Y%m%d-%H%M%S)"
   user="$(env_value POSTGRES_USER)"
   dir="backups/$stamp"
-  recipient="$(backup_recipient)"
+  recipient="$(backup_recipient)" || {
+    echo "Could not find out whether this install encrypts its backups (is the setup service running?)." >&2
+    echo "Nothing was backed up. Run ./dpm-custody start, then try again." >&2
+    return 1
+  }
   sfx=""
   if [ -n "$recipient" ]; then
     sfx=".sealed"
@@ -141,7 +172,7 @@ cmd_backup() {
     echo "It is encrypted: opening it needs the backup recovery key shown at setup (backup-open)."
   fi
   echo "Copy that folder somewhere off this machine. It contains secrets: keep it private."
-  prune_backups
+  prune_backups "$dir"
 }
 
 # read_recovery_key prints the backup recovery key from DPM_BACKUP_RECOVERY_KEY_FILE, or asks for
@@ -159,27 +190,36 @@ read_recovery_key() {
   printf '%s' "$key" | tr -d ' \r\n'
 }
 
-# cmd_backup_open FILE decrypts one sealed backup file to standard output. It runs in a one-off
-# setup container, so it works while the stack is stopped (restoring after a disaster).
+# cmd_backup_open FILE decrypts one sealed backup file to standard output, in a one-off `tools`
+# container (no log driver: nothing it prints reaches Docker's logs), so it works while the stack is
+# stopped. The recovery key travels as the first line of its standard input, never in an argument or
+# an environment variable. The file is decrypted twice: a first pass to nowhere proves the whole file
+# authentic, so a truncated or altered one is refused before any byte is released to whatever reads
+# the output (decrypted data otherwise streams out before the final check).
 cmd_backup_open() {
   local file="${1:-}" key
   [ -n "$file" ] && [ -f "$file" ] || { echo "Usage: ./dpm-custody backup-open backups/<stamp>/<file>.sealed" >&2; return 2; }
   key="$(read_recovery_key)" || return 1
   [ -n "$key" ] || { echo "No key given." >&2; return 1; }
-  DPM_BACKUP_RECOVERY_KEY="$key" compose run --rm --no-deps -T -e DPM_BACKUP_RECOVERY_KEY setup node dist/setup/main backup-open <"$file"
+  if ! { printf '%s\n' "$key"; cat "$file"; } | compose run --rm --no-deps -T tools node dist/setup/main backup-open --key-stdin >/dev/null; then
+    echo "The backup could not be opened: wrong recovery key, or the file is damaged or incomplete. Nothing was output." >&2
+    return 1
+  fi
+  { printf '%s\n' "$key"; cat "$file"; } | compose run --rm --no-deps -T tools node dist/setup/main backup-open --key-stdin
 }
 
 # cmd_backup_key creates the backup recovery key on an install that has none: its public half goes
 # into .env (DPM_BACKUP_RECIPIENT), its private half is shown once and not kept. --rotate replaces an
 # existing key; older backups stay readable only with the key they were sealed to.
 cmd_backup_key() {
-  local out recipient recovery answer
-  if [ -n "$(backup_recipient)" ] && [ "${1:-}" != --rotate ]; then
+  local out recipient recovery answer existing
+  existing="$(backup_recipient)" || { echo "Could not ask the setup service (is it running?). Run ./dpm-custody start first." >&2; return 1; }
+  if [ -n "$existing" ] && [ "${1:-}" != --rotate ]; then
     echo "This install already has a backup recovery key (backups are encrypted)."
     echo "./dpm-custody backup-key --rotate makes a new one; backups made before stay readable only with the old key."
     return 0
   fi
-  out="$(compose run --rm --no-deps -T setup node dist/setup/main backup-keygen)" || { echo "Could not create the key." >&2; return 1; }
+  out="$(compose run --rm --no-deps -T tools node dist/setup/main backup-keygen)" || { echo "Could not create the key." >&2; return 1; }
   recipient="$(printf '%s\n' "$out" | sed -n 's/^recipient=//p' | tr -d '\r')"
   recovery="$(printf '%s\n' "$out" | sed -n 's/^recovery_key=//p' | tr -d '\r')"
   [ -n "$recipient" ] && [ -n "$recovery" ] || { echo "Could not create the key." >&2; return 1; }
@@ -1002,8 +1042,12 @@ main() {
     # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still
     # checked); SETUP_INSTALL_SECONDS is how long the installer took, for the checklist.
     setup)
+      rc=0
       compose exec ${SETUP_PLATFORM_URL:+-e SETUP_PLATFORM_URL} ${SETUP_BUILDER_KEY:+-e SETUP_BUILDER_KEY} \
-        ${SETUP_INSTALL_SECONDS:+-e SETUP_INSTALL_SECONDS} setup node dist/setup/main setup
+        ${SETUP_INSTALL_SECONDS:+-e SETUP_INSTALL_SECONDS} setup node dist/setup/main setup || rc=$?
+      # Setup has made the backup recovery key by now: keep its public half in .env too.
+      sync_backup_recipient
+      return "$rc"
       ;;
     support) cmd_support ;;
     logs) shift; compose logs --tail 200 "$@" ;;
