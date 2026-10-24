@@ -10,6 +10,7 @@ import {
 import { logInfo, logWarn } from "../observability/log";
 import { RetentionService } from "../retention/retention.service";
 import { RetentionSettingsService } from "../settings/retention-settings.service";
+import { assertWebhookTarget, WebhookTargetError } from "./webhook-target";
 import { maskWebhookUrl, StorageSettingsService } from "../settings/storage-settings.service";
 import { CONFIG } from "../tokens";
 import { daysToFull, growthPerDay, levelFor, type StorageLevel } from "./growth";
@@ -57,6 +58,8 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
     };
   };
   fetchImpl: typeof fetch = (...args) => fetch(...args);
+  /** Seam for tests: the addresses a webhook host resolves to. */
+  resolveHost: ((host: string) => Promise<string[]>) | undefined;
   webhookTimeoutMs = 5000;
   storagePath: string;
 
@@ -346,8 +349,12 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.webhookTimeoutMs);
     try {
+      await assertWebhookTarget(url, this.resolveHost);
       const response = await this.fetchImpl(url, {
         method: "POST",
+        // A redirect is not followed: a receiver (or whoever controls the name) could bounce the
+        // request to an internal address the check above never saw.
+        redirect: "manual",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           install: installName(this.config.managerPublicUrl),
@@ -366,7 +373,13 @@ export class StorageMonitorService implements OnModuleInit, OnModuleDestroy {
       // The error text can carry the URL; keep only its kind.
       logWarn("storage.webhook_failed", {
         target: maskWebhookUrl(url),
-        reason: controller.signal.aborted ? "timeout" : err instanceof Error ? err.name : "error",
+        reason: controller.signal.aborted
+          ? "timeout"
+          : err instanceof WebhookTargetError
+            ? "forbidden target"
+            : err instanceof Error
+              ? err.name
+              : "error",
       });
     } finally {
       clearTimeout(timer);

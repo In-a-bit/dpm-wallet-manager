@@ -77,11 +77,20 @@ describe("StorageMonitorService", () => {
       } as unknown as DpmWalletClient,
       samples,
     );
-    makeMonitor = (publicUrl?: string) =>
-      new StorageMonitorService(samples, storageSettings, retentionSettings, retention, {
-        ...config,
-        managerPublicUrl: publicUrl,
-      });
+    makeMonitor = (publicUrl?: string) => {
+      const made = new StorageMonitorService(
+        samples,
+        storageSettings,
+        retentionSettings,
+        retention,
+        {
+          ...config,
+          managerPublicUrl: publicUrl,
+        },
+      );
+      made.resolveHost = async () => ["93.184.216.34"];
+      return made;
+    };
     monitor = makeMonitor();
     now = new Date("2026-10-23T12:00:00Z");
     usedPercent = 50;
@@ -92,6 +101,7 @@ describe("StorageMonitorService", () => {
     });
     fetchImpl = jest.fn().mockResolvedValue({ ok: true, status: 200 });
     monitor.fetchImpl = fetchImpl;
+    monitor.resolveHost = async () => ["93.184.216.34"];
     monitor.webhookTimeoutMs = 30;
     monitor.onModuleInit();
     monitor.onModuleDestroy(); // timers off; the hook stays wired
@@ -173,6 +183,8 @@ describe("StorageMonitorService", () => {
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe(SECRET_URL);
     expect(init.method).toBe("POST");
+    // A redirect would carry the alert wherever the receiver (or whoever owns its name) says.
+    expect(init.redirect).toBe("manual");
     expect(JSON.parse(init.body)).toMatchObject({
       install: "install",
       level: "warning",
@@ -306,6 +318,25 @@ describe("StorageMonitorService", () => {
     await expect(monitor.sampleOnce()).resolves.not.toThrow();
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(events("storage.webhook_failed")[0]).toMatchObject({ status: 500 });
+    expect(raw).not.toContain("SECRET-TOKEN");
+  });
+
+  it("does not follow a redirect: a 302 is a failed delivery", async () => {
+    await storageSettings.update({ alertWebhookUrl: SECRET_URL }, undefined);
+    fetchImpl.mockResolvedValue({ ok: false, status: 302 });
+    usedPercent = 95;
+    await monitor.sampleOnce();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(events("storage.webhook_failed")[0]).toMatchObject({ status: 302 });
+  });
+
+  it("never POSTs to a host that resolves to the metadata address", async () => {
+    await storageSettings.update({ alertWebhookUrl: SECRET_URL }, undefined);
+    monitor.resolveHost = async () => ["169.254.169.254"];
+    usedPercent = 95;
+    await expect(monitor.sampleOnce()).resolves.not.toThrow();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(events("storage.webhook_failed")[0]).toMatchObject({ reason: "forbidden target" });
     expect(raw).not.toContain("SECRET-TOKEN");
   });
 
