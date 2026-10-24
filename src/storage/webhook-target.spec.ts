@@ -28,6 +28,36 @@ describe("isForbiddenWebhookAddress", () => {
   });
 });
 
+describe("assertWebhookTarget through a URL string", () => {
+  // The URL parser rewrites some of these (`::ffff:169.254.169.254` -> `::ffff:a9fe:a9fe`), so the
+  // check must hold on what `new URL(...).hostname` actually returns.
+  it.each([
+    "http://[::ffff:169.254.169.254]/",
+    "http://[::ffff:a9fe:a9fe]/",
+    "http://[0:0:0:0:0:ffff:169.254.169.254]/",
+    "http://[::169.254.169.254]/",
+    "http://[::a9fe:a9fe]/",
+    "http://[64:ff9b::169.254.169.254]/",
+    "http://[64:ff9b::a9fe:a9fe]/",
+    "http://[fe80::1]/",
+    "http://[fd00:ec2::254]/",
+    "http://[FD00:0EC2:0:0:0:0:0:254]/",
+    "http://169.254.169.254/",
+    "http://2852039166/",
+  ])("rejects %s", async (url) => {
+    const resolve = jest.fn();
+    await expect(assertWebhookTarget(url, resolve)).rejects.toThrow(/forbidden/);
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(["http://[::ffff:93.184.216.34]/", "http://[::1]/", "http://[2606:4700::1111]/"])(
+    "allows %s",
+    async (url) => {
+      await expect(assertWebhookTarget(url, jest.fn())).resolves.toBeUndefined();
+    },
+  );
+});
+
 describe("assertWebhookTarget", () => {
   it("refuses a literal metadata URL without resolving anything", async () => {
     const resolve = jest.fn();
