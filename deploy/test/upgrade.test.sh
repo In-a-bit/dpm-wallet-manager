@@ -84,6 +84,8 @@ case "$args" in
     printf '%s\n' "${STORAGE_OUT-warning|81.2|13}"
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
+  *"exec -T postgres psql"*"version()"*) echo "${PG_VERSION:-PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc}" ;;
+  *"exec -T postgres psql"*"REINDEX"*) ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
   *"cat /config-wallet"*) printf '%s\n' "${PLANT_ENV:-}"; exit 0 ;;
   *" logs "*) printf '%s\n' "${PLANT_LOG:-}"; exit 0 ;;
@@ -396,6 +398,18 @@ out="$(run "$d" rollback)"; rc=$?
 check "8d rollback then returns to 1.0.0" '[ $rc -eq 0 ] && grep -qx "DPM_CUSTODY_VERSION=1.0.0" "$d/.env" && grep -qx "DPM_WALLET_MANAGER_TAG=1.0.0" "$d/.env" && cmp -s "$d/compose.yml" "$d.orig.compose.yml" && [ ! -e "$d/.env.prev" ]'
 out="$(run "$d" upgrade --yes)"; rc=$?
 check "8d a good upgrade leaves no stash" '[ $rc -eq 0 ] && [ -z "$(ls -a "$d" | grep "\.last$")" ]'
+
+# 12p. rolling back across the Postgres image change: the collation record is forgotten while the
+# new setup container still exists, and an Alpine Postgres gets its text indexes rebuilt
+d="$T/c12p"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" upgrade --yes)"
+out="$(PG_VERSION='PostgreSQL 18.6 on x86_64-pc-linux-musl, compiled by gcc (Alpine 15.2.0)' run "$d" rollback)"; rc=$?
+ev="$d.events"
+check "12p rollback: the collation record is removed before the files go back and the stack restarts" '[ $rc -eq 0 ] && has "$ev" "run --rm --no-deps -T setup rm -f /state/.collation-key" && [ "$(line_of "$ev" ".collation-key")" -lt "$(line_of "$ev" " up -d")" ]'
+check "12p rollback onto Alpine Postgres: both databases are reindexed" 'has "$ev" "REINDEX DATABASE dpm_wallet" && has "$ev" "REINDEX DATABASE dpm_wallet_manager"'
+d="$T/c12q"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(run "$d" upgrade --yes)"; out="$(run "$d" rollback)"
+check "12q rollback onto a Debian Postgres: nothing is reindexed" '! has "$d.events" "REINDEX"'
 
 # 17. SIGHUP (dropped SSH session) during the health gate: the run still completes its rollback
 d="$T/c17"; make_install "$d" 1.0.0 0.1.0 1.0.0

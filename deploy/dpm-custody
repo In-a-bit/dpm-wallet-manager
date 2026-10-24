@@ -703,6 +703,11 @@ print_restore_steps() {
 # rollback_now restores the *.prev files, starts the stack and waits for health. Shared by
 # `upgrade` (after a failed health gate) and `rollback`.
 rollback_now() {
+  # The text-index rebuild setup records is keyed by the Postgres C library it saw (glibc, on the
+  # Debian image). Going back to an Alpine release changes that, so forget the record while the
+  # current setup container and its state volume are still in the compose.yml: the next upgrade
+  # then rebuilds again, whichever dpm-custody drives it.
+  compose run --rm --no-deps -T setup rm -f /state/.collation-key >>"${UPGRADE_LOG:-/dev/null}" 2>&1 || true
   if ! restore_prev; then
     say "  ✕ Could not put the previous files back (see the message above)."
     return 1
@@ -714,7 +719,29 @@ rollback_now() {
   # An older version now runs and may write the old config volume again, so the scrub of it that
   # was stamped as done must be done again by the next command of a newer dpm-custody.
   rm -f .legacy-scrubbed
+  reindex_if_musl
   health_gate
+}
+
+# reindex_if_musl: when the version just brought back runs Postgres on Alpine (musl), its text
+# indexes were last written under the Debian image's sort order. Rebuilding them here makes the
+# old version correct again; the databases are otherwise left as they are. Quiet and non-fatal.
+reindex_if_musl() {
+  local user version db i
+  user="$(env_value POSTGRES_USER)"
+  user="${user:-dpm}"
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    compose exec -T postgres pg_isready -U "$user" >/dev/null 2>&1 && break
+    sleep 2
+  done
+  version="$(compose exec -T postgres psql -U "$user" -d postgres -tAc 'select version()' 2>/dev/null)" || return 0
+  case "$version" in *musl*) ;; *) return 0 ;; esac
+  say "Rebuilding the databases' text indexes for the Alpine Postgres that is back ..."
+  for db in dpm_wallet dpm_wallet_manager; do
+    compose exec -T postgres psql -U "$user" -d "$db" -c "REINDEX DATABASE $db" >>"${UPGRADE_LOG:-/dev/null}" 2>&1 ||
+      say "  ! Could not rebuild the indexes of $db; run REINDEX DATABASE $db by hand."
+  done
+  return 0
 }
 
 on_upgrade_exit() {

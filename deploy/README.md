@@ -646,10 +646,11 @@ miss rows that are there. The first time setup starts on the new image (the upgr
 before the services start) it rebuilds the indexes of every database (`REINDEX DATABASE`; a few
 seconds for a small install, during which old services may see a brief lock), and records the C
 library it saw so it does not repeat. The Postgres data directory changes owner by itself (the
-image's entrypoint does it). Rolling back past this release puts the Alpine image back, whose
-sort order differs again: after such a rollback run `docker compose exec postgres psql -U dpm
--d <db> -c 'REINDEX DATABASE <db>'` for `dpm_wallet` and `dpm_wallet_manager` (the next upgrade
-rebuilds them anyway).
+image's entrypoint does it). Rolling back past this release puts the Alpine image back, whose sort order differs again:
+`dpm-custody rollback` (and the automatic rollback of a failed upgrade) then rebuilds the indexes
+of `dpm_wallet` and `dpm_wallet_manager` once the old version is up, and forgets the record above,
+so the next upgrade rebuilds them for Debian whichever `dpm-custody` drives it. If the message
+"Could not rebuild the indexes" appears, run `REINDEX DATABASE <name>` by hand.
 
 **Signing (ECDSA P-256).** CI signs `SHA256SUMS` with the private key stored as the repository
 secret `RELEASE_SIGNING_KEY`, and attaches `SHA256SUMS.sig` (DER) to the release; before attaching, it

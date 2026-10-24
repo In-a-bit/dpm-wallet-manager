@@ -83,4 +83,12 @@ check "the data is unchanged" '[ "$(psql_in dpm_wallet_manager <<<"SELECT count(
 out="$(migrate)"; rc=$?
 check "a second run changes nothing" '[ $rc -eq 0 ] && echo "$out" | grep -q "already match" && ! echo "$out" | grep -q "rebuilt"'
 
+# 4. and back: a rollback to a release on Alpine leaves the indexes in the Debian order, which
+# dpm-custody's rollback rebuilds with the same statement (reindex_if_musl)
+docker stop "$NAME" >/dev/null && docker rm "$NAME" >/dev/null
+start "$ALPINE" || { bad "alpine postgres did not start again"; exit 1; }
+check "back on Alpine the index built under Debian's order is out of order (the rollback hazard)" 'broken'
+docker exec "$NAME" psql -U dpm -d dpm_wallet_manager -c "REINDEX DATABASE dpm_wallet_manager" >/dev/null 2>&1
+check "the rollback's REINDEX makes it valid for Alpine again" '! broken'
+
 [ $fails -eq 0 ] && echo "all passed" || { echo "$fails failed"; exit 1; }
