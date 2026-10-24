@@ -1,4 +1,5 @@
 import type { Db } from "../src/db/client";
+import { ApiKeyRepository } from "../src/db/repositories/api-key.repo";
 import { DB } from "../src/tokens";
 import { startHarness, type Harness } from "../src/testing/harness";
 
@@ -267,6 +268,27 @@ describe("api keys", () => {
       expect(response.status).toBe(200);
       // Restore the harness's default credential for any later test in this file.
       harness.adminKey = spare.body.key;
+    });
+
+    // Count and write are one transaction under a lock: with exactly two usable admin keys,
+    // revoking both at once must refuse one of them rather than lock the install out.
+    it("never lets two concurrent revokes remove the last two admin keys", async () => {
+      // The default credential is the one revoked above; the replacement is passed explicitly.
+      const current = harness.adminKey;
+      const second = await harness.post("/v1/api-keys", {
+        body: { role: "admin", name: "second-admin" },
+        apiKey: current,
+      });
+      const first = await harness.get("/v1/api-keys/self", { apiKey: current });
+      const repo = harness.app.get(ApiKeyRepository);
+      const now = new Date().toISOString();
+
+      const results = await Promise.all([
+        repo.revokeUnlessLastAdmin(first.body.keyId as string, now),
+        repo.revokeUnlessLastAdmin(second.body.id as string, now),
+      ]);
+
+      expect(results.filter((result) => result.refused)).toHaveLength(1);
     });
   });
 });

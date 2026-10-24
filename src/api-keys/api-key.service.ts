@@ -150,8 +150,11 @@ export class ApiKeyService {
     const stored = await this.require(id);
     if (stored.status !== "active") return toView(stored);
 
-    const now = new Date().toISOString();
-    if (stored.role === "admin" && (await this.keys.countUsable("admin", now, id)) === 0) {
+    const { key: revoked, refused } = await this.keys.revokeUnlessLastAdmin(
+      id,
+      new Date().toISOString(),
+    );
+    if (refused) {
       await this.audit.record({
         actor,
         action: AuditAction.KeyRevoke,
@@ -165,7 +168,6 @@ export class ApiKeyService {
       );
     }
 
-    const revoked = await this.keys.revoke(id, now);
     await this.audit.record({
       actor,
       action: AuditAction.KeyRevoke,

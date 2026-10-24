@@ -80,6 +80,9 @@ export type OperationPage = {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Longest rotation chain followed; real chains are a handful of keys long. */
+const ROTATION_DEPTH_LIMIT = 100;
+
 @Injectable()
 export class OperationRepository {
   private readonly operations: Repository<OperationEntity>;
@@ -123,17 +126,22 @@ export class OperationRepository {
   /** Every key of the rotation chain `keyId` belongs to: its root and everything rotated from it. */
   private async rotationFamily(keyId: string): Promise<string[]> {
     const rows: { id: string }[] = await this.operations.query(
+      // UNION (not UNION ALL) and a depth bound: a rotation cycle, which nothing should ever
+      // write, must end this query rather than spin it.
       `WITH RECURSIVE up AS (
-         SELECT id, rotated_from_id FROM api_keys WHERE id = $1
-         UNION ALL
-         SELECT k.id, k.rotated_from_id FROM api_keys k JOIN up ON k.id = up.rotated_from_id
+         SELECT id, rotated_from_id, 0 AS depth FROM api_keys WHERE id = $1
+         UNION
+         SELECT k.id, k.rotated_from_id, up.depth + 1
+         FROM api_keys k JOIN up ON k.id = up.rotated_from_id WHERE up.depth < $2
        ), down AS (
-         SELECT id FROM up u WHERE NOT EXISTS (SELECT 1 FROM api_keys p WHERE p.id = u.rotated_from_id)
-         UNION ALL
-         SELECT k.id FROM api_keys k JOIN down ON k.rotated_from_id = down.id
+         SELECT id, 0 AS depth FROM up u
+         WHERE NOT EXISTS (SELECT 1 FROM api_keys p WHERE p.id = u.rotated_from_id)
+         UNION
+         SELECT k.id, down.depth + 1 FROM api_keys k JOIN down ON k.rotated_from_id = down.id
+         WHERE down.depth < $2
        )
-       SELECT id FROM down`,
-      [keyId],
+       SELECT DISTINCT id FROM down`,
+      [keyId, ROTATION_DEPTH_LIMIT],
     );
     return rows.length > 0 ? rows.map((row) => row.id) : [keyId];
   }

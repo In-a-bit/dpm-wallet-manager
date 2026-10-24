@@ -36,11 +36,14 @@ export type NewApiKey = {
   createdAt: string;
 };
 
+/** Serialises decisions that depend on how many usable admin keys exist. */
+const ADMIN_KEY_LOCK = "SELECT pg_advisory_xact_lock(hashtext('dpmm.api_keys.admin'))";
+
 @Injectable()
 export class ApiKeyRepository {
   private readonly keys: Repository<ApiKeyEntity>;
 
-  constructor(@Inject(DB) db: Db) {
+  constructor(@Inject(DB) private readonly db: Db) {
     this.keys = db.getRepository(ApiKeyEntity);
   }
 
@@ -124,6 +127,37 @@ export class ApiKeyRepository {
   async revoke(id: string, now: string): Promise<ApiKey | undefined> {
     await this.keys.update({ id }, { status: "revoked", revokedAt: now });
     return this.findById(id);
+  }
+
+  /**
+   * Revokes an active key unless it is the last usable admin key, deciding and writing in one
+   * transaction under an advisory lock. Two concurrent revokes of the last two admin keys would
+   * each see the other still usable if the count and the update were separate; serialised, the
+   * second sees the first's write and is refused.
+   */
+  revokeUnlessLastAdmin(
+    id: string,
+    now: string,
+  ): Promise<{ key: ApiKey | undefined; refused: boolean }> {
+    return this.db.transaction(async (tx) => {
+      await tx.query(ADMIN_KEY_LOCK);
+      const repo = tx.getRepository(ApiKeyEntity);
+      const current = await repo.findOneBy({ id });
+      if (!current || current.status !== "active") {
+        return { key: current ? toApiKey(current) : undefined, refused: false };
+      }
+      if (current.role === "admin") {
+        const others = await repo
+          .createQueryBuilder("k")
+          .where("k.role = 'admin' AND k.status = 'active' AND k.id <> :id", { id })
+          .andWhere("(k.expires_at IS NULL OR k.expires_at > :now)", { now })
+          .getCount();
+        if (others === 0) return { key: toApiKey(current), refused: true };
+      }
+      await repo.update({ id }, { status: "revoked", revokedAt: now });
+      const updated = await repo.findOneBy({ id });
+      return { key: updated ? toApiKey(updated) : undefined, refused: false };
+    });
   }
 
   async setExpiry(id: string, expiresAt: string): Promise<ApiKey | undefined> {
