@@ -653,7 +653,7 @@ written meanwhile would land in indexes ordered by the wrong library (missed row
 "unique" values). So `dpm-custody rollback`, and the automatic rollback of a failed upgrade, first
 stop dpm-wallet, the manager and setup, start Postgres alone on the old image, run
 `REINDEX DATABASE` on every database, and only then start the stack; if that fails the services stay
-stopped and the restore steps are printed. It also forgets the record above, so the next upgrade
+stopped and the restore steps are printed. The rebuild owed is written to `.reindex-pending` in the install folder first and removed only when every database is done; while it exists `dpm-custody start` finishes the rebuild before it starts anything, `rollback` repeats it, and `upgrade` refuses. (Starting the stack with plain `docker compose up` bypasses that: use `./dpm-custody start`.) If the rollback cannot read the Postgres image from the compose files, or cannot reset the record of the last rebuild, it stops before changing anything. It also forgets the record above, so the next upgrade
 rebuilds for Debian whichever `dpm-custody` drives it. If you ever put an Alpine image back by hand,
 stop dpm-wallet and the manager first, then run `REINDEX DATABASE <name>` in `dpm_wallet` and
 `dpm_wallet_manager` before starting them.

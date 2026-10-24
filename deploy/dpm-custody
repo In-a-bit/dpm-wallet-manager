@@ -719,25 +719,50 @@ print_restore_steps() {
 # rollback_now restores the *.prev files, starts the stack and waits for health. Shared by
 # `upgrade` (after a failed health gate) and `rollback`.
 rollback_now() {
-  local before after
-  before="$(pg_libc)"
-  # The text-index rebuild setup records is keyed by the Postgres C library it saw (glibc, on the
-  # Debian image). Going back to an Alpine release changes that, so forget the record while the
-  # current setup container and its state volume are still in the compose.yml: the next upgrade
-  # then rebuilds again, whichever dpm-custody drives it.
-  compose run --rm --no-deps -T setup rm -f /state/.collation-key >>"${UPGRADE_LOG:-/dev/null}" 2>&1 || true
+  local before after change=0
+  # Which Postgres C library the install runs now, and which the previous version will. Read from
+  # the compose files before anything is touched; if either cannot be read the rollback does not
+  # start, rather than guess that nothing changes.
+  before="$(pg_libc .env compose.yml)" && after="$(pg_libc .env.prev compose.yml.prev)" || {
+    say "  ✕ Could not read the Postgres image from compose.yml / compose.yml.prev, so the rollback cannot tell"
+    say "    whether the database's text indexes must be rebuilt. Nothing was changed."
+    say "    Check that Docker and Docker Compose work (docker compose version), then try again."
+    return 1
+  }
+  [ "$before" = "$after" ] || change=1
+  [ ! -f "$REINDEX_PENDING" ] || change=1
+  if [ "$change" = 1 ]; then
+    # The text-index rebuild setup records is keyed by the Postgres C library it saw. Going back
+    # to a release on the other library changes that, so forget the record while the current
+    # setup container and its state volume are still in the compose.yml: the next upgrade then
+    # rebuilds again, whichever dpm-custody drives it. Without that the next upgrade could start
+    # on wrongly ordered indexes, so a failure here stops the rollback before it changes anything.
+    if ! compose run --rm --no-deps -T setup rm -f /state/.collation-key >>"${UPGRADE_LOG:-/dev/null}" 2>&1; then
+      say "  ✕ Could not reset the record of the last index rebuild (is Docker able to run the setup image?)."
+      say "    Nothing was changed. Fix that, then try again."
+      return 1
+    fi
+    # Written before anything is stopped or restored, removed only when every database is done:
+    # if this is interrupted, `start`, the next rollback and the next upgrade see it.
+    (umask 077 && printf '%s to %s\n' "$before" "$after" >"$REINDEX_PENDING") || {
+      say "  ✕ Could not write $REINDEX_PENDING (is the disk full?). Nothing was changed."
+      return 1
+    }
+  fi
   if ! restore_prev; then
     say "  ✕ Could not put the previous files back (see the message above)."
     return 1
   fi
-  after="$(pg_libc)"
-  if [ "$before" != "$after" ]; then
+  if [ -f "$REINDEX_PENDING" ]; then
     # Rows written under one C library's sort order sit in indexes ordered by the other's; a
     # Postgres on the other library reads them wrongly (missed rows, duplicate "unique" values).
     # So the services stay stopped until the indexes are rebuilt, and a failure stops the rollback.
-    say "The Postgres image changes ($before to $after): rebuilding its text indexes before the services start ..."
-    if ! reindex_all_databases; then
-      say "  ✕ Could not rebuild the databases' text indexes (details in upgrade.log). The services are stopped."
+    if [ "$before" = "$after" ]; then
+      say "Finishing the text-index rebuild an earlier rollback left undone, before the services start ..."
+    else
+      say "The Postgres image changes ($before to $after): rebuilding its text indexes before the services start ..."
+    fi
+    if ! finish_pending_reindex; then
       return 1
     fi
   fi
@@ -751,21 +776,42 @@ rollback_now() {
   health_gate
 }
 
-# pg_libc prints musl or glibc for the Postgres image that compose.yml and .env name right now:
-# the Alpine image is musl, anything else (Debian) glibc.
+# REINDEX_PENDING is the install-folder file that says a Postgres C library change still needs its
+# text indexes rebuilt. `start`, `rollback` and `upgrade` all honour it.
+REINDEX_PENDING=".reindex-pending"
+
+# pg_libc [ENV_FILE COMPOSE_FILE] prints musl or glibc for the Postgres image those files name (the
+# Alpine image is musl, anything else Debian/glibc). It fails when it cannot read the image.
 pg_libc() {
-  case "$(compose config 2>/dev/null | sed -n 's/^ *image: \(postgres:.*\)$/\1/p' | head -n 1)" in
+  local image
+  image="$(docker compose --env-file "${1:-.env}" -f "${2:-compose.yml}" config 2>/dev/null | sed -n 's/^ *image: \(postgres:.*\)$/\1/p' | head -n 1)"
+  [ -n "$image" ] || return 1
+  case "$image" in
     *alpine*) echo musl ;;
     *) echo glibc ;;
   esac
 }
 
+# finish_pending_reindex does the rebuild a pending marker asks for, with the services stopped, and
+# removes the marker only when every database succeeded. Succeeds at once when nothing is pending.
+finish_pending_reindex() {
+  [ -f "$REINDEX_PENDING" ] || return 0
+  if ! reindex_all_databases; then
+    say "  ✕ Could not rebuild the databases' text indexes (details in ${UPGRADE_LOG:-reindex.log}). The services are stopped"
+    say "    on purpose: they must not run on wrongly ordered indexes. Fix the cause, then run ./dpm-custody start,"
+    say "    which finishes the rebuild first. ($(pwd)/$REINDEX_PENDING records that it is owed.)"
+    return 1
+  fi
+  rm -f "$REINDEX_PENDING"
+}
+
 # reindex_all_databases stops the services that use Postgres, (re)starts it alone, and runs
 # REINDEX DATABASE on every database that accepts connections. Everything is logged to upgrade.log.
 reindex_all_databases() {
-  local user dbs db i log="${UPGRADE_LOG:-/dev/null}"
+  local user dbs db i log="${UPGRADE_LOG:-reindex.log}"
   user="$(env_value POSTGRES_USER)"
   user="${user:-dpm}"
+  (umask 077 && : >>"$log") 2>/dev/null || true
   compose stop dpm-wallet dpm-wallet-manager setup >>"$log" 2>&1 || true
   compose up -d --no-deps postgres >>"$log" 2>&1 || return 1
   for i in $(seq 1 60); do
@@ -906,6 +952,9 @@ cmd_upgrade() {
   fi
   installed="$(env_value DPM_CUSTODY_VERSION)"
   [ -n "$installed" ] || installed=unknown
+  [ ! -f "$REINDEX_PENDING" ] ||
+    stop_unchanged "An earlier rollback did not finish rebuilding the database's text indexes." \
+      "Run ./dpm-custody start first: it finishes that with the services stopped. Then upgrade."
 
   take_lock
   trap on_upgrade_exit EXIT
@@ -1164,7 +1213,14 @@ main() {
     start | status | setup | backup | support | logs) ensure_legacy_scrubbed ;;
   esac
   case "${1:-help}" in
-    start) compose up -d ;;
+    start)
+      # A rollback that did not finish rebuilding the indexes owes it before any service runs.
+      if [ -f "$REINDEX_PENDING" ]; then
+        echo "A rollback did not finish rebuilding the database's text indexes: doing that first, with the services stopped ..."
+        finish_pending_reindex || exit 1
+      fi
+      compose up -d
+      ;;
     stop) compose stop ;;
     status) compose ps; marker_hint; storage_line || true ;;
     # SETUP_PLATFORM_URL / SETUP_BUILDER_KEY, when set, answer the first two questions (still

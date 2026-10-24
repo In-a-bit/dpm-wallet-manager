@@ -86,9 +86,13 @@ case "$args" in
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; [ -n "${EMPTY_DUMP:-}" ] && exit 0; echo "-- dump" ;;
   *" config")
     # `compose config`: only the Postgres image line matters (to dpm-custody's pg_libc); the fake
-    # compose.yml says which one through a marker comment.
-    if grep -q "postgres-alpine" compose.yml 2>/dev/null; then echo "    image: postgres:18-alpine"; else echo "    image: postgres:18-trixie@sha256:abc"; fi ;;
+    # compose file named by -f says which one through a marker comment.
+    [ -n "${FAIL_CONFIG:-}" ] && exit 1
+    cf=compose.yml; prev=""
+    for a in "$@"; do [ "$prev" = -f ] && cf="$a"; prev="$a"; done
+    if grep -q "postgres-alpine" "$cf" 2>/dev/null; then echo "    image: postgres:18-alpine"; else echo "    image: postgres:18-trixie@sha256:abc"; fi ;;
   *"exec -T postgres psql"*"datallowconn"*) printf 'postgres\ndpm_wallet\ndpm_wallet_manager\ntemplate1\n' ;;
+  *" run "*"rm -f /state/.collation-key"*) [ -n "${FAIL_RM_MARKER:-}" ] && { echo "cannot run setup" >&2; exit 1; }; exit 0 ;;
   *"exec -T postgres psql"*"REINDEX"*) [ -n "${FAIL_REINDEX:-}" ] && { echo "reindex failed" >&2; exit 1; }; exit 0 ;;
   *"exec -T postgres psql"*"version()"*) echo "${PG_VERSION:-PostgreSQL 18.6 (Debian 18.6-1.pgdg13+2) on x86_64-pc-linux-gnu, compiled by gcc}" ;;
   *"exec -T postgres psql"*"REINDEX"*) ;;
@@ -422,6 +426,23 @@ d="$T/c12r"; alpine_install "$d"
 out="$(run "$d" upgrade --yes)"
 out="$(FAIL_REINDEX=1 run "$d" rollback)"; rc=$?
 check "12p a failed reindex stops the rollback: services stay stopped, restore steps printed, misleading wording gone" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not rebuild" && echo "$out" | grep -q "services are stopped" && ! echo "$out" | grep -q "touched by the rollback\.$" && [ "$(grep -c " up -d$" "$d.events")" -eq 0 ]'
+check "12r a failed reindex leaves the intent on disk (owner-only)" '[ -f "$d/.reindex-pending" ] && [ "$(mode_of "$d/.reindex-pending")" = "-rw-------" ]'
+out="$(run "$d" upgrade --yes)"; rc=$?
+check "12r upgrade refuses while a reindex is owed, and changes nothing" '[ $rc -ne 0 ] && echo "$out" | grep -q "did not finish rebuilding" && echo "$out" | grep -q "./dpm-custody start"'
+out="$(run "$d" start)"; rc=$?
+check "12r start finishes the owed rebuild first: services stopped, postgres alone, every database reindexed, then the stack, marker gone" '
+  ev="$d.events"; a=$(line_of "$ev" "stop dpm-wallet dpm-wallet-manager setup"); b=$(line_of "$ev" "up -d --no-deps postgres"); c=$(line_of "$ev" "REINDEX DATABASE template1"); f=$(grep -n " up -d$" "$ev" | tail -n 1 | cut -d: -f1);
+  [ $rc -eq 0 ] && [ ! -e "$d/.reindex-pending" ] && [ "$a" -lt "$b" ] && [ "$b" -lt "$c" ] && [ "$c" -lt "$f" ]'
+d="$T/c12t"; alpine_install "$d"
+out="$(run "$d" upgrade --yes)"; out="$(FAIL_REINDEX=1 run "$d" rollback)"
+out="$(run "$d" rollback)"; rc=$?
+check "12t re-running the rollback after an interrupted reindex reindexes again (musl vs musl is not taken for 'nothing to do')" '[ $rc -eq 0 ] && has "$d.events" "REINDEX DATABASE dpm_wallet_manager" && [ ! -e "$d/.reindex-pending" ]'
+d="$T/c12u"; alpine_install "$d"
+out="$(run "$d" upgrade --yes)"; cp "$d/compose.yml" "$T/c12u.before"; cp "$d/.env" "$T/c12u.env.before"
+out="$(FAIL_CONFIG=1 run "$d" rollback)"; rc=$?
+check "12u a compose config that cannot be read stops the rollback before it changes anything" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not read the Postgres image" && cmp -s "$d/compose.yml" "$T/c12u.before" && cmp -s "$d/.env" "$T/c12u.env.before" && [ ! -e "$d/.reindex-pending" ] && ! has "$d.events" " up -d"'
+out="$(FAIL_RM_MARKER=1 run "$d" rollback)"; rc=$?
+check "12u a failed reset of the index record (libc change) stops the rollback before it changes anything" '[ $rc -ne 0 ] && echo "$out" | grep -q "Could not reset the record" && cmp -s "$d/compose.yml" "$T/c12u.before" && [ ! -e "$d/.reindex-pending" ]'
 d="$T/c12q"; make_install "$d" 1.0.0 0.1.0 1.0.0
 out="$(run "$d" upgrade --yes)"; out="$(run "$d" rollback)"
 check "12q rollback with no image change (Debian both sides): nothing is reindexed, services are not stopped" '! has "$d.events" "REINDEX" && ! has "$d.events" "stop dpm-wallet"'
