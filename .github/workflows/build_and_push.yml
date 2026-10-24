@@ -120,6 +120,17 @@ jobs:
             echo "::error::Could not resolve an image digest (wallet='${WALLET_DIGEST}', manager='${MANAGER_DIGEST}')."
             exit 1
           fi
+          # Postgres is pinned by digest too: resolved now, written to versions.env and to the default
+          # in compose.yml (which serves installs whose .env predates POSTGRES_TAG), so the two agree.
+          PG_BASE="$(sed -n 's/^POSTGRES_TAG=//p' deploy/versions.env | sed 's/@.*//')"
+          PG_DIGEST="$(docker buildx imagetools inspect "postgres:${PG_BASE}" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+          case "$PG_DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *)
+            echo "::error::Could not resolve the digest of postgres:${PG_BASE} (got '${PG_DIGEST}')."
+            exit 1 ;;
+          esac
+          sed -i "s|^POSTGRES_TAG=.*|POSTGRES_TAG=${PG_BASE}@${PG_DIGEST}|" deploy/versions.env
+          sed -i "s|image: postgres:\${POSTGRES_TAG:-[^}]*}|image: postgres:\${POSTGRES_TAG:-${PG_BASE}@${PG_DIGEST}}|" deploy/compose.yml
+          grep -qF "image: postgres:\${POSTGRES_TAG:-${PG_BASE}@${PG_DIGEST}}" deploy/compose.yml
           sed -i "s|^DPM_WALLET_TAG=.*|DPM_WALLET_TAG=${WALLET_TAG}@${WALLET_DIGEST}|" deploy/versions.env
           sed -i "s|^DPM_WALLET_MANAGER_TAG=.*|DPM_WALLET_MANAGER_TAG=${MANAGER_TAG}@${MANAGER_DIGEST}|" deploy/versions.env
           sed -i "s|^RELEASE_VERSION=.*|RELEASE_VERSION=${MANAGER_TAG}|" deploy/versions.env

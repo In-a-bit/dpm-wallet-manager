@@ -75,6 +75,7 @@ out="$(run "$d1" 2>&1)"; rc=$?
 check "correct SHA256SUMS exits 0" '[ $rc -eq 0 ]'
 check "files written" '[ -f "$d1/compose.yml" ] && [ -f "$d1/versions.env" ] && [ -x "$d1/dpm-custody" ]'
 check ".env has version from versions.env" 'grep -qx "DPM_CUSTODY_VERSION=9.9.9" "$d1/.env"'
+check ".env pins the Postgres image from versions.env" 'grep -qx "POSTGRES_TAG=$(sed -n "s/^POSTGRES_TAG=//p" "$rel/versions.env")" "$d1/.env"'
 check ".env has password and tags" 'grep -q "^POSTGRES_PASSWORD=.\{32\}$" "$d1/.env" && grep -q "^DPM_WALLET_TAG=" "$d1/.env"'
 check "NO_START: no compose up" '! grep -q " up " "$DOCKER_LOG"'
 
@@ -245,7 +246,7 @@ if command -v docker >/dev/null 2>&1 && [ -x /usr/bin/docker ]; then
   if command -v python3 >/dev/null 2>&1 &&
     PATH="/usr/bin:/bin:/usr/local/bin" DPM_WALLET_TAG=1 DPM_WALLET_MANAGER_TAG=1 POSTGRES_PASSWORD=x \
       docker compose -f "$HERE/compose.yml" config --format json >"$T/cfg.json" 2>/dev/null; then
-    if python3 - "$T/cfg.json" <<'PY'
+    if python3 - "$T/cfg.json" "$HERE/versions.env" <<'PY'
 import json, sys
 svc = json.load(open(sys.argv[1]))["services"]
 users = {}
@@ -265,12 +266,17 @@ oneshot = [n for n, s in svc.items() if s.get("restart") != "unless-stopped"]
 # The services that read the volumes start only once setup has migrated them.
 waits = [n for n in ("dpm-wallet", "dpm-wallet-manager")
          if svc[n]["depends_on"].get("setup", {}).get("condition") != "service_healthy"]
+# Postgres is the pinned Debian image; with no POSTGRES_TAG in .env the compose default is the very
+# reference versions.env carries, so an install that predates the variable still gets it.
+versions = dict(l.strip().split("=", 1) for l in open(sys.argv[2]) if "=" in l and not l.startswith("#"))
+pg = svc["postgres"]["image"]
+bad_pg = not (pg == "postgres:" + versions["POSTGRES_TAG"] and "-trixie@sha256:" in pg and "alpine" not in pg)
 # Only setup (and postgres) holds the database superuser; the services get their own roles from
 # the env files setup writes, and setup waits for postgres to create them.
 env_of = lambda n: svc[n].get("environment", {})
 leak = [n for n in ("dpm-wallet", "dpm-wallet-manager") if any(k.startswith("POSTGRES_") for k in env_of(n))]
 setup_waits_pg = svc["setup"]["depends_on"].get("postgres", {}).get("condition") == "service_healthy"
-sys.exit(1 if bad or oneshot or waits or leak or not setup_waits_pg or "healthcheck" not in svc["setup"] else 0)
+sys.exit(1 if bad or bad_pg or oneshot or waits or leak or not setup_waits_pg or "healthcheck" not in svc["setup"] else 0)
 PY
     then ok "compose: config volumes are mounted only by their consumers"
     else bad "compose: config volumes are mounted only by their consumers"; fi

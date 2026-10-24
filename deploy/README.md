@@ -624,6 +624,21 @@ to `.env` as `DPM_CUSTODY_VERSION`.
 signature, then check each file they downloaded against `SHA256SUMS`. Re-running the installer on an
 existing install does the same before it replaces `dpm-custody`.
 
+**Postgres.** The database runs the Debian image `postgres:18-trixie`, pinned by digest like the
+app images: `versions.env` carries `POSTGRES_TAG`, the installer writes it to `.env`, an upgrade
+moves it, and `compose.yml` has the same reference as the default for an install whose `.env`
+predates it. The release workflow re-resolves the digest and writes it to both. Earlier versions
+used `postgres:18-alpine`. Alpine's C library (musl) sorts text by code point and Debian's (glibc)
+by the locale, so an install moved across has text indexes in the wrong order, which makes lookups
+miss rows that are there. The first time setup starts on the new image (the upgrade does it
+before the services start) it rebuilds the indexes of every database (`REINDEX DATABASE`; a few
+seconds for a small install, during which old services may see a brief lock), and records the C
+library it saw so it does not repeat. The Postgres data directory changes owner by itself (the
+image's entrypoint does it). Rolling back past this release puts the Alpine image back, whose
+sort order differs again: after such a rollback run `docker compose exec postgres psql -U dpm
+-d <db> -c 'REINDEX DATABASE <db>'` for `dpm_wallet` and `dpm_wallet_manager` (the next upgrade
+rebuilds them anyway).
+
 **Signing (ECDSA P-256).** CI signs `SHA256SUMS` with the private key stored as the repository
 secret `RELEASE_SIGNING_KEY`, and attaches `SHA256SUMS.sig` (DER) to the release; before attaching, it
 checks the signature against the public key embedded in `install.sh`, so a wrong key fails the
@@ -1069,6 +1084,7 @@ None of these start real containers or touch a platform.
 ```sh
 bash deploy/test/install.test.sh     # install.sh: checksums and signatures, options (name, port), re-runs
 bash deploy/test/upgrade.test.sh     # dpm-custody upgrade and rollback, every failure path
+bash deploy/test/postgres-switch.test.sh   # real Docker: Alpine volume -> pinned Debian Postgres -> setup migrate repairs the indexes
 
 # install.ps1, under PowerShell 7 in a container (or `pwsh -File …` where PowerShell is installed)
 docker run --rm -v "$PWD:/repo:ro" mcr.microsoft.com/powershell:lts-7.4-ubuntu-22.04 \

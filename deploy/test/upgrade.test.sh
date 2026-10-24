@@ -69,7 +69,7 @@ case "$args" in
     ;;
   *" pull"*)
     [ -n "${FAIL_PULL:-}" ] && { echo "pull failed" >&2; exit 1; }
-    echo "at-pull compose=$(head -n 1 compose.yml) prev=$([ -e compose.yml.prev ] && echo yes || echo no) tag=${DPM_WALLET_MANAGER_TAG:-}" >>"$EVENTS"
+    echo "at-pull compose=$(head -n 1 compose.yml) prev=$([ -e compose.yml.prev ] && echo yes || echo no) tag=${DPM_WALLET_MANAGER_TAG:-} pg=${POSTGRES_TAG:-}" >>"$EVENTS"
     ;;
   *" run "*"dist/setup/main migrate"*)
     echo "at-migrate compose=$(head -n 1 compose.yml) marker=$([ -e upgrade.inprogress ] && echo yes || echo no)" >>"$EVENTS"
@@ -155,6 +155,7 @@ make_release() {
   mkdir -p "$r"
   printf '# compose %s\nservices: {}\n' "$2" >"$r/compose.yml"
   printf 'DPM_WALLET_TAG=%s\nDPM_WALLET_MANAGER_TAG=%s\nRELEASE_VERSION=%s\nMIN_UPGRADE_FROM=%s\n' "$4" "$5" "$2" "$3" >"$r/versions.env"
+  if [ -n "${PG_TAG_REL:-}" ]; then printf 'POSTGRES_TAG=%s\n' "$PG_TAG_REL" >>"$r/versions.env"; fi
   { cat "$HERE/dpm-custody"; echo "# release $2"; } >"$r/dpm-custody"
   (cd "$r" && sha256 compose.yml versions.env dpm-custody >SHA256SUMS)
   sign_release "$r"
@@ -339,6 +340,23 @@ out="$(run "$d" cleanup-legacy --yes)"; rc=$?
 check "7c cleanup-legacy --yes mounts the legacy volume writable and empties it" '[ $rc -eq 0 ] && has "$d.events" "run --rm --no-deps -T -v config:/legacy-config:rw setup node dist/setup/main cleanup-legacy"'
 out="$(run "$d" cleanup-legacy)"; rc=$?
 check "7c cleanup-legacy without a terminal or --yes refuses and runs nothing" '[ $rc -ne 0 ] && ! has "$d.events" "cleanup-legacy$"'
+
+# 7p. a release that pins Postgres: pulled with it, written to .env, and put back by a rollback
+PGREF="18-trixie@sha256:$(printf 'd%.0s' $(seq 64))"
+PG_TAG_REL="$PGREF" make_release "$T/rel-pg" 1.1.0 "" "0.2.0" "1.1.0@$D1"
+d="$T/c7p"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(REL_URL="file://$T/rel-pg" run "$d" upgrade --yes)"; rc=$?
+check "7p postgres: the new image is pulled with the release's POSTGRES_TAG" '[ $rc -eq 0 ] && has "$d.events" "pg=$PGREF"'
+check "7p postgres: .env carries it" 'grep -qx "POSTGRES_TAG=$PGREF" "$d/.env"'
+out="$(run "$d" rollback)"; rc=$?
+check "7p postgres: a rollback removes it again (the old release had none)" '[ $rc -eq 0 ] && ! grep -q "^POSTGRES_TAG=" "$d/.env"'
+d="$T/c7q"; make_install "$d" 1.0.0 0.1.0 1.0.0; echo "POSTGRES_TAG=18-alpine" >>"$d/.env"; cp "$d/.env" "$d.orig..env"
+out="$(REL_URL="file://$T/rel-pg" run "$d" upgrade --yes)"; out="$(run "$d" rollback)"
+check "7p postgres: a rollback restores the previous POSTGRES_TAG" 'grep -qx "POSTGRES_TAG=18-alpine" "$d/.env"'
+PG_TAG_REL="not a tag!" make_release "$T/rel-badpg" 1.1.0 "" "0.2.0" "1.1.0@$D1"
+d="$T/c7r"; make_install "$d" 1.0.0 0.1.0 1.0.0
+out="$(REL_URL="file://$T/rel-badpg" run "$d" upgrade --yes)"; rc=$?
+check "7p postgres: an invalid POSTGRES_TAG in the release is refused, nothing changed" '[ $rc -ne 0 ] && echo "$out" | grep -q "invalid POSTGRES_TAG" && unchanged "$d" && ! has "$d.events" " pull"'
 
 # 8. unhealthy after up for the whole gate: automatic rollback
 d="$T/c8"; make_install "$d" 1.0.0 0.1.0 1.0.0

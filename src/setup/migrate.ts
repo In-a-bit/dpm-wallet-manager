@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MANAGER_ENV_FILE, READY_MARKER, WALLET_ENV_FILE } from "./config-writer";
+import { reindexForNewCollation } from "./collation";
 import { convertExistingInstall, type Connect } from "./db-roles";
 import { scrubKeys } from "./key-lifecycle";
 import { SetupStateStore } from "./state";
@@ -44,6 +45,15 @@ type Migration = {
 /** In order: a later step may rely on an earlier one (the roles rewrite the copied env files). */
 export const MIGRATIONS: readonly Migration[] = [
   { name: "split-config-volumes", run: splitConfigVolumes },
+  {
+    // Before anything uses the database again: an install moved to the Debian Postgres image has
+    // text indexes in the wrong order until they are rebuilt (collation.ts).
+    name: "postgres-collation",
+    run: async (dirs, say, services) => {
+      if (!services.connect) return say("no administrator access; not checked");
+      await reindexForNewCollation(services.connect, dirs.state, say);
+    },
+  },
   {
     name: "database-roles",
     run: (dirs, say, services) =>

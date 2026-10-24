@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:18-alpine
+    image: postgres:18-trixie
     # Fallback defaults match `.env.example`, so a recreate without the .env loaded still binds
     # the public port at 5441 — 5440 belongs to dpm-wallet's own compose file.
     environment:

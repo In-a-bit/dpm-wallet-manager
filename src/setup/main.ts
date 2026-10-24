@@ -211,9 +211,10 @@ function adminConnect(): Connect | undefined {
 /** Waits for the server to accept connections: setup can start before Postgres does. */
 function connectAs(user: string, password: string): Connect {
   const host = env("SETUP_POSTGRES_HOST", "postgres");
+  const port = Number(env("SETUP_POSTGRES_PORT", "5432"));
   return async (database) => {
     for (let attempt = 1; ; attempt++) {
-      const client = new Client({ host, port: 5432, user, password, database });
+      const client = new Client({ host, port, user, password, database });
       try {
         await client.connect();
         return client;

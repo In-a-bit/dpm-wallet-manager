@@ -267,7 +267,7 @@ b/nekspBGcW/P3518k+tqluQyqTRi8Y7R7jA6zxSdQwNYVFy41HokCfzCQ==
 REPO_RELEASES="https://github.com/In-a-bit/dpm-wallet-manager/releases"
 STAGE="upgrade.tmp"
 # The .env keys an upgrade changes, and the only ones a rollback puts back.
-VERSION_KEYS="DPM_WALLET_TAG DPM_WALLET_MANAGER_TAG DPM_CUSTODY_VERSION"
+VERSION_KEYS="DPM_WALLET_TAG DPM_WALLET_MANAGER_TAG POSTGRES_TAG DPM_CUSTODY_VERSION"
 UPGRADE_PHASE=""
 # upgrade.log keeps every message of an upgrade or rollback, plus the Docker output, so the
 # outcome survives a closed terminal. upgrade.inprogress marks a switch that has not finished.
@@ -770,7 +770,7 @@ prune_images() {
 }
 
 cmd_upgrade() {
-  local want="" yes=0 arg installed tag base target min new_wallet new_manager answer
+  local want="" yes=0 arg installed tag base target min new_wallet new_manager new_postgres answer
   for arg in "$@"; do
     case "$arg" in
       --yes | -y) yes=1 ;;
@@ -810,9 +810,13 @@ cmd_upgrade() {
   min="$(env_value MIN_UPGRADE_FROM "$STAGE/versions.env")"
   new_wallet="$(env_value DPM_WALLET_TAG "$STAGE/versions.env")"
   new_manager="$(env_value DPM_WALLET_MANAGER_TAG "$STAGE/versions.env")"
+  # Empty for a release that predates the pinned Postgres: compose.yml's own default applies.
+  new_postgres="$(env_value POSTGRES_TAG "$STAGE/versions.env")"
   valid_version "$target" || stop_unchanged "The release's versions.env has no valid RELEASE_VERSION (\"$target\")."
   valid_tag "$new_wallet" && valid_tag "$new_manager" ||
     stop_unchanged "The release's versions.env has invalid image tags (\"$new_wallet\", \"$new_manager\")."
+  [ -z "$new_postgres" ] || valid_tag "$new_postgres" ||
+    stop_unchanged "The release's versions.env has an invalid POSTGRES_TAG (\"$new_postgres\")."
   [ -z "$min" ] || valid_version "$min" || stop_unchanged "The release's versions.env has an invalid MIN_UPGRADE_FROM (\"$min\")."
   if [ -n "$want" ] && [ "${want#v}" != "${target#v}" ]; then
     stop_unchanged "Asked for $want, but the release found at $base is $target."
@@ -870,7 +874,7 @@ cmd_upgrade() {
 
   # 5. Pull the new images while the old ones keep running.
   say "Downloading the new images ..."
-  if ! DPM_WALLET_TAG="$new_wallet" DPM_WALLET_MANAGER_TAG="$new_manager" \
+  if ! DPM_WALLET_TAG="$new_wallet" DPM_WALLET_MANAGER_TAG="$new_manager" POSTGRES_TAG="$new_postgres" \
     docker compose --env-file .env -f "$STAGE/compose.yml" --project-directory . pull >>"$UPGRADE_LOG" 2>&1; then
     stop_unchanged "Could not download the new images (details in upgrade.log)." \
       "Check the internet connection, then try again. The backup is in $(pwd)/$BACKUP_DIR."
@@ -889,6 +893,7 @@ cmd_upgrade() {
     install_file "$STAGE/versions.env" versions.env 644 &&
     set_env DPM_WALLET_TAG "$new_wallet" &&
     set_env DPM_WALLET_MANAGER_TAG "$new_manager" &&
+    { [ -z "$new_postgres" ] || set_env POSTGRES_TAG "$new_postgres"; } &&
     set_env DPM_CUSTODY_VERSION "$target" &&
     install_file "$STAGE/dpm-custody" dpm-custody 755 &&
     run_migrate "$target" &&

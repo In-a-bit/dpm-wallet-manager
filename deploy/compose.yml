@@ -52,7 +52,12 @@ x-healthcheck: &healthcheck
 services:
   postgres:
     <<: *logging
-    image: postgres:18-alpine
+    # Debian (glibc) rather than Alpine (musl): musl has no real locale support, so text indexes
+    # sort by code point there and by the locale's rules here. The reference is pinned by digest;
+    # .env carries POSTGRES_TAG (written by the installer, moved by an upgrade) and this default
+    # applies to an install whose .env predates it. Moving an Alpine install onto this image needs
+    # its text indexes rebuilt: `setup migrate` does that once (src/setup/collation.ts).
+    image: postgres:${POSTGRES_TAG:-18-trixie@sha256:edb0c08dc33befd0262ab3b5cf1c4f3f8cfd8b09e88c05b45adee29d6761ddb6}
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-dpm}

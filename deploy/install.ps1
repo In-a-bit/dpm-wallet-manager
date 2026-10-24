@@ -193,7 +193,7 @@ function New-Secret($chars, $length) {
 }
 
 function Write-InstallEnv {
-  $versions = Get-Content (Join-Path $Dir "versions.env") | Where-Object { $_ -match '^DPM_WALLET(_MANAGER)?_TAG=' }
+  $versions = Get-Content (Join-Path $Dir "versions.env") | Where-Object { $_ -match '^(DPM_WALLET(_MANAGER)?|POSTGRES)_TAG=' }
   $version = (Get-Content (Join-Path $Dir "versions.env") | Where-Object { $_ -match '^RELEASE_VERSION=.+' } | Select-Object -First 1) -replace '^RELEASE_VERSION=', ''
   if (-not $version) { $version = "unknown" }
   $lines = @(

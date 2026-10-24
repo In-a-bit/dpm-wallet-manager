@@ -177,7 +177,7 @@ write_env() {
     say "MANAGER_BIND=127.0.0.1"
     say "MANAGER_PORT=$MANAGER_PORT"
     say "MANAGER_PUBLIC_URL=http://localhost:$MANAGER_PORT"
-    grep -E '^DPM_WALLET(_MANAGER)?_TAG=' "$DIR/versions.env"
+    grep -E '^(DPM_WALLET(_MANAGER)?|POSTGRES)_TAG=' "$DIR/versions.env"
     version="$(sed -n 's/^RELEASE_VERSION=//p' "$DIR/versions.env" | head -n 1)"
     say "DPM_CUSTODY_VERSION=${version:-unknown}"
   } >"$DIR/.env"
