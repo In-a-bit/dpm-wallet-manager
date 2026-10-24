@@ -308,6 +308,13 @@ Upgrade, roll back and back up each install on its own.
 
 ## Upgrading
 
+> **Upgrading from v0.2.2: re-run the installer first** (Step 1; it only replaces the `dpm-custody`
+> script and keeps your data). This release moves Postgres from the Alpine image to Debian and the
+> text indexes must be rebuilt on the way in and, if you ever roll back, on the way out. The v0.2.2
+> `dpm-custody` cannot do the rollback half: if you roll back with it, Postgres comes back on
+> wrongly ordered indexes (lookups can miss rows). The current `dpm-custody` stops the services,
+> rebuilds the indexes and only then starts them again.
+
 ```sh
 ~/dpm-custody/dpm-custody upgrade            # the newest release
 ~/dpm-custody/dpm-custody upgrade 1.4.0      # a given release
