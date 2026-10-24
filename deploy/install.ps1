@@ -37,14 +37,12 @@ $Name = if ($env:DPM_CUSTODY_NAME) { $env:DPM_CUSTODY_NAME } else { "dpm-custody
 $PublicUrl = if ($env:DPM_CUSTODY_PUBLIC_URL) { $env:DPM_CUSTODY_PUBLIC_URL.TrimEnd("/") } else { "http://localhost:$ManagerPort" }
 
 # >>> release public key >>>
-# PLACEHOLDER: no private key exists for this one. Replace it with the real key (see
-# scripts/release-signing-key.sh) in install.sh, install.ps1 and dpm-custody; until then no
-# release can be verified, so none can be installed or upgraded to.
-$ReleaseKeyIsPlaceholder = $true
+# Embedded by scripts/embed-release-key.sh. To rotate, run that script again.
+$ReleaseKeyIsPlaceholder = $false
 $ReleasePubKey = @'
 -----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEAmHIZwcph401VXfbdEQCsT5VUeke
-b/nekspBGcW/P3518k+tqluQyqTRi8Y7R7jA6zxSdQwNYVFy41HokCfzCQ==
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEu2waY43CU5WFsCnWOmwgwzgeW0Cn
+sv8RAvdnuJHZ1eoOoiT72WnZs210Ky8qdhnwFMKgQ2f/mmOH2fFlrFNBzg==
 -----END PUBLIC KEY-----
 '@
 # <<< release public key <<<
