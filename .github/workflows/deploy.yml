@@ -40,7 +40,19 @@ env:
 
 jobs:
   manage:
+    # Only the branches and tags that are released from may deploy, and the job runs under the
+    # GitHub Environment of the same name so its protection rules (branch policy, reviewers) apply.
+    if: >-
+      github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' ||
+      github.ref == 'refs/heads/stage' || startsWith(github.ref, 'refs/heads/release/') ||
+      startsWith(github.ref, 'refs/tags/v')
+    environment: ${{ inputs.environment }}
     runs-on: fast-gke
+    # Inputs reach shell steps only through these variables, never by expression interpolation inside `run:`.
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      INSTANCES_INPUT: ${{ inputs.instances }}
+      ACTION: ${{ inputs.action }}
     concurrency:
       group: ${{ github.workflow }}-${{ inputs.environment }}
       cancel-in-progress: false
@@ -60,7 +72,7 @@ jobs:
       # and the `app` label, so a reader (and `grep`) should find them here.
       - name: Set instance list
         run: |
-          case "${{ inputs.instances }}" in
+          case "$INSTANCES_INPUT" in
             all)        INSTANCES="dpm-wallet-manager-shared dpm-wallet-manager-segregated" ;;
             shared)     INSTANCES="dpm-wallet-manager-shared" ;;
             segregated) INSTANCES="dpm-wallet-manager-segregated" ;;
@@ -75,7 +87,6 @@ jobs:
           ACTOR: ${{ github.actor }}
           ORG_ID: ${{ secrets.ORG_ID }}
           ORG_NAME: In-a-bit
-          ENVIRONMENT: ${{ inputs.environment }}
         run: |
           PROD_TEAM_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           https://api.github.com/orgs/$ORG_NAME/teams/prod-deployers | jq -r .id)
@@ -93,7 +104,7 @@ jobs:
           fi
 
       - name: Send Slack Notification - Start
-        uses: rtCamp/action-slack-notify@v2
+        uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2
         env:
           SLACK_CHANNEL: deployments
           SLACK_WEBHOOK: ${{ secrets.DEPLOYMENTS_SLACK_WEBHOOK_URL }}
@@ -103,7 +114,7 @@ jobs:
 
       - name: Checkout env files
         if: inputs.action == 'deploy' || inputs.action == 'update-secret'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: In-a-bit/prediction-env
           token: ${{ secrets.GH_ARC_PAT }}
@@ -112,7 +123,7 @@ jobs:
 
       - name: Checkout gke manifests
         if: inputs.action == 'deploy'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: In-a-bit/prediction-tf-config
           token: ${{ secrets.GH_ARC_PAT }}
@@ -120,23 +131,23 @@ jobs:
           path: prediction-tf-config
 
       - name: Authenticate with Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           credentials_json: ${{ secrets.CI_SA_KEY }}
 
       - name: Authenticate against GKE cluster, set NS
         run: |
-          gcloud container clusters get-credentials "${{ inputs.environment }}-cluster" --region europe-west1 --project "${{ inputs.environment }}-dpm" && kubectl config set-context --current --namespace apps
+          gcloud container clusters get-credentials "${ENVIRONMENT}-cluster" --region europe-west1 --project "${ENVIRONMENT}-dpm" && kubectl config set-context --current --namespace apps
 
       # The image is built and published by build_and_push.yml. Deploying points the
       # environment's <env>-latest tag at the branch's image, which the manifests pull.
       - name: Set up Docker Buildx
         if: inputs.action == 'deploy'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to GitHub Container Registry
         if: inputs.action == 'deploy'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -145,15 +156,15 @@ jobs:
       - name: Check the tag availability in GHCR
         if: inputs.action == 'deploy'
         run: |
-          docker buildx imagetools inspect "${{ env.IMAGE }}:${{ env.BRANCH_NAME }}" > /dev/null \
-            || { echo "Image not found: ${{ env.IMAGE }}:${{ env.BRANCH_NAME }}"; exit 1; }
+          docker buildx imagetools inspect "${IMAGE}:${BRANCH_NAME}" > /dev/null \
+            || { echo "Image not found: ${IMAGE}:${BRANCH_NAME}"; exit 1; }
 
       - name: Point the environment tag at the image
         if: inputs.action == 'deploy'
         run: |
           docker buildx imagetools create \
-            --tag "${{ env.IMAGE }}:${{ inputs.environment }}-latest" \
-            "${{ env.IMAGE }}:${{ env.BRANCH_NAME }}"
+            --tag "${IMAGE}:${ENVIRONMENT}-latest" \
+            "${IMAGE}:${BRANCH_NAME}"
 
       - name: Create or update secrets
         if: inputs.action == 'deploy' || inputs.action == 'update-secret'
@@ -165,7 +176,7 @@ jobs:
           for app in $INSTANCES; do
             echo "--- $app ---"
             kubectl create secret generic ${app}-dot-env-secret \
-              --from-file=.env=prediction-env/${{ inputs.environment }}/${app}.env \
+              --from-file=.env=prediction-env/${ENVIRONMENT}/${app}.env \
               --dry-run=client -o yaml | kubectl apply -f -
           done
 
@@ -174,7 +185,7 @@ jobs:
         run: |
           for app in $INSTANCES; do
             echo "--- $app ---"
-            kubectl apply -n apps -f prediction-tf-config/environments/${{ inputs.environment }}/k8s/${app}.yml
+            kubectl apply -n apps -f prediction-tf-config/environments/${ENVIRONMENT}/k8s/${app}.yml
           done
 
       - name: Restart deployments
@@ -197,7 +208,10 @@ jobs:
       # time a rollout is judged failed, the new schema may already be committed.
       # An automatic rollback would run the old image against the new schema and fail.
       # We make this hazard visible here instead of hiding it.
-      - name: Dump logs on failure
+      # The repo is public and so are its Actions logs, so this prints state, not logs: pod status,
+      # events, and only the last 50 error-level lines (the service logs JSON, one line per entry).
+      # Full logs stay in the cluster, for someone with kubectl access.
+      - name: Show pod status on failure
         if: failure() && (inputs.action == 'deploy' || inputs.action == 'update-secret')
         run: |
           echo "WARNING: this deployment migrates its schema on container start, forward-only."
@@ -205,14 +219,17 @@ jobs:
           echo "Do NOT 'kubectl rollout undo' without checking: the older image would run against the newer schema."
           for app in $INSTANCES; do
             echo "--- $app ---"
-            kubectl -n apps describe deployment $app || true
-            kubectl -n apps logs -l app=$app --all-containers=true --tail=-1 || true
+            kubectl -n apps get pods -l app=$app -o wide || true
+            kubectl -n apps get events --field-selector type!=Normal --sort-by=.lastTimestamp 2>&1 \
+              | grep -F "$app" || true
+            kubectl -n apps logs -l app=$app --all-containers=true --tail=500 2>&1 \
+              | grep -F '"level":"error"' | tail -n 50 || true
           done
 
       - name: Perform scale action
         if: inputs.action == 'stop' || inputs.action == 'start'
         run: |
-          if [[ "${{ inputs.action }}" == "stop" ]]; then REPLICAS=0; else REPLICAS=1; fi
+          if [[ "$ACTION" == "stop" ]]; then REPLICAS=0; else REPLICAS=1; fi
           for app in $INSTANCES; do
             echo "--- $app ---"
             if kubectl get deployment $app -n apps > /dev/null 2>&1; then
@@ -230,7 +247,7 @@ jobs:
 
       - name: Send Slack Notification - End
         if: always()
-        uses: rtCamp/action-slack-notify@v2
+        uses: rtCamp/action-slack-notify@33ca3be66c6f378fe1610fd1d5258632dbed5e58 # v2
         env:
           SLACK_CHANNEL: deployments
           SLACK_WEBHOOK: ${{ secrets.DEPLOYMENTS_SLACK_WEBHOOK_URL }}

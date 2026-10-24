@@ -7,10 +7,12 @@
 # in the service, so it is visible in the image and can be skipped by overriding the command —
 # `docker run … node dist/main` starts without touching the schema.
 
-ARG NODE_VERSION=22
+# Pinned by index digest so a rebuild cannot silently pick up a different base. Dependabot (docker
+# ecosystem, .github/dependabot.yml) proposes the bumps; update the tag and digest together.
+ARG NODE_IMAGE=node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914
 
 # ── Stage 1: build ───────────────────────────────────────────────────────────
-FROM node:${NODE_VERSION}-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -38,7 +40,7 @@ RUN npm --prefix ui run build
 RUN npm prune --omit=dev
 
 # ── Stage 2: runtime ─────────────────────────────────────────────────────────
-FROM node:${NODE_VERSION}-alpine AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 RUN apk add --no-cache tini
 
