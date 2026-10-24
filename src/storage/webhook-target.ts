@@ -9,7 +9,11 @@ import { isIP } from "node:net";
  * private ranges stay allowed, since a receiver on the same network is a legitimate target.
  */
 export function isForbiddenWebhookAddress(address: string): boolean {
-  const host = address.toLowerCase().replace(/^\[|\]$/g, "");
+  // A trailing dot is the same name to a resolver (`metadata.google.internal.`).
+  const host = address
+    .toLowerCase()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "");
   const version = isIP(host);
   if (version === 4) return forbiddenIpv4(host);
   if (version === 6) return forbiddenIpv6(host);
@@ -47,8 +51,16 @@ function forbiddenIpv6(address: string): boolean {
   ) {
     return forbiddenIpv4(embedded());
   }
-  // fe80::/10 link-local.
-  if (bytes[0] === 0xfe && ((bytes[1] ?? 0) & 0xc0) === 0x80) return true;
+  // SIIT, ::ffff:0:a.b.c.d: the IPv4 address is the last 32 bits behind an ::ffff:0:0 prefix.
+  if (zero(0, 8) && bytes[8] === 0xff && bytes[9] === 0xff && zero(10, 12)) {
+    return forbiddenIpv4(embedded());
+  }
+  // 6to4, 2002::/16: the IPv4 address is bits 16-47.
+  if (bytes[0] === 0x20 && bytes[1] === 0x02) {
+    return forbiddenIpv4(`${bytes[2]}.${bytes[3]}.${bytes[4]}.${bytes[5]}`);
+  }
+  // fe80::/10 link-local, and the deprecated fec0::/10 site-local.
+  if (bytes[0] === 0xfe && ((bytes[1] ?? 0) & 0x80) === 0x80) return true;
   // fd00:ec2::/32, the AWS IPv6 metadata range.
   return bytes[0] === 0xfd && bytes[1] === 0x00 && bytes[2] === 0x0e && bytes[3] === 0xc2;
 }

@@ -39,7 +39,14 @@ describe("assertWebhookTarget through a URL string", () => {
     "http://[::a9fe:a9fe]/",
     "http://[64:ff9b::169.254.169.254]/",
     "http://[64:ff9b::a9fe:a9fe]/",
+    "http://[::ffff:0:169.254.169.254]/",
+    "http://[::ffff:0:a9fe:a9fe]/",
+    "http://[2002:a9fe:a9fe::1]/",
+    "http://[2002:a9fe:a9fe::]/",
+    "http://[fec0::1]/",
     "http://[fe80::1]/",
+    "http://metadata.google.internal./",
+    "http://METADATA.GOOGLE.INTERNAL/",
     "http://[fd00:ec2::254]/",
     "http://[FD00:0EC2:0:0:0:0:0:254]/",
     "http://169.254.169.254/",
@@ -50,12 +57,15 @@ describe("assertWebhookTarget through a URL string", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it.each(["http://[::ffff:93.184.216.34]/", "http://[::1]/", "http://[2606:4700::1111]/"])(
-    "allows %s",
-    async (url) => {
-      await expect(assertWebhookTarget(url, jest.fn())).resolves.toBeUndefined();
-    },
-  );
+  it.each([
+    "http://[::ffff:93.184.216.34]/",
+    "http://[::1]/",
+    "http://[2606:4700::1111]/",
+    "http://[2002:5db8:d822::1]/",
+    "http://hooks.example.com./",
+  ])("allows %s", async (url) => {
+    await expect(assertWebhookTarget(url, async () => ["93.184.216.34"])).resolves.toBeUndefined();
+  });
 });
 
 describe("assertWebhookTarget", () => {
