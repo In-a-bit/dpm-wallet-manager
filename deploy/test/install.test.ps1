@@ -50,6 +50,15 @@ esac
 exit 0
 '@
 chmod +x (Join-Path $Bin "docker")
+# icacls shim (Windows only in real life): logs its arguments; ICACLS_FAIL=1 makes it fail.
+Set-Content (Join-Path $Bin "icacls") @'
+#!/bin/sh
+echo "$* size=$(wc -c <"$1")" >>"$ICACLS_LOG"
+[ "$ICACLS_FAIL" = 1 ] && exit 5
+exit 0
+'@
+chmod +x (Join-Path $Bin "icacls")
+$env:ICACLS_LOG = Join-Path $T "icacls.log"
 $env:PATH = "$Bin$([System.IO.Path]::PathSeparator)$env:PATH"
 $env:DOCKER_LOG = Join-Path $T "docker.log"
 
@@ -67,6 +76,7 @@ function Invoke-Installer($dir, [hashtable]$vars = @{}, $script = (Join-Path $He
     DPM_CUSTODY_DIR = $dir; DPM_CUSTODY_RELEASES_URL = "file://$Rel"; DPM_CUSTODY_NO_START = "1"
     DPM_CUSTODY_MANAGER_PORT = "$Port"; DPM_CUSTODY_NAME = $null; DPM_CUSTODY_SOURCE = $null
     EXISTING_NAME = $null; CLAIMED_PORT = $null; SETUP_PLATFORM_URL = $null; SETUP_BUILDER_KEY = $null
+    DPM_CUSTODY_ASSUME_WINDOWS = $null; ICACLS_FAIL = $null; DPM_CUSTODY_TEST_SID = $null
   }
   foreach ($k in $vars.Keys) { $all[$k] = $vars[$k] }
   foreach ($k in $all.Keys) { [Environment]::SetEnvironmentVariable($k, $all[$k]) }
@@ -84,6 +94,25 @@ Check "new install: compose.yml, versions.env and dpm-custody written" ((Test-Pa
 Check "new install: .env has the project name" ($envFile -contains "COMPOSE_PROJECT_NAME=dpm-custody-shared")
 Check "new install: .env has the port and public URL" (($envFile -contains "MANAGER_PORT=$Port") -and ($envFile -contains "MANAGER_PUBLIC_URL=http://localhost:$Port"))
 Check "new install: .env has no BOM" ([System.IO.File]::ReadAllBytes("$d/.env")[0] -ne 0xEF)
+
+# 1b. the .env is restricted to the current user, on Windows only
+$d = Join-Path $T "i1b"
+Remove-Item $env:ICACLS_LOG -ErrorAction SilentlyContinue
+$r = Invoke-Installer $d
+Check "not Windows: icacls is not called" (-not (Test-Path $env:ICACLS_LOG))
+$d = Join-Path $T "i1c"
+$r = Invoke-Installer $d @{ DPM_CUSTODY_ASSUME_WINDOWS = "1"; DPM_CUSTODY_TEST_SID = "S-1-5-21-1-2-3-1001" }
+$acl = Get-Content $env:ICACLS_LOG -ErrorAction SilentlyContinue
+Check "windows: icacls drops inheritance and grants only the current user's SID, on .env" (($r.Code -eq 0) -and ($acl -match [regex]::Escape("$d/.env /inheritance:r /grant:r *S-1-5-21-1-2-3-1001:F")))
+Check "windows: the .env is empty when it is locked down, and holds the settings afterwards" (($acl -match "size=0$") -and ((Get-Content "$d/.env") -contains "COMPOSE_PROJECT_NAME=dpm-custody"))
+$d = Join-Path $T "i1d"
+$r = Invoke-Installer $d @{ DPM_CUSTODY_ASSUME_WINDOWS = "1"; DPM_CUSTODY_TEST_SID = "S-1-5-21-1-2-3-1001"; ICACLS_FAIL = "1" }
+Check "windows: a failing icacls stops the install, removes the .env and says a rerun is safe" (($r.Code -ne 0) -and (-not (Test-Path "$d/.env")) -and ($r.Out -match "Could not restrict") -and (($r.Out -replace '\s+', ' ') -match "running the installer again is safe"))
+$d2 = Join-Path $T "i1e"
+$r2 = Invoke-Installer $d2 @{ DPM_CUSTODY_ASSUME_WINDOWS = "1" }
+Check "windows: an error looking up the SID also removes the empty .env" (($r2.Code -ne 0) -and (-not (Test-Path "$d2/.env")))
+$r = Invoke-Installer $d @{ DPM_CUSTODY_ASSUME_WINDOWS = "1"; DPM_CUSTODY_TEST_SID = "S-1-5-21-1-2-3-1001" }
+Check "windows: running it again over the incomplete folder succeeds" (($r.Code -eq 0) -and (Test-Path "$d/.env"))
 
 # 2. defaults: name dpm-custody, port 3000 (when free here)
 $d = Join-Path $T "i2"

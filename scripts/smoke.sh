@@ -19,18 +19,30 @@ fail() { printf '\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
 field() { node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const o=JSON.parse(d||"{}");const v=process.argv[1].split(".").reduce((a,k)=>a?.[k],o);console.log(v??"")})' "$1"; }
 
+# curl_key <key> <curl args...>: the API key goes to curl as a config on stdin, never as an
+# argument, so it is not visible in `ps` or /proc/*/cmdline.
+curl_key() {
+  local key="$1"
+  shift
+  # A key is one token; anything else (a line break, a quote) would be read as more curl config.
+  key="$(printf '%s' "$key" | tr -d '[:cntrl:]')"
+  key="${key//\"/}"
+  key="${key//\\/}"
+  printf 'header = "X-API-Key: %s"\n' "$key" | curl --config - "$@"
+}
+
 call() { # method path [body] [key]
   local method="$1" path="$2" body="${3:-}" key="${4:-$ADMIN_KEY}"
   if [ -n "$body" ]; then
-    curl -sS -X "$method" "$API$path" -H "X-API-Key: $key" -H 'Content-Type: application/json' -d "$body"
+    curl_key "$key" -sS -X "$method" "$API$path" -H 'Content-Type: application/json' -d "$body"
   else
-    curl -sS -X "$method" "$API$path" -H "X-API-Key: $key"
+    curl_key "$key" -sS -X "$method" "$API$path"
   fi
 }
 status() { # method path [body] [key]
   local method="$1" path="$2" body="${3:-}" key="${4:-$ADMIN_KEY}"
-  curl -sS -o /dev/null -w '%{http_code}' -X "$method" "$API$path" \
-    -H "X-API-Key: $key" -H 'Content-Type: application/json' ${body:+-d "$body"}
+  curl_key "$key" -sS -o /dev/null -w '%{http_code}' -X "$method" "$API$path" \
+    -H 'Content-Type: application/json' ${body:+-d "$body"}
 }
 
 # ── 0. liveness ──────────────────────────────────────────────────────────────
@@ -44,7 +56,7 @@ if [ -z "${ADMIN_KEY:-}" ]; then
   # install that already has one has to hand its key over rather than be re-seeded.
   [ -n "$ADMIN_KEY" ] ||
     fail "this install already has API keys, so no new one was minted. Pass ADMIN_KEY=… (reveal it with POST /v1/api-keys/:id/reveal)."
-  ok "bootstrapped admin key ${ADMIN_KEY:0:21}…"
+  ok "bootstrapped an admin key (dpmm_…)"
 fi
 [ "$(call GET /api-keys/self | field role)" = "admin" ] || fail "ADMIN_KEY is not an admin key"
 ok "admin key authenticates"

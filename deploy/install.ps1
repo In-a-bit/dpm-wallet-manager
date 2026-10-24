@@ -207,7 +207,35 @@ function Write-InstallEnv {
     "MANAGER_PUBLIC_URL=http://localhost:$ManagerPort"
   ) + $versions + "DPM_CUSTODY_VERSION=$version"
   # UTF-8 without a BOM: Compose would read a BOM as part of the first variable's name.
-  [System.IO.File]::WriteAllLines((Join-Path $Dir ".env"), $lines, (New-Object System.Text.UTF8Encoding $false))
+  $envPath = Join-Path $Dir ".env"
+  # Created empty and locked down first, so the password is never in a file that other local users
+  # can read, not even for a moment.
+  [System.IO.File]::WriteAllBytes($envPath, [byte[]]@())
+  Protect-EnvFile $envPath
+  [System.IO.File]::WriteAllLines($envPath, $lines, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# Windows gives a new file the folder's inherited permissions, which usually include other local
+# users. .env holds the database password, so drop the inherited entries and leave the current
+# user alone with it. The grant names the user by SID (the leading `*`), which works whatever the
+# account is: local, domain, Microsoft or Azure AD, or SYSTEM. Windows only: elsewhere the file
+# mode is the platform's business. DPM_CUSTODY_ASSUME_WINDOWS=1 and DPM_CUSTODY_TEST_SID exist so
+# deploy/test/install.test.ps1 can exercise this on Linux.
+function Protect-EnvFile([string]$path) {
+  if (($env:OS -ne "Windows_NT") -and ($env:DPM_CUSTODY_ASSUME_WINDOWS -ne "1")) { return }
+  $why = $null
+  try {
+    $sid = if ($env:DPM_CUSTODY_TEST_SID) { $env:DPM_CUSTODY_TEST_SID } else { [Security.Principal.WindowsIdentity]::GetCurrent().User.Value }
+    icacls $path /inheritance:r /grant:r "*${sid}:F" | Out-Null
+    if ($LASTEXITCODE -ne 0) { $why = "icacls exited $LASTEXITCODE" }
+  } catch {
+    $why = $_.Exception.Message
+  }
+  if ($why) {
+    # An empty .env left behind would read as an existing install on the next run.
+    Remove-Item $path -Force -ErrorAction SilentlyContinue
+    Fail "Could not restrict $path to your user ($why), so the .env was removed: it holds the database password. The install folder is incomplete; running the installer again is safe."
+  }
 }
 
 # Refuses a name another install on this machine already uses: Docker would treat the two as one,
