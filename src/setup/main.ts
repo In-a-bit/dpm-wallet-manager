@@ -5,7 +5,11 @@ import { MANAGER_PORT, WALLET_PORT, writeInstallConfig } from "./config-writer";
 import { fetchHttp } from "./http";
 import { excerpt, Journal } from "./journal";
 import { liveStatus } from "./live-status";
+import { pipeline } from "node:stream/promises";
+
 import { Client } from "pg";
+
+import { BackupCryptoError, generateRecoveryKeyPair, opener, sealer } from "./backup-crypto";
 
 import { applyServiceRoles, type Connect } from "./db-roles";
 import { cleanupLegacy, runAll } from "./migrate";
@@ -26,6 +30,8 @@ import { SetupWorker } from "./worker";
  *                                 SETUP_BUILDER_KEY answer the first two questions (still checked)
  *   node dist/setup/main kit      print the backup kit again
  *   node dist/setup/main support  print the setup half of the support report
+ *   node dist/setup/main backup-seal | backup-open | backup-keygen | backup-recipient
+ *                                 encrypted backups (see backupCommand)
  *   node dist/setup/main migrate  bring the volumes up to this version's layout (idempotent)
  *   node dist/setup/main cleanup-legacy  empty the old single config volume, kept for rollback
  */
@@ -53,6 +59,11 @@ async function main(): Promise<void> {
     state: STATE_DIR,
   };
   switch (process.argv[2]) {
+    case "backup-seal":
+    case "backup-open":
+    case "backup-keygen":
+    case "backup-recipient":
+      return backupCommand(process.argv[2], process.argv.slice(3));
     case "migrate":
       return runAll(dirs, say, { connect: adminConnect() });
     case "cleanup-legacy":
@@ -202,6 +213,40 @@ function connectAs(user: string, password: string): Connect {
       }
     }
   };
+}
+
+/**
+ * The backup helpers dpm-custody runs inside this container: stdin to stdout, so nothing is
+ * written to the container's disk. Keys come from the environment, by name, never the command line.
+ *
+ *   backup-seal       encrypt to DPM_BACKUP_RECIPIENT (or --recipient)
+ *   backup-open       decrypt with DPM_BACKUP_RECOVERY_KEY
+ *   backup-keygen     print a new key pair: recipient=..., recovery_key=...
+ *   backup-recipient  print the recipient setup holds, if any
+ */
+async function backupCommand(command: string, args: string[]): Promise<void> {
+  try {
+    if (command === "backup-keygen") {
+      const pair = generateRecoveryKeyPair();
+      process.stdout.write(`recipient=${pair.recipient}\nrecovery_key=${pair.recoveryKey}\n`);
+    } else if (command === "backup-recipient") {
+      const recipient = new SetupStateStore(STATE_DIR).load().secrets?.backupRecipient;
+      if (recipient) process.stdout.write(`${recipient}\n`);
+    } else if (command === "backup-seal") {
+      const flag = args.indexOf("--recipient");
+      const recipient =
+        (flag >= 0 ? args[flag + 1] : undefined) ?? process.env.DPM_BACKUP_RECIPIENT;
+      if (!recipient) throw new BackupCryptoError("No recipient: set DPM_BACKUP_RECIPIENT.");
+      await pipeline(process.stdin, sealer(recipient), process.stdout);
+    } else {
+      const key = process.env.DPM_BACKUP_RECOVERY_KEY;
+      if (!key) throw new BackupCryptoError("No recovery key: set DPM_BACKUP_RECOVERY_KEY.");
+      await pipeline(process.stdin, opener(key), process.stdout);
+    }
+  } catch (err) {
+    console.error(`[backup] ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
 }
 
 function requiredEnv(name: string): string {

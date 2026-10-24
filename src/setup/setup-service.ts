@@ -174,6 +174,8 @@ export class SetupService {
   acknowledgeBackup(): void {
     this.deps.store.update((state) => {
       state.backupAcknowledged = true;
+      // Shown once in the kit; from here on only the public half stays on this machine.
+      if (state.secrets) delete state.secrets.backupRecoveryKey;
     });
   }
 
@@ -239,7 +241,36 @@ export function renderBackupKit(state: SetupState, adminUiUrl?: string): string 
     `Internal wallet API key: ${state.secrets.walletApiKey}`,
     `Builder private key:     ${state.answers.builderKey}`,
     "",
+    ...recoveryKeyLines(state.secrets),
     "Also back up the data itself: run ./dpm-custody backup regularly.",
   ];
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Backups are encrypted to a key whose private half is shown here once and then forgotten, so
+ * the machine that writes them cannot read them. Without it a backup cannot be opened.
+ */
+function recoveryKeyLines(secrets: SetupState["secrets"]): string[] {
+  if (secrets?.backupRecoveryKey) {
+    return [
+      "-- Backup recovery key (shown once; this machine does not keep it) --",
+      `Backup recovery key:     ${secrets.backupRecoveryKey}`,
+      "Backups are encrypted so that only this key opens them. Store it with the secrets above.",
+      "If it is lost, the backups cannot be read. This kit will not show it again.",
+      "",
+    ];
+  }
+  if (secrets?.backupRecipient) {
+    return [
+      "-- Backup recovery key --",
+      "It was shown once, when setup finished, and is not stored on this machine.",
+      "",
+    ];
+  }
+  return [
+    "-- Backups are not encrypted yet --",
+    "Run ./dpm-custody backup-key to create a recovery key; later backups are then encrypted.",
+    "",
+  ];
 }

@@ -190,6 +190,8 @@ Everything lives in the install folder (`~/dpm-custody` unless you chose another
 | read recent logs             | `~/dpm-custody/dpm-custody logs [service]` |
 | make a backup                | `~/dpm-custody/dpm-custody backup`         |
 | print the backup kit again   | `~/dpm-custody/dpm-custody backup-kit`     |
+| create the backup recovery key (older installs) | `~/dpm-custody/dpm-custody backup-key` |
+| decrypt one sealed backup file | `~/dpm-custody/dpm-custody backup-open FILE.sealed` |
 | empty the old config volume  | `~/dpm-custody/dpm-custody cleanup-legacy` |
 | update to the newest version | `~/dpm-custody/dpm-custody upgrade`        |
 | undo the last update         | `~/dpm-custody/dpm-custody rollback`       |
@@ -212,12 +214,25 @@ docker compose --env-file .env -f compose.yml exec setup node dist/setup/main se
 docker compose --env-file .env -f compose.yml exec setup node dist/setup/main kit     # backup kit
 ```
 
-`backup`, `upgrade`, `rollback`, `cleanup-legacy` and `support` exist only in `dpm-custody`, so on Windows they
+`backup`, `backup-key`, `backup-open`, `upgrade`, `rollback`, `cleanup-legacy` and `support` exist only in `dpm-custody`, so on Windows they
 need Git Bash or WSL. They have not been tested on Windows yet; tell the platform team if one
 fails there.
 
 **Back up regularly.** A backup lands in the `backups` folder. Copy it somewhere off this
 machine. It contains secrets, so keep it private.
+
+**Backups are encrypted.** Setup makes a *backup recovery key* and shows it once, in the backup kit
+(save it with the other secrets; it is not stored on this computer). Each backup file is encrypted
+to that key as it is written (`databases.sql.sealed`, `config.tar.gz.sealed`, ...), so someone who
+steals the `backups` folder, or this machine, cannot read them, and neither can you without the
+key. If the key is lost, the backups cannot be opened. An install made before this existed has no
+key, and its backups are plaintext with a warning: run `dpm-custody backup-key` once to create one
+(it shows the key once; the public half goes into `.env` as `DPM_BACKUP_RECIPIENT`). `backup-key
+--rotate` replaces it; backups made earlier still need the key they were encrypted with.
+`dpm-custody backup` keeps the newest 5 backups and removes older ones after a good backup;
+set `DPM_CUSTODY_KEEP_BACKUPS=10` (in the shell that runs it) to keep more. A backup that failed
+is kept as `...-incomplete` and never counts. An upgrade that an older `dpm-custody` (v0.2.2)
+performs takes a plaintext backup: run the installer once first (Step 1) to get the current one.
 
 ## Settings in .env
 
@@ -234,6 +249,7 @@ the services whose settings changed restart.
 | `ROUTED_ORDER_RETENTION_DAYS` | `365`                   | See [Retention](#retention).                                                           |
 | `RETENTION_ENABLED`           | `true`                  | See [Retention](#retention).                                                           |
 | `DPM_IMAGE_REGISTRY`          | `ghcr.io/in-a-bit`      | Where the images come from. Only for testing.                                          |
+| `DPM_BACKUP_RECIPIENT`        | (set by `backup-key`)   | Public key backups are encrypted to. Not secret; the private half is never stored.     |
 
 Leave `COMPOSE_PROJECT_NAME`, `POSTGRES_*`, `DPM_WALLET_TAG`, `DPM_WALLET_MANAGER_TAG` and
 `DPM_CUSTODY_VERSION` alone: the installer and `upgrade` own them.
@@ -381,10 +397,18 @@ DB_USER=dpm                      # POSTGRES_USER in .env
 docker compose --env-file .env -f compose.yml up -d postgres
 docker compose --env-file .env -f compose.yml exec -T postgres \
   psql -U "$DB_USER" -d postgres -c 'DROP DATABASE dpm_wallet_manager' -c 'DROP DATABASE dpm_wallet'
-docker compose --env-file .env -f compose.yml exec -T postgres \
-  psql -U "$DB_USER" -d postgres <"$B/databases.sql"
+# Encrypted backup (files end in .sealed): backup-open asks for the backup recovery key, hidden as
+# you type, or reads it from the file named by DPM_BACKUP_RECOVERY_KEY_FILE. It works while the
+# stack is stopped.
+./dpm-custody backup-open "$B/databases.sql.sealed" | docker compose --env-file .env -f compose.yml exec -T postgres \
+  psql -U "$DB_USER" -d postgres
+# A plaintext backup (older installs, no recovery key) is restored from the file directly:
+#   ... exec -T postgres psql -U "$DB_USER" -d postgres <"$B/databases.sql"
 ./dpm-custody start
 ```
+
+`./dpm-custody backup-open "$B/config.tar.gz.sealed" >config.tar.gz` opens the other files the same
+way (do not leave the decrypted copies lying around).
 
 The restore prints `role "dpm" already exists`. That is expected. The backup also holds the
 configuration (`config.tar.gz`) and the wallet data directory (`wallet-data.tar.gz`, which holds

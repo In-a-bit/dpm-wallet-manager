@@ -750,6 +750,20 @@ describe("SetupService owner login", () => {
     expect(service.view().ownerCreated).toBe(true);
   });
 
+  it("shows the backup recovery key once, then keeps only the public half", async () => {
+    const { service, deps } = await provisioned();
+    const key = deps.store.load().secrets?.backupRecoveryKey;
+    expect(key).toMatch(/^dpmbk_key_/);
+    expect(service.backupKit()).toContain(`Backup recovery key:     ${key}`);
+
+    service.acknowledgeBackup();
+    const after = deps.store.load().secrets;
+    expect(after?.backupRecoveryKey).toBeUndefined();
+    expect(after?.backupRecipient).toMatch(/^dpmbk_pub_/);
+    expect(service.backupKit()).not.toContain(key as string);
+    expect(service.backupKit()).toContain("not stored on this machine");
+  });
+
   it("names the admin UI in the backup kit", async () => {
     const { service } = await provisioned();
     expect(service.backupKit()).toContain("Admin UI:           http://localhost:3000/admin");

@@ -330,6 +330,6 @@ if (-not $finished) {
   return
 }
 Write-Host ""
-Write-Host "  Later, in $Dir : dpm-custody start, stop, status, backup, upgrade, ... (from Git Bash or WSL),"
+Write-Host "  Later, in $Dir : dpm-custody start, stop, status, backup, upgrade, ... (from Git Bash or WSL; backups are encrypted: keep the backup recovery key from the kit),"
 Write-Host "  or docker compose --env-file .env -f compose.yml followed by up -d, stop, ps or logs."
 Write-Host ""

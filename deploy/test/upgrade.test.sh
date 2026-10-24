@@ -85,6 +85,12 @@ case "$args" in
     ;;
   *"exec -T postgres pg_dumpall"*) [ -n "${FAIL_BACKUP:-}" ] && { echo "no postgres" >&2; exit 1; }; echo "-- dump" ;;
   *"exec -T postgres psql"*) echo "${DB_BYTES:-1000}" ;;
+  *"setup node dist/setup/main backup-recipient"*) [ -n "${FAKE_RECIPIENT:-}" ] && echo "$FAKE_RECIPIENT"; exit 0 ;;
+  *"setup node dist/setup/main backup-"*)
+    # The real implementation, from the compiled dist, so the sealed files are really sealed.
+    [ -f "$DIST_MAIN" ] || { echo "no dist/setup/main.js (run npm run build)" >&2; exit 3; }
+    cmd="${args##*dist/setup/main }"
+    exec node "$DIST_MAIN" "$cmd" ;;
   *"exec -T setup sh -c "*)
     # Run the script the way the container's sh would, against a fake /proc/mounts and a tar that
     # only reports its arguments, so a quoting mistake in dpm-custody fails here.
@@ -101,6 +107,7 @@ printf '#!/bin/sh\nexit 0\n' >"$T/bin/sleep"
 chmod +x "$T/bin/docker" "$T/bin/sleep"
 REAL_DOCKER="$(command -v docker || true)"
 export REAL_DOCKER
+export DIST_MAIN="$HERE/../dist/setup/main.js"
 mkdir -p "$T/faketar"
 printf '#!/bin/sh\necho "TAR $*"\n' >"$T/faketar/tar"
 chmod +x "$T/faketar/tar"
@@ -458,6 +465,60 @@ check "18 embedded key verifies a release signed with its private half" '[ $rc -
 d="$T/c18b"; make_install "$d" 1.0.0 0.1.0 1.0.0; cp "$emb/dpm-custody" "$d/dpm-custody"
 out="$(PUBKEY= REL_URL="file://$T/rel-wrongkey" run "$d" upgrade --yes)"; rc=$?
 check "18 embedded key rejects a release signed by another key, even if its own script carries that key" '[ $rc -ne 0 ] && echo "$out" | grep -q "signature .* does not match" && ! has "$d.events" " pull"'
+
+# 21. sealed backups, restore, prune (the real seal/open from dist/; skipped if dist is not built)
+if [ -f "$DIST_MAIN" ]; then
+  keys="$(node "$DIST_MAIN" backup-keygen)"
+  RECIP="$(printf '%s\n' "$keys" | sed -n 's/^recipient=//p')"; RKEY="$(printf '%s\n' "$keys" | sed -n 's/^recovery_key=//p')"
+  d="$T/c19"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(FAKE_RECIPIENT="$RECIP" run "$d" backup)"; rc=$?
+  b="$(ls -d "$d"/backups/[0-9]* | head -n 1)"
+  check "21 backup with a recipient: exit 0, every artifact sealed, no plaintext copy" '[ $rc -eq 0 ] && for f in databases.sql config.tar.gz wallet-data.tar.gz installer.env; do [ -s "$b/$f.sealed" ] && [ ! -e "$b/$f" ] || exit 1; done; ! echo "$out" | grep -q WARNING'
+  check "21 sealed files do not contain the plaintext" '! grep -q -- "-- dump" "$b/databases.sql.sealed" && ! grep -q "POSTGRES_PASSWORD" "$b/installer.env.sealed"'
+  printf '%s\n' "$RKEY" >"$T/rkey"
+  opened="$(DPM_BACKUP_RECOVERY_KEY_FILE="$T/rkey" run "$d" backup-open "$b/databases.sql.sealed")"; rc=$?
+  check "21 backup-open with the recovery key returns the original" '[ $rc -eq 0 ] && [ "$opened" = "-- dump" ]'
+  opened="$(DPM_BACKUP_RECOVERY_KEY_FILE="$T/rkey" run "$d" backup-open "$b/installer.env.sealed")"
+  check "21 the sealed .env round-trips" 'echo "$opened" | grep -qx "POSTGRES_PASSWORD=secret"'
+  other="$(node "$DIST_MAIN" backup-keygen | sed -n 's/^recovery_key=//p')"; printf '%s\n' "$other" >"$T/other.key"
+  opened="$(DPM_BACKUP_RECOVERY_KEY_FILE="$T/other.key" run "$d" backup-open "$b/databases.sql.sealed")"; rc=$?
+  check "21 backup-open with another key fails, prints no data" '[ $rc -ne 0 ] && ! echo "$opened" | grep -q -- "-- dump"'
+  cp "$b/databases.sql.sealed" "$T/tampered.sealed"; printf 'X' | dd of="$T/tampered.sealed" bs=1 seek=70 conv=notrunc 2>/dev/null
+  opened="$(DPM_BACKUP_RECOVERY_KEY_FILE="$T/rkey" run "$d" backup-open "$T/tampered.sealed")"; rc=$?
+  check "21 a tampered backup is refused" '[ $rc -ne 0 ] && ! echo "$opened" | grep -q -- "-- dump"'
+
+  # the recipient in .env counts too, and no recipient anywhere means plaintext with a warning
+  d="$T/c19b"; make_install "$d" 1.1.0 0.2.0 1.1.0; echo "DPM_BACKUP_RECIPIENT=$RECIP" >>"$d/.env"
+  out="$(run "$d" backup)"; rc=$?
+  check "21 recipient from .env: sealed" '[ $rc -eq 0 ] && [ -s "$(ls -d "$d"/backups/[0-9]* | head -n 1)/databases.sql.sealed" ]'
+  d="$T/c19c"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(run "$d" backup)"; rc=$?
+  check "21 no recipient: plaintext, with a loud warning that names backup-key" '[ $rc -eq 0 ] && [ -s "$(ls -d "$d"/backups/[0-9]* | head -n 1)/databases.sql" ] && echo "$out" | grep -q "NOT encrypted" && echo "$out" | grep -q "backup-key"'
+
+  # backup-key: .env gets the recipient, the recovery key is shown once and not stored; a second run refuses
+  d="$T/c19d"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  out="$(run "$d" backup-key)"; rc=$?
+  shown="$(printf '%s\n' "$out" | grep -o 'dpmbk_key_[A-Za-z0-9_-]*' | head -n 1)"
+  check "21 backup-key: recipient in .env, recovery key shown once and not written anywhere" '[ $rc -eq 0 ] && grep -q "^DPM_BACKUP_RECIPIENT=dpmbk_pub_" "$d/.env" && [ -n "$shown" ] && ! grep -rq "$shown" "$d" 2>/dev/null'
+  out="$(run "$d" backup-key)"; rc=$?
+  check "21 backup-key again: refuses without --rotate" '[ $rc -eq 0 ] && echo "$out" | grep -q "already has a backup recovery key" && ! echo "$out" | grep -q "dpmbk_key_"'
+
+  # prune: keep the newest N complete backups, only after a good backup
+  d="$T/c19e"; make_install "$d" 1.1.0 0.2.0 1.1.0
+  mkdir -p "$d/backups"
+  for n in 20200101-000001 20200101-000002 20200101-000003 20200101-000004; do mkdir "$d/backups/$n"; done
+  mkdir "$d/backups/20190101-000000-incomplete"
+  out="$(FAIL_BACKUP=1 DPM_CUSTODY_KEEP_BACKUPS=2 run "$d" backup)"; rc=$?
+  check "21 prune: a failed backup removes nothing" '[ $rc -ne 0 ] && [ -d "$d/backups/20200101-000001" ] && [ -d "$d/backups/20200101-000002" ]'
+  out="$(DPM_CUSTODY_KEEP_BACKUPS=2 run "$d" backup)"; rc=$?
+  left="$(ls -1 "$d/backups" | grep -v incomplete | wc -l | tr -d ' ')"
+  check "21 prune: keeps the newest 2 (the new one and the latest old one), leaves *-incomplete alone" '[ $rc -eq 0 ] && [ "$left" = 2 ] && [ -d "$d/backups/20200101-000004" ] && [ ! -d "$d/backups/20200101-000001" ] && [ -d "$d/backups/20190101-000000-incomplete" ]'
+  d="$T/c19f"; make_install "$d" 1.1.0 0.2.0 1.1.0; mkdir -p "$d/backups"; for n in 20200101-000001 20200101-000002 20200101-000003 20200101-000004 20200101-000005 20200101-000006; do mkdir "$d/backups/$n"; done
+  out="$(run "$d" backup)"
+  check "21 prune: default keeps 5" '[ "$(ls -1 "$d/backups" | wc -l | tr -d " ")" = 5 ]'
+else
+  echo "skip - 21 sealed backups (build first: npx nest build)"
+fi
 
 check "scripts parse" 'bash -n "$HERE/dpm-custody" && bash -n "$0"'
 

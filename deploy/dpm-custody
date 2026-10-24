@@ -7,7 +7,12 @@
 #   ./dpm-custody setup        set up, or see where setup stands (safe to run again)
 #   ./dpm-custody support      write a report to send to support (no secrets in it)
 #   ./dpm-custody logs [svc]   recent logs (all services, or one)
-#   ./dpm-custody backup       save the databases and configuration into ./backups
+#   ./dpm-custody backup       save the databases and configuration into ./backups, encrypted
+#                              to the backup recovery key (keeps the newest 5; see
+#                              DPM_CUSTODY_KEEP_BACKUPS)
+#   ./dpm-custody backup-key   create the backup recovery key on an install made without one
+#   ./dpm-custody backup-open FILE.sealed
+#                              decrypt one sealed backup file to the screen/pipe (asks for the key)
 #   ./dpm-custody backup-kit   print the backup kit again
 #   ./dpm-custody upgrade [version] [--yes]
 #                              move to the newest version (or to that version): checks the
@@ -62,32 +67,133 @@ mask_keys() {
   sed -E \
     -e 's/bld_sk_[A-Za-z0-9_-]*([A-Za-z0-9_-]{4})/bld_sk_…\1/g' \
     -e 's/(dpmm_[a-z0-9]+_[a-z]{2}_)[a-z0-9]*([a-z0-9]{4})/\1…\2/g' \
-    -e 's/dpmw_[a-f0-9]*([a-f0-9]{4})/dpmw_…\1/g'
+    -e 's/dpmw_[a-f0-9]*([a-f0-9]{4})/dpmw_…\1/g' \
+    -e 's/dpmbk_key_[A-Za-z0-9_-]*([A-Za-z0-9_-]{4})/dpmbk_key_…\1/g'
 }
 
-# cmd_backup saves the databases, the configuration and the wallet data directory into backups/<stamp>/ and
-# sets BACKUP_DIR. Each step is checked, so it also fails cleanly inside `if` (where set -e is off).
+# backup_recipient prints the public key backups are sealed to: DPM_BACKUP_RECIPIENT in .env, else
+# the one setup holds (made at install). Empty when the install has none.
+backup_recipient() {
+  local r
+  r="$(env_value DPM_BACKUP_RECIPIENT)"
+  if [ -z "$r" ]; then
+    r="$(compose exec -T setup node dist/setup/main backup-recipient 2>/dev/null | tr -d '\r\n')" || r=""
+  fi
+  printf '%s' "$r"
+}
+
+# save_artifact DIR NAME RECIPIENT reads stdin into DIR/NAME, or DIR/NAME.sealed when RECIPIENT is
+# set: encrypted inside the setup container, so the plaintext never touches this disk.
+save_artifact() {
+  if [ -n "$3" ]; then
+    DPM_BACKUP_RECIPIENT="$3" compose exec -T -e DPM_BACKUP_RECIPIENT setup node dist/setup/main backup-seal >"$1/$2.sealed"
+  else
+    cat >"$1/$2"
+  fi
+}
+
+# prune_backups keeps the newest DPM_CUSTODY_KEEP_BACKUPS (default 5) complete backups and removes
+# the rest. Only called after a backup succeeded, so a failing backup never costs the old ones.
+prune_backups() {
+  local keep="${DPM_CUSTODY_KEEP_BACKUPS:-5}" old d
+  case "$keep" in '' | *[!0-9]* | 0) echo "DPM_CUSTODY_KEEP_BACKUPS must be a number of 1 or more; not pruning." >&2; return 0 ;; esac
+  old="$(for d in backups/[0-9]*; do case "$d" in *-incomplete) ;; *) [ -d "$d" ] && printf '%s\n' "$d" ;; esac; done |
+    sort | awk -v k="$keep" '{ line[NR] = $0 } END { for (i = 1; i <= NR - k; i++) print line[i] }')" || return 0
+  for d in $old; do
+    case "$d" in backups/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) continue ;; esac
+    rm -rf "$d" && echo "Removed old backup $d (keeping the newest $keep)."
+  done
+}
+
+# cmd_backup saves the databases, the configuration and the wallet data directory into
+# backups/<stamp>/ and sets BACKUP_DIR. Each is encrypted to the backup recovery key when the
+# install has one (files end in .sealed); otherwise they are plaintext, with a warning. Each step is
+# checked, so it also fails cleanly inside `if` (where set -e is off).
 BACKUP_DIR=""
 cmd_backup() {
-  local stamp dir user
+  local stamp dir user recipient sfx
   stamp="$(date +%Y%m%d-%H%M%S)"
   user="$(env_value POSTGRES_USER)"
   dir="backups/$stamp"
+  recipient="$(backup_recipient)"
+  sfx=""
+  if [ -n "$recipient" ]; then
+    sfx=".sealed"
+  else
+    echo "WARNING: this install has no backup recovery key, so this backup is NOT encrypted." >&2
+    echo "         Run ./dpm-custody backup-key to create one; later backups are then encrypted." >&2
+  fi
   mkdir -p "$dir" && chmod 700 backups "$dir" || { echo "Could not create $(pwd)/$dir." >&2; return 1; }
   echo "Saving databases..."
-  compose exec -T postgres pg_dumpall -U "${user:-dpm}" >"$dir/databases.sql" && [ -s "$dir/databases.sql" ] ||
+  compose exec -T postgres pg_dumpall -U "${user:-dpm}" | save_artifact "$dir" databases.sql "$recipient" && [ -s "$dir/databases.sql$sfx" ] ||
     { backup_failed "$dir" "the databases"; return 1; }
   echo "Saving configuration and wallet data..."
   # Three volumes since the config split (config-wallet, config-manager, setup-state); an install
   # whose setup container still has the single /config volume is saved as it was.
-  compose exec -T setup sh -c "if grep -q ' /config-wallet ' /proc/mounts; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi" >"$dir/config.tar.gz" && [ -s "$dir/config.tar.gz" ] ||
+  compose exec -T setup sh -c "if grep -q ' /config-wallet ' /proc/mounts; then tar -C / -czf - config-wallet config-manager state; else tar -C / -czf - config; fi" | save_artifact "$dir" config.tar.gz "$recipient" && [ -s "$dir/config.tar.gz$sfx" ] ||
     { backup_failed "$dir" "the configuration"; return 1; }
-  compose exec -T dpm-wallet tar -C / -czf - data >"$dir/wallet-data.tar.gz" && [ -s "$dir/wallet-data.tar.gz" ] ||
+  compose exec -T dpm-wallet tar -C / -czf - data | save_artifact "$dir" wallet-data.tar.gz "$recipient" && [ -s "$dir/wallet-data.tar.gz$sfx" ] ||
     { backup_failed "$dir" "the wallet data"; return 1; }
-  cp .env "$dir/installer.env" && chmod 600 "$dir"/* || { backup_failed "$dir" ".env"; return 1; }
+  save_artifact "$dir" installer.env "$recipient" <.env && chmod 600 "$dir"/* || { backup_failed "$dir" ".env"; return 1; }
   BACKUP_DIR="$dir"
   echo "Backup saved in $(pwd)/$dir"
+  if [ -n "$recipient" ]; then
+    echo "It is encrypted: opening it needs the backup recovery key shown at setup (backup-open)."
+  fi
   echo "Copy that folder somewhere off this machine. It contains secrets: keep it private."
+  prune_backups
+}
+
+# read_recovery_key prints the backup recovery key from DPM_BACKUP_RECOVERY_KEY_FILE, or asks for
+# it without echoing. It never goes on a command line.
+read_recovery_key() {
+  local key
+  if [ -n "${DPM_BACKUP_RECOVERY_KEY_FILE:-}" ]; then
+    [ -r "$DPM_BACKUP_RECOVERY_KEY_FILE" ] || { echo "DPM_BACKUP_RECOVERY_KEY_FILE ($DPM_BACKUP_RECOVERY_KEY_FILE) is not a readable file." >&2; return 1; }
+    tr -d ' \r\n' <"$DPM_BACKUP_RECOVERY_KEY_FILE"
+    return 0
+  fi
+  [ -r /dev/tty ] || { echo "No terminal to ask in. Put the key in a file and set DPM_BACKUP_RECOVERY_KEY_FILE." >&2; return 1; }
+  read -r -s -p "Backup recovery key (not shown as you type): " key </dev/tty >&2 || return 1
+  echo >&2
+  printf '%s' "$key" | tr -d ' \r\n'
+}
+
+# cmd_backup_open FILE decrypts one sealed backup file to standard output. It runs in a one-off
+# setup container, so it works while the stack is stopped (restoring after a disaster).
+cmd_backup_open() {
+  local file="${1:-}" key
+  [ -n "$file" ] && [ -f "$file" ] || { echo "Usage: ./dpm-custody backup-open backups/<stamp>/<file>.sealed" >&2; return 2; }
+  key="$(read_recovery_key)" || return 1
+  [ -n "$key" ] || { echo "No key given." >&2; return 1; }
+  DPM_BACKUP_RECOVERY_KEY="$key" compose run --rm --no-deps -T -e DPM_BACKUP_RECOVERY_KEY setup node dist/setup/main backup-open <"$file"
+}
+
+# cmd_backup_key creates the backup recovery key on an install that has none: its public half goes
+# into .env (DPM_BACKUP_RECIPIENT), its private half is shown once and not kept. --rotate replaces an
+# existing key; older backups stay readable only with the key they were sealed to.
+cmd_backup_key() {
+  local out recipient recovery answer
+  if [ -n "$(backup_recipient)" ] && [ "${1:-}" != --rotate ]; then
+    echo "This install already has a backup recovery key (backups are encrypted)."
+    echo "./dpm-custody backup-key --rotate makes a new one; backups made before stay readable only with the old key."
+    return 0
+  fi
+  out="$(compose run --rm --no-deps -T setup node dist/setup/main backup-keygen)" || { echo "Could not create the key." >&2; return 1; }
+  recipient="$(printf '%s\n' "$out" | sed -n 's/^recipient=//p' | tr -d '\r')"
+  recovery="$(printf '%s\n' "$out" | sed -n 's/^recovery_key=//p' | tr -d '\r')"
+  [ -n "$recipient" ] && [ -n "$recovery" ] || { echo "Could not create the key." >&2; return 1; }
+  set_env DPM_BACKUP_RECIPIENT "$recipient"
+  echo
+  echo "Backup recovery key (shown once; this machine does not keep it):"
+  echo
+  echo "    $recovery"
+  echo
+  echo "Copy it somewhere safe and private, such as a password manager. Backups from now on are"
+  echo "encrypted so that only this key opens them; without it they cannot be read."
+  if [ -t 0 ]; then
+    read -r -p "Press Enter once you have saved it. " answer || true
+  fi
 }
 
 # backup_failed DIR WHAT marks a half-written backup so it is never mistaken for a good one.
@@ -496,7 +602,8 @@ print_restore_steps() {
   say "    2. If the platform team asks you to restore the backup taken before the upgrade"
   say "       ($(pwd)/$b), follow \"Restoring a backup\" in the deploy README:"
   say "       stop the stack, start postgres alone, drop and re-create the two databases from"
-  say "       $b/databases.sql, then ./dpm-custody start."
+  say "       $b/databases.sql (or databases.sql.sealed: ./dpm-custody backup-open prints it, with"
+  say "       the backup recovery key), then ./dpm-custody start."
   say ""
 }
 
@@ -880,6 +987,8 @@ main() {
     support) cmd_support ;;
     logs) shift; compose logs --tail 200 "$@" ;;
     backup) cmd_backup ;;
+    backup-key) shift; cmd_backup_key "$@" ;;
+    backup-open) shift; cmd_backup_open "$@" ;;
     backup-kit) compose exec -T setup node dist/setup/main kit ;;
     upgrade) shift; cmd_upgrade "$@" ;;
     rollback) cmd_rollback ;;

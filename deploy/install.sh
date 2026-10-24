@@ -294,7 +294,7 @@ main() {
     exit 1
   fi
   say ""
-  say "  Later: $DIR/dpm-custody (start, stop, status, backup, ...)"
+  say "  Later: $DIR/dpm-custody (start, stop, status, backup, ...). Backups are encrypted: keep the backup recovery key from the kit."
   say ""
 }
 
