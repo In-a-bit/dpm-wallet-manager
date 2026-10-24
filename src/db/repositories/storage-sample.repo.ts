@@ -65,19 +65,23 @@ export class StorageSampleRepository {
 
   /**
    * Sizes of this service's database and of dpm-wallet's. The wallet database lives under another
-   * name on the same server; where it does not exist (tests, dev) it is null.
+   * name on the same server; where it does not exist (tests, dev) it is null. The name is a
+   * parameter only so a test can use a database of its own; production takes the default.
    */
-  async databaseSizes(): Promise<{ manager: number; wallet: number | null }> {
+  async databaseSizes(
+    walletDatabase = "dpm_wallet",
+  ): Promise<{ manager: number; wallet: number | null }> {
     const manager: { bytes: string }[] = await this.samples.query(
       `SELECT pg_database_size(current_database())::text AS bytes`,
     );
     // The other service's database: this role may not be allowed to measure it (it needs
     // pg_read_all_stats, which setup grants). One unreadable size must not fail the whole sample.
-    const wallet: { bytes: string }[] = await this.samples
+    const wallet = (await this.samples
       .query(
-        `SELECT pg_database_size(datname)::text AS bytes FROM pg_database WHERE datname = 'dpm_wallet'`,
+        `SELECT pg_database_size(datname)::text AS bytes FROM pg_database WHERE datname = $1`,
+        [walletDatabase],
       )
-      .catch(() => []);
+      .catch(() => [])) as { bytes: string }[];
     return {
       manager: Number(manager[0]?.bytes ?? 0),
       wallet: wallet[0] ? Number(wallet[0].bytes) : null,
