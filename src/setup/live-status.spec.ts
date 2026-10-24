@@ -46,4 +46,16 @@ describe("liveStatus", () => {
     expect(check?.ok).toBe(false);
     expect(check?.detail).toMatch(/unavailable/);
   });
+
+  it("falls back to the manager's own health answer once setup no longer holds the admin key", async () => {
+    // The fake wallet's /v1/health stands in for the manager's.
+    const { checks } = await liveStatus(fetchHttp, storeWith(FAKE_UPSTREAM_API_KEY), {
+      walletUrl,
+      managerUrl: walletUrl,
+    });
+    const manager = checks.find((c) => c.label === "Wallet manager");
+    expect(manager?.ok).toBe(true);
+    expect(manager?.detail).toMatch(/no longer keeps/);
+    expect(wallet.requests.some((r) => r.path === "/v1/platform")).toBe(false);
+  });
 });
