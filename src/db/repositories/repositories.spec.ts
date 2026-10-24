@@ -311,6 +311,24 @@ describe("repositories", () => {
       });
     });
 
+    it("still accepts the previous release's insert, which names no actor (rollback compatibility)", async () => {
+      // The exact shape TypeORM produced before the actor column: no actor, ON CONFLICT with no target.
+      const insert = `INSERT INTO idempotency_keys (key, request_hash, response_json, created_at)
+                      VALUES ($1, 'h', '{}', now()) ON CONFLICT DO NOTHING`;
+      await fixture.db.query(insert, ["old-release-key"]);
+      await fixture.db.query(insert, ["old-release-key"]); // a retry: ignored, not an error
+      const rows: { actor: string }[] = await fixture.db.query(
+        `SELECT actor FROM idempotency_keys WHERE key = 'old-release-key'`,
+      );
+      expect(rows).toEqual([{ actor: "" }]);
+      // And the previous release's lookup by key alone still finds it.
+      const found: unknown[] = await fixture.db.query(
+        `SELECT 1 FROM idempotency_keys WHERE key = $1 LIMIT 1`,
+        ["old-release-key"],
+      );
+      expect(found).toHaveLength(1);
+    });
+
     it("purges only records older than the retention window", async () => {
       const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       await idempotency.save("a", "k-old", { requestHash: "h", responseJson: "{}" }, old);
