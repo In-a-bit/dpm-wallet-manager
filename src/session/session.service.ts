@@ -45,10 +45,10 @@ export class SessionService {
   ) {}
 
   async login(username: string, password: string, context: RequestContext): Promise<SignedIn> {
-    this.assertNotLockedOut(username, context.ip);
+    // Reserved before the slow password check, so attempts still in flight count.
+    this.reserveAttempt(username, context.ip);
     const user = await this.checkCredentials(username, password);
     if (!user) {
-      this.throttle.recordFailure(username, context.ip);
       await this.recordLogin(undefined, AuditOutcome.Denied, { username }, context);
       throw unauthorized("Wrong username or password");
     }
@@ -124,8 +124,8 @@ export class SessionService {
     return this.sessions.purgeExpired(new Date().toISOString());
   }
 
-  private assertNotLockedOut(username: string, ip: string | null): void {
-    const waitMs = this.throttle.retryAfterMs(username, ip);
+  private reserveAttempt(username: string, ip: string | null): void {
+    const waitMs = this.throttle.reserve(username, ip);
     if (waitMs === 0) return;
     throw new ManagerError(
       "RATE_LIMITED",

@@ -131,6 +131,22 @@ describe("admin UI access", () => {
       expect(sixth.body.error.code).toBe("RATE_LIMITED");
     });
 
+    it("lets no more than the limit of parallel wrong logins reach the password check", async () => {
+      await createUser("parallel", "viewer");
+      const responses = await Promise.all(
+        Array.from({ length: 20 }, () =>
+          harness.post("/v1/session/login", {
+            apiKey: null,
+            body: { username: "parallel", password: "wrong wrong wrong" },
+          }),
+        ),
+      );
+      const statuses = responses.map((response) => response.status);
+      // 401 means the attempt got as far as the password check; 429 was stopped before it.
+      expect(statuses.filter((status) => status === 401)).toHaveLength(5);
+      expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+    });
+
     it("refuses a change without the CSRF header, and allows it with", async () => {
       await createUser("csrf-owner", "owner");
       const cookie = await signIn("csrf-owner");
