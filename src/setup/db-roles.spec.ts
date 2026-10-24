@@ -149,6 +149,15 @@ describe("convertExistingInstall", () => {
     expect(remembered).toContain(`wallet:${databasePassword(before)}`);
   });
 
+  it("reads a hand-edited password with a bare % as written instead of throwing", () => {
+    const text = (password: string) =>
+      `DATABASE_URL='postgres://dpm%:${password}@postgres:5432/db'\n`;
+    expect(databasePassword(text("50%off"))).toBe("50%off");
+    expect(databaseUser(text("x"))).toBe("dpm%");
+    // A properly encoded one still decodes.
+    expect(databasePassword(text("p%40ss"))).toBe("p@ss");
+  });
+
   it("does not contact Postgres for a fresh install with no env files, or fail without access", async () => {
     await convertExistingInstall(dirs(), undefined, () => undefined);
     const d = dirs();
@@ -342,23 +351,20 @@ describe("service roles in Postgres", () => {
   });
 
   it("lets the manager's role measure both databases, so storage sampling keeps working", async () => {
-    // The wallet database is looked up by its real name, so this needs the name to be free here.
+    // Its own database names, so this never touches (or is touched by) a real `dpm_wallet` or a
+    // concurrently running spec that looks for one.
+    const walletDbName = `dpm_wallet_${suffix}`;
     const admin = await open(adminUrl);
-    const taken = await admin.query(`SELECT 1 FROM pg_database WHERE datname = 'dpm_wallet'`);
-    if (taken.rowCount) {
-      await admin.end();
-      return; // someone's real database: never take it over
-    }
     const walletRole = `t_ws_${suffix}`;
     const managerRole = `t_ms_${suffix}`;
     const managerDb = await createTestDatabase();
     const walletPassword = randomBytes(12).toString("hex");
     const managerPassword = randomBytes(12).toString("hex");
-    await admin.query(`CREATE DATABASE dpm_wallet`);
+    await admin.query(`CREATE DATABASE ${walletDbName}`);
     try {
       await applyRole(connect, {
         role: walletRole,
-        database: "dpm_wallet",
+        database: walletDbName,
         password: walletPassword,
       });
       await applyRole(connect, {
@@ -371,7 +377,7 @@ describe("service roles in Postgres", () => {
         DATABASE_URL: withDb(adminUrl, nameOf(managerDb.url), managerRole, managerPassword),
       });
       try {
-        const sizes = await harness.app.get(StorageSampleRepository).databaseSizes();
+        const sizes = await harness.app.get(StorageSampleRepository).databaseSizes(walletDbName);
         expect(sizes.manager).toBeGreaterThan(0);
         expect(sizes.wallet).toBeGreaterThan(0);
       } finally {
@@ -384,7 +390,7 @@ describe("service roles in Postgres", () => {
         DATABASE_URL: withDb(adminUrl, nameOf(managerDb.url), managerRole, managerPassword),
       });
       try {
-        const sizes = await limited.app.get(StorageSampleRepository).databaseSizes();
+        const sizes = await limited.app.get(StorageSampleRepository).databaseSizes(walletDbName);
         expect(sizes.manager).toBeGreaterThan(0);
         expect(sizes.wallet).toBeNull();
       } finally {
@@ -392,7 +398,7 @@ describe("service roles in Postgres", () => {
       }
     } finally {
       await managerDb.drop();
-      await admin.query(`DROP DATABASE IF EXISTS dpm_wallet WITH (FORCE)`);
+      await admin.query(`DROP DATABASE IF EXISTS ${walletDbName} WITH (FORCE)`);
       await admin.query(`DROP ROLE IF EXISTS ${walletRole}`);
       await admin.query(`DROP ROLE IF EXISTS ${managerRole}`);
       await admin.end();

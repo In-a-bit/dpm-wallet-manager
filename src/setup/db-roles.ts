@@ -191,13 +191,25 @@ export async function convertExistingInstall(
 /** The user in an env file's DATABASE_URL, or undefined. */
 export function databaseUser(envText: string): string | undefined {
   const match = /^DATABASE_URL='postgres(?:ql)?:\/\/([^:@/]*)[:@]/m.exec(envText);
-  return match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
 }
 
 /** The password in an env file's DATABASE_URL, or undefined. */
 export function databasePassword(envText: string): string | undefined {
   const match = /^DATABASE_URL='postgres(?:ql)?:\/\/[^:@/]*:([^@/]*)@/m.exec(envText);
-  return match?.[1] === undefined ? undefined : decodeURIComponent(match[1]);
+  return match?.[1] === undefined ? undefined : safeDecode(match[1]);
+}
+
+/**
+ * Percent-decoding, except that a hand-edited value with a bare `%` (which makes
+ * decodeURIComponent throw) is taken as written.
+ */
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /**
