@@ -10,7 +10,7 @@ export const LOCKOUT_MS = 15 * 60 * 1000;
 /** Entries kept at once; the least recently used go first. */
 export const MAX_ENTRIES = 10_000;
 
-type Entry = { failures: number[]; lockedUntil: number; limit: number };
+type Entry = { failures: number[]; lockedUntil: number };
 
 /**
  * Slows password guessing, per username and address and per username alone.
@@ -65,7 +65,7 @@ export class LoginThrottle {
   }
 
   private add(k: string, limit: number, now: number): void {
-    const entry = this.entries.get(k) ?? { failures: [], lockedUntil: 0, limit };
+    const entry = this.entries.get(k) ?? { failures: [], lockedUntil: 0 };
     entry.failures = [...entry.failures.filter((at) => now - at < WINDOW_MS), now];
     if (entry.failures.length >= limit) {
       entry.lockedUntil = now + LOCKOUT_MS;
@@ -73,10 +73,19 @@ export class LoginThrottle {
     }
     this.entries.delete(k);
     this.entries.set(k, entry);
-    while (this.entries.size > this.maxEntries) {
-      const oldest = this.entries.keys().next().value as string;
-      this.entries.delete(oldest);
+    while (this.entries.size > this.maxEntries) this.evictOne(now);
+  }
+
+  /**
+   * Drops the least recently used entry that is not locked out. A lockout is never refreshed while
+   * it holds, so it is always among the oldest; evicting by age alone would let a spray of random
+   * usernames lift it. Only when every entry is locked does the oldest go.
+   */
+  private evictOne(now: number): void {
+    for (const [k, entry] of this.entries) {
+      if (entry.lockedUntil <= now) return void this.entries.delete(k);
     }
+    this.entries.delete(this.entries.keys().next().value as string);
   }
 
   /** Drops entries with nothing left to remember, oldest first, until one still matters. */

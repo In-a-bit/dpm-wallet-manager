@@ -59,6 +59,15 @@ describe("LoginThrottle", () => {
     expect(attempts(t, "bob", null, MAX_FAILURES)).toBe(MAX_FAILURES);
   });
 
+  it("does not let a spray past the cap lift an active lockout", () => {
+    const t = throttle(100);
+    attempts(t, "victim", "1.2.3.4", MAX_FAILURES);
+    expect(t.reserve("victim", "1.2.3.4")).toBeGreaterThan(0);
+    for (let i = 0; i < 1_000; i++) t.reserve(`spray-${i}`, "6.6.6.6");
+    expect(t.size).toBeLessThanOrEqual(100);
+    expect(t.reserve("victim", "1.2.3.4")).toBeGreaterThan(0);
+  });
+
   it("stays within its cap under a spray of random usernames, and prunes what expired", () => {
     const t = throttle(100);
     for (let i = 0; i < 1_000; i++) t.reserve(`user-${i}`, "1.1.1.1");
