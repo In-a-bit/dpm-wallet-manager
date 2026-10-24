@@ -6,8 +6,8 @@ import { SwaggerModule } from "@nestjs/swagger";
 
 import { AppModule } from "./app.module";
 import { BASE_PATH, configureApp } from "./app.setup";
-import type { Config } from "./config";
-import { logError, logInfo } from "./observability/log";
+import { insecureCookieWarning, type Config } from "./config";
+import { logError, logInfo, logWarn } from "./observability/log";
 import { buildOpenApiDocument } from "./openapi";
 import { installShutdownHandlers } from "./startup/shutdown";
 import { CONFIG } from "./tokens";
@@ -16,7 +16,9 @@ async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { bodyParser: false });
   const config = app.get<Config>(CONFIG);
   configureApp(app, config);
-  mountApiDocs(app);
+  if (config.enableApiDocs) mountApiDocs(app);
+  const cookieWarning = insecureCookieWarning(config);
+  if (cookieWarning) logWarn("startup.insecure_session_cookie", { warning: cookieWarning });
   installShutdownHandlers(app);
 
   await app.listen(config.port);

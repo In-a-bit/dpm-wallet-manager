@@ -53,10 +53,13 @@ export type Config = {
   /** Exact origins the backoffice UI may call from. Empty disables CORS entirely. */
   corsOrigins: string[];
   /**
-   * Marks the admin UI's session cookie `Secure`. Off by default because an install is reached at
-   * `http://localhost`, where a Secure cookie would never be sent back; turn it on behind HTTPS.
+   * Marks the admin UI's session cookie `Secure`. Follows MANAGER_PUBLIC_URL: on when that is an
+   * https URL, off otherwise, because an install reached at `http://localhost` would never get a
+   * Secure cookie sent back. UI_COOKIE_SECURE=true|false overrides either way.
    */
   uiCookieSecure: boolean;
+  /** Serves the OpenAPI document and Swagger UI at /v1/docs (unauthenticated). Off unless true. */
+  enableApiDocs: boolean;
   /**
    * Retention defaults from the environment. A value set on the dashboard (stored in
    * `platform_settings`) wins; these apply wherever the dashboard has said nothing.
@@ -102,11 +105,39 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     walletRefPrefix: optional(env.WALLET_REF_PREFIX) ?? "mgr:",
     corsOrigins: parseList(env.CORS_ORIGINS),
-    uiCookieSecure: optional(env.UI_COOKIE_SECURE) === "true",
+    uiCookieSecure: parseCookieSecure(env),
+    enableApiDocs:
+      parseEnum("ENABLE_API_DOCS", env.ENABLE_API_DOCS, ["true", "false"], "false") === "true",
     retentionDefaults: parseRetentionDefaults(env),
     managerPublicUrl: parseHttpUrl("MANAGER_PUBLIC_URL", env.MANAGER_PUBLIC_URL),
     storagePath: optional(env.STORAGE_PATH) ?? "/storage/pg",
   };
+}
+
+function parseCookieSecure(env: NodeJS.ProcessEnv): boolean {
+  if (optional(env.UI_COOKIE_SECURE) !== undefined) {
+    return (
+      parseEnum("UI_COOKIE_SECURE", env.UI_COOKIE_SECURE, ["true", "false"], "false") === "true"
+    );
+  }
+  return optional(env.MANAGER_PUBLIC_URL)?.toLowerCase().startsWith("https://") === true;
+}
+
+/**
+ * A warning for the boot log when the session cookie goes out without `Secure` on an install that
+ * is reached at a real host name, where a sniffed cookie is a stolen admin session. Loopback hosts
+ * are exempt: plain http is how they are reached.
+ */
+export function insecureCookieWarning(config: Config): string | undefined {
+  if (config.uiCookieSecure || config.managerPublicUrl === undefined) return undefined;
+  const host = new URL(config.managerPublicUrl).hostname.replace(/^\[|\]$/g, "");
+  const loopback = host === "localhost" || host === "::1" || /^127\./.test(host);
+  if (loopback) return undefined;
+  return (
+    `The admin UI session cookie is not marked Secure although ${config.managerPublicUrl} is not ` +
+    "a loopback address; serve it over https and set MANAGER_PUBLIC_URL to the https URL " +
+    "(or UI_COOKIE_SECURE=true)"
+  );
 }
 
 function parseRetentionDefaults(env: NodeJS.ProcessEnv): RetentionDefaults {
