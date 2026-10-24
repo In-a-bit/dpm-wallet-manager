@@ -80,7 +80,7 @@ services:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8090/v1/health/ready').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
     volumes:
       - config:/config:ro
-      # Holds the vault's plaintext API key pair backup; `dpm-custody backup` copies it.
+      # The wallet's data directory (no key material is written here); `dpm-custody backup` still copies it.
       - wallet-data:/data
     depends_on:
       postgres:

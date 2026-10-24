@@ -378,13 +378,16 @@ docker compose --env-file .env -f compose.yml exec -T postgres \
 ```
 
 The restore prints `role "dpm" already exists`. That is expected. The backup also holds the
-configuration (`config.tar.gz`) and the wallet keys (`wallet-data.tar.gz`). An upgrade or a
+configuration (`config.tar.gz`) and the wallet data directory (`wallet-data.tar.gz`, which holds
+no plaintext key). The wallet keys themselves live encrypted in the database, so they come back
+with `databases.sql` and `DPM_WALLET_ENCRYPTION_KEY` from the configuration. An upgrade or a
 rollback never changes them, so you do not restore them here. If they are lost, for example on a
 new machine, ask the platform team.
 
 ## Removing an install
 
-**This deletes the wallet keys and both databases.** Without a backup of `wallet-data`, the funds
+**This deletes the wallet keys and both databases.** Without a backup of the databases and the
+configuration (it holds the encryption key), the funds
 in the install's wallets can no longer be moved. Take a backup and copy it off the machine first.
 
 ```sh
